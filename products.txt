@@ -1,7 +1,1 @@
 Autodesk AutoCAD
-Autodesk Revit
-AutoCAD LT
-Autodesk Civil 3D
-Autodesk Inventor
-Autodesk Construction Cloud
-Autodesk Forma
