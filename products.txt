@@ -1,5 +1,1 @@
-AutoCAD
-Autodesk Revit
-AutoCAD software license
-Autodesk Civil 3D
-CAD software tender
+Autocad
