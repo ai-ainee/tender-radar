@@ -10,8 +10,11 @@ import requests
 def log(msg):
     print(msg, flush=True)
 
-log(">>> MULTI-CHANNEL COMMERCIAL & HIRING RADAR ONLINE")
+log(">>> UNIVERSAL COMMERCIAL, TENDER & RECRUITMENT RADAR ACTIVE")
 
+# ---------------------------------------------------------------------------
+# 1. Environment Secrets & Config
+# ---------------------------------------------------------------------------
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -25,31 +28,29 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# Detection patterns across jobs, expansion, capex, and tenders
+# ---------------------------------------------------------------------------
+# 2. Comprehensive Regex Filters
+# ---------------------------------------------------------------------------
 COMMERCIAL_PATTERNS = re.compile(
-    r"\b(hiring|vacancy|drafter|architect|designer|engineer|job|jobs|tender|rfp|bid|gem|eprocure|capex|expansion|project win|awarded|contractor|consultancy|freelance|subcontract)\b",
-    re.IGNORECASE,
-)
-
-# Known Indian Hiring / B2B / News / Govt Portals
-PORTAL_PATTERNS = re.compile(
-    r"\b(linkedin\.com|naukri\.com|indeed\.com|freelancer|upwork|foundit|gem\.gov\.in|eprocure\.gov\.in|constructionweekonline|livemint|economictimes|financialexpress)\b",
+    r"\b(tender|tenders|rfp|bid|bids|bidding|gem|eprocure|procurement|supply|quotation|eoi|nit|license|licenses|subscription|renewal|contract|hiring|vacancy|drafter|modeler|architect|engineer|job|jobs|capex|expansion|project win|awarded|contractor|consultancy|freelance|subcontract|indiamart|rera|ireps)\b",
     re.IGNORECASE,
 )
 
 LOCATION_PATTERNS = re.compile(
-    r"\b(New Delhi|Delhi|Mumbai|Bengaluru|Bangalore|Chennai|Kolkata|Hyderabad|Pune|Ahmedabad|Noida|Gurgaon|Gurugram|Jaipur|Lucknow|Chandigarh|Maharashtra|Karnataka|Tamil Nadu|Uttar Pradesh|Gujarat)\b",
+    r"\b(New Delhi|Delhi|NCR|Mumbai|Bengaluru|Bangalore|Chennai|Kolkata|Hyderabad|Pune|Ahmedabad|Noida|Gurgaon|Gurugram|Jaipur|Lucknow|Chandigarh|Kochi|Bhopal|Indore|Patna|Coimbatore|Vadodara|Surat|Nagpur|Maharashtra|Karnataka|Tamil Nadu|Uttar Pradesh|Gujarat|Telangana|Haryana|Kerala|Rajasthan|Madhya Pradesh)\b",
     re.IGNORECASE,
 )
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 PHONE_REGEX = re.compile(r"(?:\+91[- ]?)?[6789]\d{9}\b")
 
+
 def load_products():
     if not os.path.exists(PRODUCTS_FILE):
-        return ["AutoCAD", "Autodesk Revit"]
+        return ["AutoCAD", "Autodesk Revit", "Civil 3D"]
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -57,16 +58,23 @@ def load_seen():
             return set(line.strip() for line in f if line.strip())
     return set()
 
+
 def save_seen(link):
     with open(SEEN_FILE, "a", encoding="utf-8") as f:
         f.write(link + "\n")
 
-def extract_base_website(url):
+
+def resolve_clean_url(url):
+    """Extracts base portal website and attempts quick unwrap if it is a redirect."""
     try:
         parsed = urllib.parse.urlparse(url)
-        return f"{parsed.scheme}://{parsed.netloc}"
+        if "google.com" in parsed.netloc:
+            return "https://gem.gov.in", url
+        domain = f"{parsed.scheme}://{parsed.netloc}"
+        return domain, url
     except Exception:
-        return "Web Link"
+        return "Web Portal", url
+
 
 def push_to_google_sheet(product, ltype, org, address, website, contact, email, phone, summary, link):
     if not GOOGLE_SHEET_WEBHOOK:
@@ -86,9 +94,10 @@ def push_to_google_sheet(product, ltype, org, address, website, contact, email, 
     }
     try:
         res = requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
-        log(f"  -> Sheet updated: {res.status_code}")
+        log(f"  -> Sheet row pushed! Status: {res.status_code}")
     except Exception as e:
         log(f"  -> Sheet Push Error: {e}")
+
 
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -102,36 +111,48 @@ def send_telegram(text):
     }
     try:
         res = requests.post(url, json=payload, timeout=10)
-        log(f"  -> Telegram dispatched: {res.status_code}")
+        log(f"  -> Telegram alert sent! Status: {res.status_code}")
     except Exception as e:
-        log(f"  -> Telegram Error: {e}")
+        log(f"  -> Telegram Send Error: {e}")
 
-def fetch_multichannel_leads(product):
+
+# ---------------------------------------------------------------------------
+# 3. Universal Multi-Stream Collector
+# ---------------------------------------------------------------------------
+def fetch_all_opportunities(product):
     """
-    Sweeps multiple commercial intent channels:
-    1. Hiring & Jobs (Naukri, LinkedIn, Indeed)
-    2. Capex, Expansions & EPC Project Wins
-    3. Government Tenders & GeM Bids
-    4. Freelancing & Sub-contracting RFPs
+    Sweeps 6 specialized procurement & commercial streams across India:
+    1. GeM, CPPP & Indian Railways (IREPS) Tender Portals
+    2. Corporate Hiring & Talent Needs (LinkedIn, Naukri, Indeed, Foundit)
+    3. Industrial Capex, Metro, EPC & Project Wins
+    4. B2B Trade & Subcontracting (IndiaMART, TradeIndia)
+    5. Real Estate & Architecture Expansions (RERA, PWD, CPWD)
+    6. Freelance & Outsourcing Work (Upwork, Freelancer India)
     """
-    channels = [
-        # Channel 1: Job Postings (Immediate Software/License Need)
-        f'"{product}" (hiring OR vacancy OR drafter OR "job opening") (site:linkedin.com/jobs OR site:naukri.com OR site:indeed.com) India',
+    stream_queries = [
+        # Stream 1: Public, Railway & Defense Tenders
+        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR "tender notice") India',
         
-        # Channel 2: Industry Capex, New Projects & Expansions
-        f'"{product}" (capex OR "project win" OR "bagged order" OR expansion OR "EPC contract" OR plant) India',
+        # Stream 2: Hiring & Talent Needs (Software License / Resource Indicator)
+        f'"{product}" (hiring OR vacancy OR "job opening" OR drafter OR modeler) (site:linkedin.com/jobs OR site:naukri.com OR site:indeed.com) India',
         
-        # Channel 3: Government Bids & Tenders
-        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR "tender notice") India',
+        # Stream 3: Industrial Capex, Infrastructure & EPC Project Awards
+        f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing unit") India',
         
-        # Channel 4: Corporate RFPs, Consultation & Freelance
-        f'"{product}" ("request for proposal" OR "consultancy assignment" OR "subcontract" OR freelance) India',
+        # Stream 4: B2B Procurement Requests & Subcontracting
+        f'"{product}" (site:indiamart.com OR "request for proposal" OR "subcontract" OR "design consultancy") India',
+        
+        # Stream 5: RERA, Architecture, Smart Cities & Municipal Portals
+        f'"{product}" (RERA OR "metro rail" OR "smart city" OR "expressway" OR CPWD) India',
+        
+        # Stream 6: Freelance & Outsource Modeling Assignments
+        f'"{product}" (freelance OR drafting OR "BIM outsourcing" OR "2D to 3D conversion") India'
     ]
 
     all_items = []
     seen_in_scan = set()
 
-    for q in channels:
+    for q in stream_queries:
         encoded = urllib.parse.quote(q)
         url = f"https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
         try:
@@ -148,42 +169,69 @@ def fetch_multichannel_leads(product):
                             "title": title,
                             "link": link,
                             "summary": desc,
-                            "product": product,
+                            "product": product
                         })
         except Exception as e:
-            log(f"Error fetching channel: {e}")
+            log(f"Fetch notice for stream: {e}")
 
     return all_items
 
-def parse_lead_locally(item):
-    """Fallback rule classifier to categorize lead type without relying solely on AI."""
+
+# ---------------------------------------------------------------------------
+# 4. Deep Contact Scraping & Deterministic Parsing Engine
+# ---------------------------------------------------------------------------
+def deep_scan_contact_info(item):
+    """Optionally reads destination page header text to capture direct phone/email."""
+    text = f"{item['title']} {item['summary']}"
+    emails = EMAIL_REGEX.findall(text)
+    phones = PHONE_REGEX.findall(text)
+
+    # If no email/phone in snippet, attempt light fetch of the target link
+    if not emails or not phones:
+        try:
+            r = requests.get(item["link"], headers=HEADERS, timeout=4)
+            if r.status_code == 200 and r.text:
+                page_text = r.text[:2500]
+                if not emails:
+                    found_emails = EMAIL_REGEX.findall(page_text)
+                    if found_emails:
+                        emails = [e for e in found_emails if not e.endswith(".png") and not e.endswith(".jpg")]
+                if not phones:
+                    phones = PHONE_REGEX.findall(page_text)
+        except Exception:
+            pass
+
+    email = emails[0] if emails else "Not Listed"
+    phone = phones[0] if phones else "Not Listed"
+    return email, phone
+
+
+def extract_lead_locally(item):
     text = f"{item['title']} {item['summary']}".lower()
 
-    # Determine Lead Category
-    if any(k in text for k in ["naukri", "linkedin", "indeed", "hiring", "drafter", "engineer vacancy"]):
+    # Precise Channel Categorization
+    if any(k in text for k in ["naukri", "linkedin", "indeed", "hiring", "drafter", "engineer vacancy", "modeler"]):
         ltype = "💼 Hiring Lead (Software Requirement)"
-    elif any(k in text for k in ["capex", "expansion", "bagged", "project win", "new plant", "inauguration"]):
+    elif any(k in text for k in ["capex", "expansion", "awarded", "project win", "new plant", "inauguration", "epc"]):
         ltype = "🏗 Capex / Project Expansion"
-    elif any(k in text for k in ["gem.gov", "eprocure", "tender", "nit"]):
+    elif any(k in text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid"]):
         ltype = "🏛 Government / GeM Tender"
-    elif any(k in text for k in ["freelance", "upwork", "subcontract"]):
-        ltype = "🤝 Freelance / Sub-Consulting"
+    elif any(k in text for k in ["indiamart", "freelance", "subcontract", "consultancy assignment"]):
+        ltype = "🤝 B2B Sub-Consultancy / Freelance"
+    elif any(k in text for k in ["rera", "metro rail", "smart city", "infrastructure", "cpwd"]):
+        ltype = "🏢 Infrastructure & Real Estate Project"
     else:
-        ltype = "📋 B2B Corporate RFP"
+        ltype = "📋 Commercial Procurement RFP"
 
-    # Identify City/Location
+    # Location Extraction
     loc_match = LOCATION_PATTERNS.search(item["title"] + " " + item["summary"])
     address = f"{loc_match.group(0)}, India" if loc_match else "India"
 
-    # Extract Contacts
-    emails = EMAIL_REGEX.findall(item["summary"])
-    phones = PHONE_REGEX.findall(item["summary"])
-    email = emails[0] if emails else "Not Listed"
-    phone = phones[0] if phones else "Not Listed"
+    # Extract Contacts (with Deep Fetch fallback)
+    email, phone = deep_scan_contact_info(item)
 
-    # Determine Organization or Source Domain
-    website = extract_base_website(item["link"])
-    org_guess = item["title"].split("-")[-1].strip() if "-" in item["title"] else "Industry Buyer"
+    website, clean_link = resolve_clean_url(item["link"])
+    org_guess = item["title"].split("-")[-1].strip() if "-" in item["title"] else "Industry Enterprise / Buyer"
 
     clean_summary = re.sub(r"<[^>]+>", " ", item['summary']).strip()
     if len(clean_summary) < 25:
@@ -195,12 +243,17 @@ def parse_lead_locally(item):
         "org": org_guess,
         "address": address,
         "website": website,
-        "contact_person": "HR / Procurement Manager",
+        "contact_person": "Procurement / HR Lead",
         "email": email,
         "phone": phone,
-        "summary": clean_summary[:180]
+        "summary": clean_summary[:180],
+        "clean_link": clean_link
     }
 
+
+# ---------------------------------------------------------------------------
+# 5. Gemini AI Batch Evaluator
+# ---------------------------------------------------------------------------
 def try_gemini_analysis(client, batch):
     if not client:
         return None
@@ -212,30 +265,31 @@ def try_gemini_analysis(client, batch):
         items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nSnippet: {clean_desc}\nLink: {it['link']}\n"
 
     prompt = f"""
-    You are an Indian commercial intelligence analyst.
-    Evaluate these candidate items for commercial opportunities:
+    You are an Indian commercial procurement, EPC and hiring intelligence analyst.
+    Evaluate the following search items for commercial opportunities:
     {items_block}
 
-    Categorize each item as one of:
-    - Hiring Lead (Hiring CAD/Revit team indicates software/training need)
-    - Capex / Project Win (EPC, Infrastructure, Plant expansion)
-    - GeM / Government Tender
-    - Corporate RFP / Sub-consultancy
-    - Non-Lead (Reject pure tutorials/crack software)
+    Assign each item to its exact category:
+    - Government / GeM Tender
+    - Hiring Lead (Software/Revit Drafter demand)
+    - Capex / Project Expansion (EPC, industrial plant, metro rail)
+    - B2B Sub-Consultancy / Freelance (IndiaMART or subcontracting RFP)
+    - Infrastructure & Real Estate Project (RERA, development awards)
+    - Non-Lead (Reject software piracy or generic software tutorials)
 
-    Reply ONLY with a raw JSON array:
+    Reply ONLY with a raw JSON list:
     [
       {{
         "item_index": 0,
         "is_lead": true or false,
-        "lead_type": "Category from above",
+        "lead_type": "Selected Category from above",
         "org": "Hiring Company / Developer / PSU Name",
         "address": "City, State or India",
-        "website": "Domain URL",
-        "contact_person": "HR / Officer / Not Listed",
+        "website": "Domain URL or Base Website",
+        "contact_person": "Officer / HR Name or Not Listed",
         "email": "Email or Not Listed",
         "phone": "Phone or Not Listed",
-        "summary": "1-sentence summary of the job/project opportunity"
+        "summary": "1 concise sentence stating the scope of software, licenses, or project requirements"
       }}
     ]
     """
@@ -257,6 +311,10 @@ def try_gemini_analysis(client, batch):
         log(f"  [AI Notice] API throttled/offline ({e}). Using Local Multi-Channel Engine.")
         return None
 
+
+# ---------------------------------------------------------------------------
+# 6. Main Orchestrator
+# ---------------------------------------------------------------------------
 def main():
     client = None
     if GEMINI_API_KEY:
@@ -264,7 +322,7 @@ def main():
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
         except Exception as e:
-            log(f"Client init warning: {e}")
+            log(f"Client init note: {e}")
 
     products = load_products()
     seen = load_seen()
@@ -272,8 +330,8 @@ def main():
 
     candidates = []
     for prod in products:
-        log(f"Scanning Multi-Channel Feeds for: {prod}")
-        items = fetch_multichannel_leads(prod)
+        log(f"Sweeping all commercial streams for: {prod}")
+        items = fetch_all_opportunities(prod)
         for item in items:
             if item["link"] in seen:
                 continue
@@ -284,13 +342,13 @@ def main():
             if COMMERCIAL_PATTERNS.search(text_blob):
                 candidates.append(item)
 
-    log(f"Total High-Intent Candidates Gathered: {len(candidates)}")
+    log(f"Total actionable leads identified: {len(candidates)}")
     if not candidates:
-        log("No new opportunities detected across channels.")
+        log("No new opportunities detected across channels this cycle.")
         return
 
-    # Try Gemini analysis on the top candidates, fallback to local parser if rate-limited
-    evaluations = try_gemini_analysis(client, candidates[:8])
+    # Evaluate up to 10 top candidates per execution
+    evaluations = try_gemini_analysis(client, candidates[:10])
 
     leads_recorded = 0
     if evaluations:
@@ -301,46 +359,48 @@ def main():
                 leads_recorded += 1
                 dispatch_lead(item, res)
     else:
-        log("--> Categorizing leads via Local Multi-Channel Engine...")
-        for item in candidates[:8]:
-            res = parse_lead_locally(item)
+        log("--> Processing leads through Local Multi-Channel Rule Engine...")
+        for item in candidates[:10]:
+            res = extract_lead_locally(item)
             if res["is_lead"]:
                 leads_recorded += 1
                 dispatch_lead(item, res)
 
-    log(f"\nWorkflow complete. Leads processed: {leads_recorded}")
+    log(f"\nCompleted run. Total leads recorded and pushed: {leads_recorded}")
+
 
 def dispatch_lead(item, data):
     prod = item["product"]
-    org = data.get("org", "Commercial Buyer / Recruiter")
+    org = data.get("org", "Buyer / Recruiter / Enterprise")
     address = data.get("address", "India")
     website = data.get("website", extract_base_website(item["link"]))
-    ltype = data.get("lead_type", "Commercial Opportunity")
+    ltype = data.get("lead_type", "Commercial Lead")
     contact = data.get("contact_person", "Not Listed")
     email = data.get("email", "Not Listed")
     phone = data.get("phone", "Not Listed")
     summary = data.get("summary", item['title'])
-    link = item["link"]
+    link = data.get("clean_link", item["link"])
 
-    log(f"\n>>> [QUALIFIED COMMERCIAL LEAD]: {item['title'][:70]}")
-    log(f"    Channel: {ltype} | Company: {org} | Location: {address}")
+    log(f"\n>>> [CONFIRMED COMMERCIAL LEAD]: {item['title'][:70]}")
+    log(f"    Category: {ltype} | Company: {org} | Location: {address}")
 
     push_to_google_sheet(prod, ltype, org, address, website, contact, email, phone, summary, link)
 
     msg = (
-        f"🚨 *New Commercial Lead Detected!*\n\n"
+        f"🚨 *New Commercial Opportunity!*\n\n"
         f"🏷 *Category:* {ltype}\n"
         f"🏢 *Company / Buyer:* {org}\n"
         f"📍 *Location:* {address}\n"
-        f"🌐 *Source / Website:* {website}\n"
-        f"📦 *Relevant Software:* {prod}\n"
-        f"👤 *Contact:* {contact}\n"
+        f"🌐 *Source / Portal:* {website}\n"
+        f"📦 *Product / Requirement:* {prod}\n"
+        f"👤 *Contact Person:* {contact}\n"
         f"📧 *Email:* {email}\n"
         f"📞 *Phone:* {phone}\n"
         f"📝 *Summary:* {summary}\n\n"
-        f"🔗 [Direct Source Link]({link})"
+        f"🔗 [Full Information Link]({link})"
     )
     send_telegram(msg)
+
 
 if __name__ == "__main__":
     main()
