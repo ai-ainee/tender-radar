@@ -28,9 +28,6 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# ---------------------------------------------------------------------------
-# 2. Comprehensive Regex Filters
-# ---------------------------------------------------------------------------
 COMMERCIAL_PATTERNS = re.compile(
     r"\b(tender|tenders|rfp|bid|bids|bidding|gem|eprocure|procurement|supply|quotation|eoi|nit|license|licenses|subscription|renewal|contract|hiring|vacancy|drafter|modeler|architect|engineer|job|jobs|capex|expansion|project win|awarded|contractor|consultancy|freelance|subcontract|indiamart|rera|ireps)\b",
     re.IGNORECASE,
@@ -64,16 +61,21 @@ def save_seen(link):
         f.write(link + "\n")
 
 
-def resolve_clean_url(url):
-    """Extracts base portal website and attempts quick unwrap if it is a redirect."""
+def extract_base_website(url):
+    """Extracts root website/portal domain cleanly."""
     try:
         parsed = urllib.parse.urlparse(url)
         if "google.com" in parsed.netloc:
-            return "https://gem.gov.in", url
-        domain = f"{parsed.scheme}://{parsed.netloc}"
-        return domain, url
+            return "https://gem.gov.in"
+        return f"{parsed.scheme}://{parsed.netloc}"
     except Exception:
-        return "Web Portal", url
+        return "Web Portal"
+
+
+def resolve_clean_url(url):
+    """Returns portal domain and full destination link."""
+    domain = extract_base_website(url)
+    return domain, url
 
 
 def push_to_google_sheet(product, ltype, org, address, website, contact, email, phone, summary, link):
@@ -94,7 +96,7 @@ def push_to_google_sheet(product, ltype, org, address, website, contact, email, 
     }
     try:
         res = requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
-        log(f"  -> Sheet row pushed! Status: {res.status_code}")
+        log(f"  -> Sheet updated! Status: {res.status_code}")
     except Exception as e:
         log(f"  -> Sheet Push Error: {e}")
 
@@ -116,36 +118,13 @@ def send_telegram(text):
         log(f"  -> Telegram Send Error: {e}")
 
 
-# ---------------------------------------------------------------------------
-# 3. Universal Multi-Stream Collector
-# ---------------------------------------------------------------------------
 def fetch_all_opportunities(product):
-    """
-    Sweeps 6 specialized procurement & commercial streams across India:
-    1. GeM, CPPP & Indian Railways (IREPS) Tender Portals
-    2. Corporate Hiring & Talent Needs (LinkedIn, Naukri, Indeed, Foundit)
-    3. Industrial Capex, Metro, EPC & Project Wins
-    4. B2B Trade & Subcontracting (IndiaMART, TradeIndia)
-    5. Real Estate & Architecture Expansions (RERA, PWD, CPWD)
-    6. Freelance & Outsourcing Work (Upwork, Freelancer India)
-    """
     stream_queries = [
-        # Stream 1: Public, Railway & Defense Tenders
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR "tender notice") India',
-        
-        # Stream 2: Hiring & Talent Needs (Software License / Resource Indicator)
         f'"{product}" (hiring OR vacancy OR "job opening" OR drafter OR modeler) (site:linkedin.com/jobs OR site:naukri.com OR site:indeed.com) India',
-        
-        # Stream 3: Industrial Capex, Infrastructure & EPC Project Awards
         f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing unit") India',
-        
-        # Stream 4: B2B Procurement Requests & Subcontracting
         f'"{product}" (site:indiamart.com OR "request for proposal" OR "subcontract" OR "design consultancy") India',
-        
-        # Stream 5: RERA, Architecture, Smart Cities & Municipal Portals
         f'"{product}" (RERA OR "metro rail" OR "smart city" OR "expressway" OR CPWD) India',
-        
-        # Stream 6: Freelance & Outsource Modeling Assignments
         f'"{product}" (freelance OR drafting OR "BIM outsourcing" OR "2D to 3D conversion") India'
     ]
 
@@ -177,16 +156,11 @@ def fetch_all_opportunities(product):
     return all_items
 
 
-# ---------------------------------------------------------------------------
-# 4. Deep Contact Scraping & Deterministic Parsing Engine
-# ---------------------------------------------------------------------------
 def deep_scan_contact_info(item):
-    """Optionally reads destination page header text to capture direct phone/email."""
     text = f"{item['title']} {item['summary']}"
     emails = EMAIL_REGEX.findall(text)
     phones = PHONE_REGEX.findall(text)
 
-    # If no email/phone in snippet, attempt light fetch of the target link
     if not emails or not phones:
         try:
             r = requests.get(item["link"], headers=HEADERS, timeout=4)
@@ -195,7 +169,7 @@ def deep_scan_contact_info(item):
                 if not emails:
                     found_emails = EMAIL_REGEX.findall(page_text)
                     if found_emails:
-                        emails = [e for e in found_emails if not e.endswith(".png") and not e.endswith(".jpg")]
+                        emails = [e for e in found_emails if not e.endswith((".png", ".jpg", ".jpeg"))]
                 if not phones:
                     phones = PHONE_REGEX.findall(page_text)
         except Exception:
@@ -209,7 +183,6 @@ def deep_scan_contact_info(item):
 def extract_lead_locally(item):
     text = f"{item['title']} {item['summary']}".lower()
 
-    # Precise Channel Categorization
     if any(k in text for k in ["naukri", "linkedin", "indeed", "hiring", "drafter", "engineer vacancy", "modeler"]):
         ltype = "💼 Hiring Lead (Software Requirement)"
     elif any(k in text for k in ["capex", "expansion", "awarded", "project win", "new plant", "inauguration", "epc"]):
@@ -223,13 +196,10 @@ def extract_lead_locally(item):
     else:
         ltype = "📋 Commercial Procurement RFP"
 
-    # Location Extraction
     loc_match = LOCATION_PATTERNS.search(item["title"] + " " + item["summary"])
     address = f"{loc_match.group(0)}, India" if loc_match else "India"
 
-    # Extract Contacts (with Deep Fetch fallback)
     email, phone = deep_scan_contact_info(item)
-
     website, clean_link = resolve_clean_url(item["link"])
     org_guess = item["title"].split("-")[-1].strip() if "-" in item["title"] else "Industry Enterprise / Buyer"
 
@@ -251,9 +221,6 @@ def extract_lead_locally(item):
     }
 
 
-# ---------------------------------------------------------------------------
-# 5. Gemini AI Batch Evaluator
-# ---------------------------------------------------------------------------
 def try_gemini_analysis(client, batch):
     if not client:
         return None
@@ -312,9 +279,6 @@ def try_gemini_analysis(client, batch):
         return None
 
 
-# ---------------------------------------------------------------------------
-# 6. Main Orchestrator
-# ---------------------------------------------------------------------------
 def main():
     client = None
     if GEMINI_API_KEY:
@@ -347,7 +311,6 @@ def main():
         log("No new opportunities detected across channels this cycle.")
         return
 
-    # Evaluate up to 10 top candidates per execution
     evaluations = try_gemini_analysis(client, candidates[:10])
 
     leads_recorded = 0
@@ -362,7 +325,7 @@ def main():
         log("--> Processing leads through Local Multi-Channel Rule Engine...")
         for item in candidates[:10]:
             res = extract_lead_locally(item)
-            if res["is_lead"]:
+            if res.get("is_lead") is True:
                 leads_recorded += 1
                 dispatch_lead(item, res)
 
