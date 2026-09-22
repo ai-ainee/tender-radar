@@ -117,25 +117,29 @@ def fetch_opportunities(product):
 
 
 def batch_analyze_with_ai(client, product, batch):
-    """Evaluates items using gemini-2.0-flash with reliable chat completions."""
+    """Evaluates candidate items using gemini-3.6-flash with resilient backoff."""
     items_text = ""
     for idx, item in enumerate(batch):
         items_text += f"\n--- ITEM {idx} ---\nTitle: {item['title']}\nSnippet: {item['summary']}\n"
 
     prompt = f"""
-    You are an Indian enterprise software sales and tender detection agent.
-    Evaluate the following items for procurement/tender requirements regarding: "{product}".
+    You are an Indian enterprise software sales and tender procurement intelligence agent.
+    Evaluate the following candidate items for commercial opportunities regarding: "{product}".
 
     {items_text}
 
-    Determine if each item is a REAL commercial lead (government/PSU tender, GeM bid, corporate RFP, or software license procurement in India).
-    Extract contact name, email, or phone if present. If not found, use "Not Listed".
+    Determine if each item represents an actual commercial procurement opportunity in India:
+    - Government / PSU / GeM tender or RFP
+    - Corporate licensing requirement, bulk software purchase, or contract award
+    - Vendor quotation or procurement notice
 
-    Reply with a JSON list containing one object per item matching this format:
+    Extract contact name, email, or phone if present (otherwise return "Not Listed").
+
+    Reply with a JSON list matching this exact schema:
     [
       {{
         "item_index": 0,
-        "is_lead": true,
+        "is_lead": true or false,
         "lead_type": "Tender / GeM Bid / License Procurement / Corporate RFP",
         "org": "Organization, PSU, or Authority Name",
         "contact_person": "Officer Name or Not Listed",
@@ -146,15 +150,14 @@ def batch_analyze_with_ai(client, product, batch):
     ]
     """
 
-    retries = 3
-    delay = 6
-    for attempt in range(retries):
+    # Retry with generous backoff to outlast peak-hour spikes
+    delays = [15, 30, 45]
+    for attempt, wait_time in enumerate(delays):
         try:
-            time.sleep(2)
-            # Use gemini-2.0-flash: stable, reliable free tier with no 503 capacity issues
-            chat = client.chats.create(model="gemini-2.0-flash")
-            response = chat.send_message(prompt)
-            
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt,
+            )
             raw = (
                 response.text.strip()
                 .removeprefix("```json")
@@ -165,9 +168,8 @@ def batch_analyze_with_ai(client, product, batch):
             return json.loads(raw)
         except APIError as e:
             if e.code in (429, 503):
-                print(f"  [AI Throttled {e.code}] Retrying in {delay}s...")
-                time.sleep(delay)
-                delay *= 2
+                print(f"  [AI Busy/Throttled ({e.code})]. Server busy. Waiting {wait_time}s before retry {attempt+1}/{len(delays)}...")
+                time.sleep(wait_time)
             else:
                 print(f"  [AI API Error]: {e}")
                 return []
@@ -175,6 +177,7 @@ def batch_analyze_with_ai(client, product, batch):
             print(f"  [AI Parse Error]: {e}")
             return []
 
+    print("  [AI Skipped]: Max retries reached for this batch.")
     return []
 
 
