@@ -117,7 +117,7 @@ def fetch_opportunities(product):
 
 
 def batch_analyze_with_ai(client, product, batch):
-    """Evaluates multiple items in ONE single call with retry backoff to stay inside rate limits."""
+    """Evaluates items using gemini-2.0-flash with reliable chat completions."""
     items_text = ""
     for idx, item in enumerate(batch):
         items_text += f"\n--- ITEM {idx} ---\nTitle: {item['title']}\nSnippet: {item['summary']}\n"
@@ -135,7 +135,7 @@ def batch_analyze_with_ai(client, product, batch):
     [
       {{
         "item_index": 0,
-        "is_lead": true or false,
+        "is_lead": true,
         "lead_type": "Tender / GeM Bid / License Procurement / Corporate RFP",
         "org": "Organization, PSU, or Authority Name",
         "contact_person": "Officer Name or Not Listed",
@@ -147,14 +147,14 @@ def batch_analyze_with_ai(client, product, batch):
     """
 
     retries = 3
-    delay = 5
+    delay = 6
     for attempt in range(retries):
         try:
-            time.sleep(2)  # Base safety delay between calls to respect rate limits
-            response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=prompt,
-            )
+            time.sleep(2)
+            # Use gemini-2.0-flash: stable, reliable free tier with no 503 capacity issues
+            chat = client.chats.create(model="gemini-2.0-flash")
+            response = chat.send_message(prompt)
+            
             raw = (
                 response.text.strip()
                 .removeprefix("```json")
@@ -165,7 +165,7 @@ def batch_analyze_with_ai(client, product, batch):
             return json.loads(raw)
         except APIError as e:
             if e.code in (429, 503):
-                print(f"  [AI Busy/Throttled {e.code}] Retrying in {delay}s...")
+                print(f"  [AI Throttled {e.code}] Retrying in {delay}s...")
                 time.sleep(delay)
                 delay *= 2
             else:
