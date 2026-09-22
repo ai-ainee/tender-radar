@@ -1,9 +1,7 @@
-Autodesk
-Autocad
-Revit
-Autocad LT
-Civil 3d
-Inventor
-Forma
-Build
-ACC
+Autodesk AutoCAD
+Autodesk Revit
+AutoCAD LT
+Autodesk Civil 3D
+Autodesk Inventor
+Autodesk Construction Cloud
+Autodesk Forma
