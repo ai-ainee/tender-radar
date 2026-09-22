@@ -4,7 +4,7 @@ on:
   schedule:
     # 02:30 UTC to 14:30 UTC = 08:00 AM to 08:00 PM IST
     - cron: '30 2-14 * * *'
-  workflow_dispatch: # Keeps manual 'Run workflow' button active
+  workflow_dispatch: # Allows manual run anytime
 
 jobs:
   scan-and-alert:
@@ -17,7 +17,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Install dependencies
         run: |
