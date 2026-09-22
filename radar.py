@@ -26,19 +26,24 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# 1. Broad Procurement Terms
+# Procurement intent detection
 PROCUREMENT_PATTERNS = re.compile(
     r"\b(tender|tenders|rfp|bid|bids|bidding|gem|eprocure|procurement|supply|quotation|eoi|nit|license|licenses|subscription|renewal|contract)\b",
     re.IGNORECASE,
 )
 
-# 2. Known Indian Procurement Authorities & Portals
+# Known Authorities & Organizations
 ORG_PATTERNS = re.compile(
     r"\b(GeM|Government e-Marketplace|CPPP|eProcure|IIT|NIT|Railway|Railways|Metro|CPWD|DRDO|ISRO|BHEL|NTPC|ONGC|PWD|Municipal|University|AIIMS)\b",
     re.IGNORECASE,
 )
 
-# 3. Contact & Phone / Email Extractors
+# Major Indian Cities / States for Address Extraction
+LOCATION_PATTERNS = re.compile(
+    r"\b(New Delhi|Delhi|Mumbai|Bengaluru|Bangalore|Chennai|Kolkata|Hyderabad|Pune|Ahmedabad|Noida|Gurgaon|Jaipur|Lucknow|Bhopal|Patna|Chandigarh|Maharashtra|Karnataka|Tamil Nadu|Uttar Pradesh|Gujarat)\b",
+    re.IGNORECASE,
+)
+
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 PHONE_REGEX = re.compile(r"(?:\+91[- ]?)?[6789]\d{9}\b")
 
@@ -58,7 +63,17 @@ def save_seen(link):
     with open(SEEN_FILE, "a", encoding="utf-8") as f:
         f.write(link + "\n")
 
-def push_to_google_sheet(product, ltype, org, contact, email, phone, summary, link):
+def extract_base_website(url):
+    """Extracts root portal domain from links."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if "google.com" in parsed.netloc:
+            return "https://gem.gov.in"
+        return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        return "https://gem.gov.in"
+
+def push_to_google_sheet(product, ltype, org, address, website, contact, email, phone, summary, link):
     if not GOOGLE_SHEET_WEBHOOK:
         return
     payload = {
@@ -66,6 +81,8 @@ def push_to_google_sheet(product, ltype, org, contact, email, phone, summary, li
         "product": product,
         "type": ltype,
         "org": org,
+        "address": address,
+        "website": website,
         "contact_person": contact,
         "email": email,
         "phone": phone,
@@ -129,20 +146,23 @@ def fetch_opportunities(product):
 
 def extract_lead_locally(item):
     """
-    Deterministic rule engine that identifies leads even if Gemini is down.
+    Deterministic rule engine that parses address, portal, and contacts locally.
     """
     text = f"{item['title']} {item['summary']}"
     
-    # Check if this item has strong procurement signals
     is_tender = bool(PROCUREMENT_PATTERNS.search(text))
     
-    # Extract likely Organization
     org_match = ORG_PATTERNS.search(text)
     org = org_match.group(0) if org_match else "Govt / PSU Procurement Authority"
     
-    # Identify Lead Type
+    loc_match = LOCATION_PATTERNS.search(text)
+    address = f"{loc_match.group(0)}, India" if loc_match else "India (Pan-India Tender)"
+
+    website = extract_base_website(item["link"])
+
     if "gem.gov.in" in text.lower() or "government e-marketplace" in text.lower():
         ltype = "GeM Bid / Procurement"
+        website = "https://gem.gov.in"
     elif "rfp" in text.lower():
         ltype = "Commercial RFP"
     elif "nit" in text.lower() or "tender" in text.lower():
@@ -150,7 +170,6 @@ def extract_lead_locally(item):
     else:
         ltype = "Software License Requirement"
 
-    # Extract Contact Info
     emails = EMAIL_REGEX.findall(text)
     phones = PHONE_REGEX.findall(text)
     email = emails[0] if emails else "Not Listed"
@@ -164,6 +183,8 @@ def extract_lead_locally(item):
         "is_lead": is_tender,
         "lead_type": ltype,
         "org": org,
+        "address": address,
+        "website": website,
         "contact_person": "Procurement Officer",
         "email": email,
         "phone": phone,
@@ -171,7 +192,7 @@ def extract_lead_locally(item):
     }
 
 def try_gemini_analysis(client, batch):
-    """Attempts Gemini classification; gracefully returns None on 503/429."""
+    """Attempts Gemini extraction with individual Address and Website fields."""
     if not client:
         return None
 
@@ -179,20 +200,24 @@ def try_gemini_analysis(client, batch):
     for idx, it in enumerate(batch):
         clean_title = it['title'].replace('"', "'")
         clean_desc = re.sub(r"<[^>]+>", " ", it['summary']).replace('"', "'")[:200]
-        items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nSnippet: {clean_desc}\n"
+        items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nSnippet: {clean_desc}\nLink: {it['link']}\n"
 
     prompt = f"""
-    Evaluate these Indian procurement candidate items:
+    Evaluate these Indian commercial candidate items:
     {items_block}
 
     Identify if each item is a tender, GeM bid, or software license procurement in India.
+    Extract the organization address/city and portal website into distinct properties.
+
     Reply ONLY with a raw JSON list:
     [
       {{
         "item_index": 0,
-        "is_lead": true,
+        "is_lead": true or false,
         "lead_type": "GeM Bid / Govt Tender / University Lab RFP",
         "org": "Organization Name",
+        "address": "City, State or Pan-India",
+        "website": "Base Official Website URL or Portal",
         "contact_person": "Officer Name or Not Listed",
         "email": "Email or Not Listed",
         "phone": "Phone or Not Listed",
@@ -250,12 +275,10 @@ def main():
         log("No new opportunities detected.")
         return
 
-    # Try AI analysis first; fall back immediately if Gemini is down/503
     evaluations = try_gemini_analysis(client, candidates[:8])
 
     leads_recorded = 0
     if evaluations:
-        # Use AI-parsed leads
         for res in evaluations:
             idx = res.get("item_index")
             if idx is not None and idx < len(candidates) and res.get("is_lead") is True:
@@ -263,7 +286,6 @@ def main():
                 leads_recorded += 1
                 dispatch_lead(item, res)
     else:
-        # Fallback: Process deterministically via Local Rule Engine
         log("--> Processing candidates via Local Procurement Rule Engine...")
         for item in candidates[:8]:
             res = extract_lead_locally(item)
@@ -276,6 +298,8 @@ def main():
 def dispatch_lead(item, data):
     prod = item["product"]
     org = data.get("org", "Govt / PSU Buyer")
+    address = data.get("address", "India")
+    website = data.get("website", extract_base_website(item["link"]))
     ltype = data.get("lead_type", "Procurement Notice")
     contact = data.get("contact_person", "Not Listed")
     email = data.get("email", "Not Listed")
@@ -284,20 +308,24 @@ def dispatch_lead(item, data):
     link = item["link"]
 
     log(f"\n>>> [CONFIRMED TENDER LEAD]: {item['title'][:70]}")
-    log(f"    Buyer: {org} | Type: {ltype}")
+    log(f"    Buyer: {org} | Address: {address} | Website: {website}")
 
-    push_to_google_sheet(prod, ltype, org, contact, email, phone, summary, link)
+    # Push to separate columns in Google Sheet
+    push_to_google_sheet(prod, ltype, org, address, website, contact, email, phone, summary, link)
 
+    # Dispatch to Telegram with distinct fields
     msg = (
         f"🚨 *New Indian Commercial Lead!*\n\n"
         f"📦 *Product:* {prod}\n"
         f"🏛 *Authority / Org:* {org}\n"
+        f"📍 *Address / Location:* {address}\n"
+        f"🌐 *Portal / Website:* {website}\n"
         f"📋 *Type:* {ltype}\n"
         f"👤 *Contact Person:* {contact}\n"
         f"📧 *Email:* {email}\n"
         f"📞 *Phone:* {phone}\n"
         f"📝 *Summary:* {summary}\n\n"
-        f"🔗 [Open Tender Notice]({link})"
+        f"🔗 [Full Information Link]({link})"
     )
     send_telegram(msg)
 
