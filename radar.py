@@ -25,9 +25,9 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# Regex to detect commercial & procurement terminology locally
+# Regex filter for procurement intent before spending AI quota
 PROCUREMENT_PATTERNS = re.compile(
-    r"(tender|rfp|bid|bidding|gem|eprocure|procurement|supply|quotation|eoi|license|licence|subscription|renewal|order|contract)",
+    r"\b(tender|tenders|rfp|bid|bids|bidding|gem|eprocure|procurement|supply|quotation|eoi|nit|license|licenses|subscription|renewal|contract)\b",
     re.IGNORECASE,
 )
 
@@ -95,12 +95,13 @@ def send_telegram(text):
 
 def fetch_opportunities(product):
     """
-    Searches both targeted Indian procurement queries and Google News feeds
-    to collect actual tender notices, GeM bids, and enterprise licensing RFPs.
+    Scrapes targeted Indian public procurement portals (GeM, CPPP, State Portals,
+    PSUs, and University tenders) rather than generic tech news.
     """
     queries = [
-        f'{product} (tender OR "bid" OR "eprocure" OR "gem.gov.in" OR "procurement")',
-        f'"{product}" (licenses OR "subscription renewal" OR "RFP" OR "NIT")',
+        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:tenderdetail.com OR site:tender247.com)',
+        f'"{product}" (tender OR "RFP" OR "NIT" OR "bid document") (portal OR department OR corporation OR university) India',
+        f'{product} ("procurement of software licenses" OR "annual subscription" OR "rate contract") India',
     ]
 
     all_items = []
@@ -121,43 +122,46 @@ def fetch_opportunities(product):
                         seen_urls.add(link)
                         all_items.append({"title": title, "link": link, "summary": desc})
         except Exception as e:
-            print(f"Fetch error on query '{q}': {e}")
+            print(f"Fetch error on query: {e}")
 
     return all_items[:15]
 
 
 def batch_analyze_with_ai(client, product, batch):
-    """Evaluates candidate items using gemini-3.6-flash with clear parsing rules."""
+    """Evaluates candidate items using gemini-3.6-flash with resilient backoff."""
     items_text = ""
     for idx, item in enumerate(batch):
         items_text += f"\n--- ITEM {idx} ---\nTitle: {item['title']}\nSnippet: {item['summary']}\nLink: {item['link']}\n"
 
     prompt = f"""
-    You are an Indian enterprise software sales and tender procurement intelligence agent.
-    Evaluate the following items for commercial opportunities regarding the product: "{product}".
+    You are an Indian commercial procurement specialist and tender analyst.
+    Evaluate the following search items for commercial opportunities related to: "{product}".
 
     {items_text}
 
-    Mark "is_lead": true if the item represents ANY of the following in India:
-    - Government tender, GeM bid, or e-procurement notice (CPPP, Railways, Defense, State Portals, Universities)
-    - Corporate licensing requirement, software subscription renewal, or bulk RFP
-    - Vendor empanelment or contract awarded for CAD/engineering software services
-    - Tech adoption or infrastructure project that mandates CAD/BIM software deployment
+    Mark "is_lead": true if the item indicates ANY commercial requirement in India:
+    - Government, PSU, defense, rail, or municipal corporation tenders mentioning CAD/software requirements
+    - State/Central university, IIT, NIT, or polytechnic software lab procurement
+    - GeM bids, RFPs, Expressions of Interest (EOI), or Notice Inviting Tenders (NIT)
+    - Architecture, infrastructure, or construction tenders specifying Autodesk/AutoCAD/BIM software execution
+    - Software reseller/distributor empanelment or enterprise license renewal notices
 
-    Extract contact person, email, or phone if present in title or snippet. If absent, set to "Not Listed".
+    Mark "is_lead": false ONLY for pure software tutorials, crack/piracy downloads, or generic corporate quarterly financial reports.
+
+    Extract the organization name, contact officer, official email, and phone number whenever present (use "Not Listed" if missing).
 
     Reply ONLY with a raw JSON list matching this format:
     [
       {{
         "item_index": 0,
         "is_lead": true or false,
-        "lead_type": "Tender / GeM Bid / License Procurement / Corporate RFP",
-        "org": "Organization, PSU, or Authority Name",
+        "lead_type": "Govt Tender / GeM Bid / University Lab RFP / Corporate RFP",
+        "org": "Organization, Department, or Authority Name",
         "contact_person": "Officer Name or Not Listed",
         "email": "Email or Not Listed",
         "phone": "Phone or Not Listed",
-        "summary": "1 concise sentence summarizing the software requirements or procurement context",
-        "rejection_reason": "Brief reason if is_lead is false, otherwise empty"
+        "summary": "1 concise sentence stating the scope of software or work required",
+        "rejection_reason": "Reason if false, otherwise empty"
       }}
     ]
     """
@@ -198,84 +202,4 @@ def main():
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     products = load_products()
-    seen = load_seen()
-
-    print(f"Monitoring Products: {products}")
-    total_leads = 0
-
-    for prod in products:
-        print(f"\n==========================================")
-        print(f"Scanning for: {prod}")
-        entries = fetch_opportunities(prod)
-        print(f"Found {len(entries)} candidate items on web.")
-
-        to_evaluate = []
-        for entry in entries:
-            link = entry["link"]
-            text_blob = f"{entry['title']} {entry['summary']}"
-
-            if link in seen:
-                continue
-
-            seen.add(link)
-            save_seen(link)
-
-            # Local check
-            if PROCUREMENT_PATTERNS.search(text_blob):
-                to_evaluate.append(entry)
-            else:
-                print(f"  [Skipped Local Filter - No Tender Terms]: {entry['title'][:55]}...")
-
-        if not to_evaluate:
-            print(f"No new tender candidates to check for {prod}.")
-            continue
-
-        print(f"Evaluating {len(to_evaluate)} pre-qualified items with Gemini...")
-
-        chunk_size = 5
-        for i in range(0, len(to_evaluate), chunk_size):
-            chunk = to_evaluate[i : i + chunk_size]
-            results = batch_analyze_with_ai(client, prod, chunk)
-
-            for res in results:
-                idx = res.get("item_index", 0)
-                if idx < len(chunk):
-                    item = chunk[idx]
-                    if res.get("is_lead") is True:
-                        total_leads += 1
-                        org = res.get("org", "Govt / Corporate Buyer")
-                        ltype = res.get("lead_type", "Software Procurement")
-                        contact = res.get("contact_person", "Not Listed")
-                        email = res.get("email", "Not Listed")
-                        phone = res.get("phone", "Not Listed")
-                        lead_summary = res.get("summary", "Procurement identified.")
-
-                        print(f"\n>>> [LEAD APPROVED]: {item['title'][:70]}")
-                        print(f"    Buyer: {org} | Type: {ltype}")
-
-                        push_to_google_sheet(
-                            prod, ltype, org, contact, email, phone, lead_summary, item["link"]
-                        )
-
-                        msg = (
-                            f"🚨 *New Indian Commercial Lead!*\n\n"
-                            f"📦 *Product:* {prod}\n"
-                            f"🏛 *Buyer / Org:* {org}\n"
-                            f"📋 *Type:* {ltype}\n"
-                            f"👤 *Contact Person:* {contact}\n"
-                            f"📧 *Email:* {email}\n"
-                            f"📞 *Phone:* {phone}\n"
-                            f"📝 *Summary:* {lead_summary}\n\n"
-                            f"🔗 [Open Procurement Link]({item['link']})"
-                        )
-                        send_telegram(msg)
-                    else:
-                        reason = res.get("rejection_reason", "Not a real procurement lead")
-                        print(f"  [AI Rejected]: {item['title'][:50]}... (Reason: {reason})")
-
-    print(f"\n==========================================")
-    print(f"Total qualified leads logged: {total_leads}")
-
-
-if __name__ == "__main__":
-    main()
+    seen = load_
