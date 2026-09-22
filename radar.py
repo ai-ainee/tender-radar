@@ -152,7 +152,7 @@ def batch_analyze_with_ai(client, product, batch):
         try:
             time.sleep(2)  # Base safety delay between calls to respect rate limits
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.6-flash",
                 contents=prompt,
             )
             raw = (
