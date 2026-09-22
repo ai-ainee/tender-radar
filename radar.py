@@ -15,7 +15,7 @@ GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
 SEEN_FILE = "seen_links.txt"
 
-# Modern User-Agent header so Google doesn't block GitHub Actions runners
+# Modern User-Agent header to ensure reliable RSS retrieval
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -84,8 +84,6 @@ def send_telegram(text):
 
 
 def fetch_opportunities(product):
-    """Fetches real listings with browser headers to prevent blocks."""
-    # Build a query specifically tailored for software licenses/subscriptions in India
     query = f'"{product}" (tender OR procurement OR "gem.gov.in" OR RFP OR licenses OR "subscription renewal")'
     encoded = urllib.parse.quote(query)
     url = f"https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
@@ -131,7 +129,7 @@ def analyze_with_ai(client, product, title, summary):
     """
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash", contents=prompt
+            model="gemini-3.6-flash", contents=prompt
         )
         clean = (
             response.text.strip()
