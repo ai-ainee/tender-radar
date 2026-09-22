@@ -10,9 +10,7 @@ from google import genai
 from google.genai.errors import APIError
 import requests
 
-print(">>> ENGINE STARTING...")
-print(f"Current Directory: {os.getcwd()}")
-print(f"Directory Contents: {os.listdir('.')}")
+print(">>> TENDER RADAR ENGINE ONLINE")
 
 # ---------------------------------------------------------------------------
 # 1. Environment Secrets
@@ -22,37 +20,31 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 
-print(f"GEMINI_API_KEY Present: {bool(GEMINI_API_KEY)}")
-print(f"TELEGRAM_BOT_TOKEN Present: {bool(TELEGRAM_BOT_TOKEN)}")
-print(f"TELEGRAM_CHAT_ID Present: {bool(TELEGRAM_CHAT_ID)}")
-print(f"GOOGLE_SHEET_WEBHOOK Present: {bool(GOOGLE_SHEET_WEBHOOK)}")
-
 PRODUCTS_FILE = "products.txt"
 SEEN_FILE = "seen_links.txt"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# Regex pre-filter to catch real procurement intent without spending API quota
 PROCUREMENT_PATTERNS = re.compile(
-    r"\b(tender|tenders|rfp|bid|bids|bidding|gem|eprocure|procurement|supply|quotation|eoi|nit|license|licenses|subscription|renewal|contract)\b",
+    r"\b(tender|tenders|rfp|bid|bids|bidding|gem|eprocure|procurement|supply|quotation|eoi|nit|license|licenses|subscription|renewal|contract|railway|metro|cpwd|drdo|iit|nit|psu)\b",
     re.IGNORECASE,
 )
 
 
 def load_products():
     if not os.path.exists(PRODUCTS_FILE):
-        print(f"CRITICAL: {PRODUCTS_FILE} does not exist in repository!")
+        print(f"CRITICAL: {PRODUCTS_FILE} not found!")
         return []
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
-        prods = [
+        return [
             line.strip()
             for line in f
             if line.strip() and not line.startswith("#")
         ]
-    print(f"Loaded {len(prods)} products from {PRODUCTS_FILE}: {prods}")
-    return prods
 
 
 def load_seen():
@@ -69,7 +61,7 @@ def save_seen(link):
 
 def push_to_google_sheet(product, ltype, org, contact, email, phone, summary, link):
     if not GOOGLE_SHEET_WEBHOOK:
-        print("  -> Google Sheet webhook not set. Skipping.")
+        print("  [Google Sheet Webhook not configured]")
         return
     payload = {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -84,14 +76,14 @@ def push_to_google_sheet(product, ltype, org, contact, email, phone, summary, li
     }
     try:
         res = requests.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=15)
-        print(f"  -> Sheet updated! Status: {res.status_code}")
+        print(f"  -> Google Sheet updated: Status {res.status_code}")
     except Exception as e:
-        print(f"  -> Sheet push error: {e}")
+        print(f"  -> Google Sheet error: {e}")
 
 
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("  -> Telegram secrets not set. Skipping.")
+        print("  [Telegram credentials not configured]")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -102,20 +94,20 @@ def send_telegram(text):
     }
     try:
         res = requests.post(url, json=payload, timeout=12)
-        print(f"  -> Telegram sent! Status: {res.status_code}")
+        print(f"  -> Telegram alert sent: Status {res.status_code}")
     except Exception as e:
         print(f"  -> Telegram error: {e}")
 
 
 def fetch_opportunities(product):
+    """Fetches high-intent procurement items directly via targeted search queries."""
     queries = [
-        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:tenderdetail.com OR site:tender247.com)',
-        f'"{product}" (tender OR "RFP" OR "NIT" OR "bid document") (portal OR department OR corporation OR university) India',
-        f'{product} ("procurement of software licenses" OR "annual subscription" OR "rate contract") India',
+        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR tender OR RFP OR "NIT") India',
+        f'{product} ("procurement of software" OR "license renewal" OR "annual subscription") India',
     ]
 
-    all_items = []
-    seen_urls = set()
+    items = []
+    seen_in_run = set()
 
     for q in queries:
         encoded = urllib.parse.quote(q)
@@ -125,58 +117,66 @@ def fetch_opportunities(product):
             if resp.status_code == 200 and resp.content:
                 root = ET.fromstring(resp.content)
                 for item in root.findall(".//item"):
-                    link = item.findtext("link", "")
-                    title = item.findtext("title", "")
-                    desc = item.findtext("description", "")
-                    if link and title and link not in seen_urls:
-                        seen_urls.add(link)
-                        all_items.append({"title": title, "link": link, "summary": desc})
+                    link = item.findtext("link", "").strip()
+                    title = item.findtext("title", "").strip()
+                    desc = item.findtext("description", "").strip()
+                    if link and title and link not in seen_in_run:
+                        seen_in_run.add(link)
+                        items.append({
+                            "title": title,
+                            "link": link,
+                            "summary": desc,
+                            "product": product,
+                        })
         except Exception as e:
-            print(f"Fetch error on query: {e}")
+            print(f"Fetch error for {product}: {e}")
 
-    return all_items[:15]
+    return items[:10]
 
 
-def batch_analyze_with_ai(client, product, batch):
-    items_text = ""
-    for idx, item in enumerate(batch):
-        items_text += f"\n--- ITEM {idx} ---\nTitle: {item['title']}\nSnippet: {item['summary']}\nLink: {item['link']}\n"
+def evaluate_batch_single_request(client, candidate_items):
+    """
+    Evaluates ALL gathered candidates in ONE single Gemini API request.
+    This ensures you consume only 1 API credit per scheduled run, completely
+    preventing 429 Daily / RPM Quota exhaustion.
+    """
+    items_block = ""
+    for idx, it in enumerate(candidate_items):
+        clean_title = it['title'].replace('"', "'")
+        clean_desc = re.sub(r"<[^>]+>", " ", it['summary']).replace('"', "'")[:250]
+        items_block += f"\n--- ITEM {idx} ---\nProduct: {it['product']}\nTitle: {clean_title}\nDetails: {clean_desc}\n"
 
     prompt = f"""
-    You are an Indian commercial procurement specialist and tender analyst.
-    Evaluate the following search items for commercial opportunities related to: "{product}".
+    You are an Indian government procurement and B2B tender classification engine.
+    Evaluate the following search items:
 
-    {items_text}
+    {items_block}
 
-    Mark "is_lead": true if the item indicates ANY commercial requirement in India:
-    - Government, PSU, defense, rail, or municipal corporation tenders mentioning CAD/software requirements
-    - State/Central university, IIT, NIT, or polytechnic software lab procurement
-    - GeM bids, RFPs, Expressions of Interest (EOI), or Notice Inviting Tenders (NIT)
-    - Architecture, infrastructure, or construction tenders specifying Autodesk/AutoCAD/BIM software execution
-    - Software reseller/distributor empanelment or enterprise license renewal notices
+    For each item, determine if it represents an authentic Indian commercial opportunity:
+    - Central/State Government, GeM, PSU, Metro Rail, Defense, CPWD tenders
+    - University/IIT/NIT/Polytechnic CAD lab setups or software licensing
+    - Corporate RFPs, software subscription tenders, vendor empanelment notices
+    
+    Reject:
+    - Pure general news, software release hype, tutorials, stock earnings, or piracy
 
-    Mark "is_lead": false ONLY for pure software tutorials, crack/piracy downloads, or generic corporate quarterly financial reports.
-
-    Extract the organization name, contact officer, official email, and phone number whenever present (use "Not Listed" if missing).
-
-    Reply ONLY with a raw JSON list matching this format:
+    Respond ONLY with a valid JSON array matching this exact schema:
     [
       {{
         "item_index": 0,
-        "is_lead": true or false,
-        "lead_type": "Govt Tender / GeM Bid / University Lab RFP / Corporate RFP",
-        "org": "Organization, Department, or Authority Name",
+        "is_lead": true,
+        "lead_type": "GeM Bid / Govt Tender / University Lab RFP / Corporate RFP",
+        "org": "Exact Name of Department, PSU, Metro, or University",
         "contact_person": "Officer Name or Not Listed",
-        "email": "Email or Not Listed",
-        "phone": "Phone or Not Listed",
-        "summary": "1 concise sentence stating the scope of software or work required",
-        "rejection_reason": "Reason if false, otherwise empty"
+        "email": "Official Email or Not Listed",
+        "phone": "Contact Phone or Not Listed",
+        "summary": "1 concise sentence stating the scope of software, licenses, or project requirements"
       }}
     ]
     """
 
-    delays = [5, 15, 30]
-    for attempt, wait_time in enumerate(delays):
+    delays = [25, 50]
+    for attempt in range(len(delays) + 1):
         try:
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
@@ -191,14 +191,15 @@ def batch_analyze_with_ai(client, product, batch):
             )
             return json.loads(raw)
         except APIError as e:
-            if e.code in (429, 503):
-                print(f"  [AI Throttled ({e.code})] Waiting {wait_time}s...")
-                time.sleep(wait_time)
+            if e.code in (429, 503) and attempt < len(delays):
+                wait = delays[attempt]
+                print(f"  [AI Busy/Throttled {e.code}] Backing off for {wait}s...")
+                time.sleep(wait)
             else:
-                print(f"  [AI API Error]: {e}")
+                print(f"  [AI Call Failed]: {e}")
                 return []
         except Exception as e:
-            print(f"  [AI Parse Error]: {e}")
+            print(f"  [AI JSON Parse Error]: {e}")
             return []
 
     return []
@@ -206,7 +207,7 @@ def batch_analyze_with_ai(client, product, batch):
 
 def main():
     if not GEMINI_API_KEY:
-        print("FATAL ERROR: GEMINI_API_KEY secret is completely missing from GitHub Secrets!")
+        print("FATAL: Missing GEMINI_API_KEY secret.")
         sys.exit(1)
 
     client = genai.Client(api_key=GEMINI_API_KEY)
@@ -214,83 +215,77 @@ def main():
     seen = load_seen()
 
     if not products:
-        print("FATAL ERROR: No products to scan. Check products.txt file!")
-        sys.exit(1)
+        print("No products configured in products.txt.")
+        return
 
-    print(f"Monitoring Products: {products}")
-    total_leads = 0
+    print(f"Scanning products: {products}")
 
+    # Phase 1: Collect & pre-filter candidates across all products locally (0 API cost)
+    candidates_to_evaluate = []
     for prod in products:
-        print(f"\n==========================================")
-        print(f"Scanning for: {prod}")
-        entries = fetch_opportunities(prod)
-        print(f"Found {len(entries)} candidate items on web.")
-
-        to_evaluate = []
-        for entry in entries:
-            link = entry["link"]
-            text_blob = f"{entry['title']} {entry['summary']}"
-
+        raw_items = fetch_opportunities(prod)
+        for item in raw_items:
+            link = item["link"]
             if link in seen:
                 continue
 
             seen.add(link)
             save_seen(link)
 
+            text_blob = f"{item['title']} {item['summary']}"
             if PROCUREMENT_PATTERNS.search(text_blob):
-                to_evaluate.append(entry)
+                candidates_to_evaluate.append(item)
             else:
-                print(f"  [Skipped Local Filter - No Tender Terms]: {entry['title'][:55]}...")
+                print(f"  [Local Pre-Filter Skipped]: {item['title'][:55]}...")
 
-        if not to_evaluate:
-            print(f"No potential tender candidates for {prod}.")
-            continue
+    print(f"\nTotal pre-filtered tender candidates across all products: {len(candidates_to_evaluate)}")
 
-        print(f"Evaluating {len(to_evaluate)} pre-qualified items with Gemini...")
+    if not candidates_to_evaluate:
+        print("No candidate items to evaluate this cycle.")
+        return
 
-        chunk_size = 5
-        for i in range(0, len(to_evaluate), chunk_size):
-            chunk = to_evaluate[i : i + chunk_size]
-            results = batch_analyze_with_ai(client, prod, chunk)
+    # Phase 2: Send all items in 1 unified API call (Max 12 items to stay within context and quota)
+    batch = candidates_to_evaluate[:12]
+    print(f"Evaluating {len(batch)} items in a single Gemini request...")
+    results = evaluate_batch_single_request(client, batch)
 
-            for res in results:
-                idx = res.get("item_index", 0)
-                if idx < len(chunk):
-                    item = chunk[idx]
-                    if res.get("is_lead") is True:
-                        total_leads += 1
-                        org = res.get("org", "Govt / Corporate Buyer")
-                        ltype = res.get("lead_type", "Software Procurement")
-                        contact = res.get("contact_person", "Not Listed")
-                        email = res.get("email", "Not Listed")
-                        phone = res.get("phone", "Not Listed")
-                        lead_summary = res.get("summary", "Procurement requirement identified.")
+    leads_found = 0
+    for res in results:
+        idx = res.get("item_index")
+        if idx is not None and idx < len(batch) and res.get("is_lead") is True:
+            leads_found += 1
+            item = batch[idx]
+            prod = item["product"]
+            org = res.get("org", "Government / Enterprise Buyer")
+            ltype = res.get("lead_type", "Tender / Bid")
+            contact = res.get("contact_person", "Not Listed")
+            email = res.get("email", "Not Listed")
+            phone = res.get("phone", "Not Listed")
+            summary = res.get("summary", "Software requirement identified.")
+            link = item["link"]
 
-                        print(f"\n>>> [LEAD APPROVED]: {item['title'][:70]}")
-                        print(f"    Buyer: {org} | Type: {ltype}")
+            print(f"\n>>> [CONFIRMED COMMERCIAL LEAD]: {item['title'][:70]}")
+            print(f"    Buyer: {org} | Type: {ltype}")
 
-                        push_to_google_sheet(
-                            prod, ltype, org, contact, email, phone, lead_summary, item["link"]
-                        )
+            # 1. Update Google Sheet
+            push_to_google_sheet(prod, ltype, org, contact, email, phone, summary, link)
 
-                        msg = (
-                            f"🚨 *New Indian Commercial Lead!*\n\n"
-                            f"📦 *Product:* {prod}\n"
-                            f"🏛 *Buyer / Org:* {org}\n"
-                            f"📋 *Type:* {ltype}\n"
-                            f"👤 *Contact Person:* {contact}\n"
-                            f"📧 *Email:* {email}\n"
-                            f"📞 *Phone:* {phone}\n"
-                            f"📝 *Summary:* {lead_summary}\n\n"
-                            f"🔗 [Open Procurement Link]({item['link']})"
-                        )
-                        send_telegram(msg)
-                    else:
-                        reason = res.get("rejection_reason", "Not a real procurement lead")
-                        print(f"  [AI Rejected]: {item['title'][:50]}... (Reason: {reason})")
+            # 2. Dispatch Telegram Notification
+            msg = (
+                f"🚨 *New Indian Procurement Lead!*\n\n"
+                f"📦 *Product:* {prod}\n"
+                f"🏛 *Authority / Org:* {org}\n"
+                f"📋 *Type:* {ltype}\n"
+                f"👤 *Contact Person:* {contact}\n"
+                f"📧 *Email:* {email}\n"
+                f"📞 *Phone:* {phone}\n"
+                f"📝 *Summary:* {summary}\n\n"
+                f"🔗 [Open Procurement Notice]({link})"
+            )
+            send_telegram(msg)
 
     print(f"\n==========================================")
-    print(f"Total qualified leads logged: {total_leads}")
+    print(f"Execution complete. Total leads logged: {leads_found}")
 
 
 if __name__ == "__main__":
