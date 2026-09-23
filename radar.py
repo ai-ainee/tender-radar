@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 8.0 ACTIVE (OMNI-CHANNEL, MULTI-KEY, PDF OCR, DOUBLE-LOCK)")
+log(">>> ENTERPRISE RADAR 8.1 ACTIVE (OMNI-CHANNEL, URL-UNMASKER, PDF OCR, DOUBLE-LOCK)")
 
 # ---------------------------------------------------------------------------
 # 1. Credentials & Session Config
@@ -161,12 +161,26 @@ def save_seen(link):
         f.write(link + "\n")
 
 def unwrap_destination_url(initial_url):
+    """Aggressively unwraps Google News links by reading hidden HTML routing tags."""
     if "news.google.com" not in initial_url:
         return initial_url
     try:
-        resp = SESSION.head(initial_url, allow_redirects=True, timeout=5)
-        return resp.url if resp.url else initial_url
-    except Exception:
+        # Use GET instead of HEAD, as Google blocks automated HEAD requests
+        resp = SESSION.get(initial_url, allow_redirects=True, timeout=10)
+        final_url = resp.url
+        
+        # If Google tries to trap us on a consent or redirect page, scrape the raw HTML
+        if "google.com" in final_url:
+            match = re.search(r'data-n-url="([^"]+)"', resp.text)
+            if not match:
+                match = re.search(r'<meta[^>]+http-equiv="refresh"[^>]+content="[^"]*url=([^"]+)"', resp.text, re.IGNORECASE)
+                
+            if match:
+                return match.group(1).replace("&amp;", "&")
+                
+        return final_url
+    except Exception as e:
+        log(f"    [Unwrap Error: {e}]")
         return initial_url
 
 def extract_base_website(url):
@@ -241,7 +255,6 @@ def deep_scrape_content(url):
         if response.status_code != 200:
             return ""
 
-        # Parse PDFs in-memory (handles government specifications & financial filings)
         if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
             if not PdfReader:
                 return "[PDF Detected - In-memory parsing active]"
@@ -252,7 +265,6 @@ def deep_scrape_content(url):
                 text += (page.extract_text() or "") + " "
             return re.sub(r'\s+', ' ', text)[:15000]
 
-        # Parse Clean HTML text
         soup = BeautifulSoup(response.content, 'html.parser')
         for script in soup(["script", "style", "noscript", "header", "footer"]):
             script.extract()
@@ -471,7 +483,6 @@ def extract_lead_locally(item, real_url):
         eligibility = "Authorized OEM Partner Required"
 
     priority = "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm"
-    website = extract_base_website(real_url)
     org_guess = item["title"].split("-")[-1].strip() if "-" in item["title"] else "Commercial Enterprise"
 
     clean_summary = re.sub(r"<[^>]+>", " ", item['summary']).strip()
@@ -482,7 +493,6 @@ def extract_lead_locally(item, real_url):
         "org": org_guess,
         "address": address,
         "state": state,
-        "website": website,
         "contact_person": "Key Stakeholder",
         "email": email,
         "phone": phone,
@@ -571,7 +581,12 @@ def dispatch_lead(item, data):
     address = data.get("address", "India")
     state = data.get("state", "Pan-India")
     real_link = item.get("real_link", item.get("clean_link", item["link"]))
-    website = data.get("website", extract_base_website(real_link))
+    
+    # FORCED FIX: Guarantee Python cuts the domain direct from the URL, bypassing AI guesses
+    website = extract_base_website(real_link)
+    if "google.com" in website:
+        website = "Domain Hidden by Google"
+
     ltype = data.get("lead_type", "Commercial Lead")
     contact = data.get("contact_person", "Not Listed")
     email = data.get("email", "Not Listed")
