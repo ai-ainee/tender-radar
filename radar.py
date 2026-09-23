@@ -351,10 +351,11 @@ def try_gemini_analysis(batch):
         real_link = it['real_link']
         items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nLink: {real_link}\nData: {context_payload}\n"
 
-    prompt = f"""
+   prompt = f"""
     You are an elite enterprise software sales strategist and Indian commercial intelligence director.
-    Analyze the following scraped webpage and PDF data.
-    Extract direct deals, procurement tenders, hiring mandates, and macro corporate signals.
+    Thoroughly analyze the following scraped webpage text and PDF content. 
+    EXTRACT ALL AVAILABLE CONTACT INTELLIGENCE: Look closely for any hidden or explicit contact person names, HR managers, procurement officers, email addresses, phone numbers, and exact company/organization names. If an email or phone number appears anywhere in the text, you MUST extract it. Do not leave them as 'Not Listed' if they exist in the data text below.
+    
     Data to process: {items_block}
     """
 
