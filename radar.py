@@ -361,13 +361,18 @@ def try_gemini_analysis(batch):
     return None
 
 # ---------------------------------------------------------------------------
-# 9. Local Deterministic Failsafe (Tier 3)
+# 9. Local Deterministic Failsafe (Tier 3) with Anti-Junk Filters
 # ---------------------------------------------------------------------------
 def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
     lower_text = text.lower()
-    is_govt = False
+    
+    # IMMEDIATE JUNK / FOREIGN FILTER: Drop international or spammy listings
+    foreign_markers = ["singapore", "united states", "usa", " uk ", "canada", "dubai", "uae", "australia", "germany", " 幸运飞车", "등기부등본"]
+    if any(m in lower_text for m in foreign_markers):
+        return {"is_lead": False}
 
+    is_govt = False
     if any(k in lower_text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum", "cpwd"]):
         ltype = "🏛 Government / GeM Tender"; is_govt = True
     elif any(k in lower_text for k in ["appointed as", "joins as", "head of bim", "chief architect"]): ltype = "👤 Leadership Move"
