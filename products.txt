@@ -1,14 +1,56 @@
+3ds Max
+Advance Steel
+Architecture, Engineering & Construction Collection
 AutoCAD
-Autodesk Revit
+AutoCAD Architecture
+AutoCAD Electrical
+AutoCAD LT
+AutoCAD Map 3D
+AutoCAD Mechanical
+AutoCAD MEP
+AutoCAD Plant 3D
+AutoCAD Raster Design
+AutoCAD Revit LT Suite
 Civil 3D
-BIM Modeler
-AutoCAD Drafter
+Forma Build
+Autodesk Build
+Forma Build Essentials
+Forma Building Design
+Forma Construction Connect
+Forma Data Management
+Autodesk Docs
+Forma Design Collaboration
+BIM Collaborate Pro
+Forma Estimate
+Forma for Buildings
+Forma for Construction
 Autodesk Construction Cloud
-Architectural Empanelment
-Detailed Project Report
-BIM Consultant
-MEP Drafting
-Environmental Clearance
-RERA registered
-Structural Drafting
-BIM Coordination
+Forma for Model Management
+Forma for Preconstruction
+Forma Site Design
+Forma Takeoff
+Fusion
+InfoWorks ICM
+InfoWater Pro
+InfoWorks WS Pro
+InfraWorks
+Inventor
+Inventor CAM
+Navisworks Manage
+Navisworks Simulate
+Product Design & Manufacturing Collection
+Revit
+Revit LT
+Vault
+Vault Basic
+Vault Office
+Vault PLM
+Vault Professional
+Fusion 360
+Infrastructure Design Suite
+Autodesk License Renewal
+Architectural Consultancy Tender
+DBMS
+DMS
+Data Management
+Project Management
