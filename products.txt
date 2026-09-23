@@ -52,4 +52,4 @@ Architectural Consultancy Tender
 DBMS
 DMS
 Data Management
-Project Management
+PMC
