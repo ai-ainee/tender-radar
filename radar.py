@@ -15,7 +15,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 5.2 (2.5 PRO -> 3.6 FLASH -> LOCAL CASCADE) ACTIVATED")
+log(">>> ENTERPRISE RADAR 5.3 (STATE-FILTERING & AI CASCADE) ACTIVATED")
 
 # ---------------------------------------------------------------------------
 # 1. Environment Secrets & Config
@@ -47,9 +47,27 @@ COMMERCIAL_PATTERNS = re.compile(
 LOCATION_PATTERNS = re.compile(
     r"\b(New Delhi|Delhi|NCR|Mumbai|Bengaluru|Bangalore|Chennai|Kolkata|Hyderabad|Pune|Ahmedabad|"
     r"Noida|Gurgaon|Gurugram|Jaipur|Lucknow|Chandigarh|Kochi|Bhopal|Indore|Patna|Coimbatore|Vadodara|"
-    r"Surat|Nagpur|Maharashtra|Karnataka|Tamil Nadu|Uttar Pradesh|Gujarat|Telangana|Haryana|Kerala|Rajasthan|Madhya Pradesh)\b",
+    r"Surat|Nagpur|Maharashtra|Karnataka|Tamil Nadu|Uttar Pradesh|Gujarat|Telangana|Haryana|Kerala|Rajasthan|Madhya Pradesh|Bihar|West Bengal)\b",
     re.IGNORECASE,
 )
+
+# Automated Mapping for the Local Engine
+STATE_MAP = {
+    'new delhi': 'Delhi', 'delhi': 'Delhi', 'ncr': 'Delhi/NCR',
+    'mumbai': 'Maharashtra', 'pune': 'Maharashtra', 'nagpur': 'Maharashtra', 'maharashtra': 'Maharashtra',
+    'bengaluru': 'Karnataka', 'bangalore': 'Karnataka', 'karnataka': 'Karnataka',
+    'chennai': 'Tamil Nadu', 'coimbatore': 'Tamil Nadu', 'tamil nadu': 'Tamil Nadu',
+    'kolkata': 'West Bengal', 'west bengal': 'West Bengal',
+    'hyderabad': 'Telangana', 'telangana': 'Telangana',
+    'ahmedabad': 'Gujarat', 'vadodara': 'Gujarat', 'surat': 'Gujarat', 'gujarat': 'Gujarat',
+    'noida': 'Uttar Pradesh', 'lucknow': 'Uttar Pradesh', 'uttar pradesh': 'Uttar Pradesh',
+    'gurgaon': 'Haryana', 'gurugram': 'Haryana', 'haryana': 'Haryana',
+    'jaipur': 'Rajasthan', 'rajasthan': 'Rajasthan',
+    'chandigarh': 'Chandigarh',
+    'kochi': 'Kerala', 'kerala': 'Kerala',
+    'bhopal': 'Madhya Pradesh', 'indore': 'Madhya Pradesh', 'madhya pradesh': 'Madhya Pradesh',
+    'patna': 'Bihar', 'bihar': 'Bihar'
+}
 
 EXPIRED_YEARS_PATTERN = re.compile(r"\b(2018|2019|2020|2021|2022|2023|2024)\b")
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
@@ -61,14 +79,15 @@ QUANTITY_PATTERNS = re.compile(r"(\d+)\s*(?:nos|qty|licenses|users|seats|posts|o
 EMD_PATTERNS = re.compile(r"(?:emd|earnest money|bid security)[:\s\-]+(?:₹|Rs\.?|INR)?\s*[\d,]+", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
-# 2. Pydantic Schemas for Bulletproof AI Outputs
+# 2. Pydantic Schemas for AI Outputs
 # ---------------------------------------------------------------------------
 class LeadData(BaseModel):
     item_index: int = Field(description="The index number of the item provided.")
     is_lead: bool = Field(description="True if genuine commercial, hiring, or procurement opportunity.")
     lead_type: str = Field(description="Strictly one of: 'Government / GeM Tender', 'Hiring Mandate', 'Private Capex / Expansion Win', 'Upstream Project Clearance', 'Leadership Move', 'Architect / Consultant Empanelment', 'B2B Sub-Consultancy / Freelance', or 'Non-Lead'.")
     org: str = Field(description="Name of the hiring company, developer, or government department.")
-    address: str = Field(description="City and State in India.")
+    address: str = Field(description="City or local area in India.")
+    state: str = Field(description="The specific Indian State (e.g., 'Maharashtra', 'Delhi'). 'Pan-India' if not specific.")
     contact_person: str = Field(description="Name of the key decision maker, HR, or officer. 'Not Listed' if absent.")
     email: str = Field(description="Email address. 'Not Listed' if absent.")
     phone: str = Field(description="Phone number. 'Not Listed' if absent.")
@@ -167,7 +186,7 @@ def send_telegram(text):
         log(f"  -> Telegram Send Error: {e}")
 
 # ---------------------------------------------------------------------------
-# 4. Deep Scraper
+# 4. Deep HTML Scraper
 # ---------------------------------------------------------------------------
 def deep_scrape_page(url):
     try:
@@ -265,21 +284,18 @@ def try_gemini_analysis(client, batch):
     prompt = f"""
     You are an elite enterprise software sales strategist and Indian commercial intelligence director.
     Analyze the following scraped webpage data for commercial opportunities.
-    Extract deep insights, hidden emails, deadlines, and project values.
+    Extract deep insights, hidden emails, deadlines, states, and project values.
     
     Data to process:
     {items_block}
     """
 
-    # TIER 1: Attempt Gemini 2.5 PRO
     try:
         log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
         raw_dict = invoke_gemini_api(client, prompt, 'gemini-2.5-pro')
         return raw_dict.get("leads", [])
     except Exception as e_pro:
         log(f"    [Warning] Gemini Pro failed (Limit/Quota). Switching to Tier 2: Gemini 3.6 Flash... ({e_pro})")
-        
-        # TIER 2: Fallback to Gemini 3.6 FLASH
         try:
             log("    [Invoking Tier 2: Gemini 3.6 Flash...]")
             raw_dict = invoke_gemini_api(client, prompt, 'gemini-3.6-flash')
@@ -289,7 +305,7 @@ def try_gemini_analysis(client, batch):
             return None
 
 # ---------------------------------------------------------------------------
-# 7. Local Fallback Engine (Tier 3 Failsafe)
+# 7. Local Fallback Engine (Tier 3)
 # ---------------------------------------------------------------------------
 def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
@@ -312,8 +328,14 @@ def extract_lead_locally(item, real_url):
     else:
         ltype = "🤝 B2B Sub-Consultancy"
 
+    # Match Location & State
     loc_match = LOCATION_PATTERNS.search(text)
-    address = f"{loc_match.group(0)}, India" if loc_match else "India"
+    if loc_match:
+        address = loc_match.group(0)
+        state = STATE_MAP.get(address.lower(), "Pan-India")
+    else:
+        address = "India"
+        state = "Pan-India"
 
     emails = EMAIL_REGEX.findall(text)
     phones = PHONE_REGEX.findall(text)
@@ -347,6 +369,7 @@ def extract_lead_locally(item, real_url):
         "lead_type": ltype,
         "org": org_guess,
         "address": address,
+        "state": state,
         "website": website,
         "contact_person": "Key Stakeholder",
         "email": email,
@@ -439,6 +462,7 @@ def dispatch_lead(item, data):
     prod = item["product"]
     org = data.get("org", "Enterprise Buyer")
     address = data.get("address", "India")
+    state = data.get("state", "Pan-India")
     real_link = item.get("real_link", item.get("clean_link", item["link"]))
     website = data.get("website", extract_base_website(real_link))
     ltype = data.get("lead_type", "Commercial Lead")
@@ -458,7 +482,7 @@ def dispatch_lead(item, data):
     appearance_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     log(f"\n>>> [CONFIRMED COMMERCIAL LEAD - {priority}]: {item['title'][:70]}")
-    log(f"    Category: {ltype} | Org: {org} | EMD: {emd_fee}")
+    log(f"    Category: {ltype} | Org: {org} | Location: {address}, {state}")
 
     push_to_google_sheet({
         "appearance_date": appearance_date,
@@ -472,6 +496,7 @@ def dispatch_lead(item, data):
         "emd_fee": emd_fee,
         "org": org,
         "address": address,
+        "state": state,
         "website": website,
         "contact_person": contact,
         "email": email,
@@ -493,7 +518,7 @@ def dispatch_lead(item, data):
         f"💰 *Budget / Value:* {estimated_value}\n"
         f"⏳ *Deadline:* `{deadline}`\n"
         f"{emd_line}"
-        f"📍 *Location:* {address}\n"
+        f"📍 *Location:* {address}, {state}\n"
         f"📅 *Published:* {published_date}\n"
         f"👤 *Contact:* {contact}\n"
         f"📧 *Email:* {email}\n"
