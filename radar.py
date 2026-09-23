@@ -272,20 +272,29 @@ def fetch_direct_cppp_tenders(product):
     return items
 
 # ---------------------------------------------------------------------------
-# 7. Multi-Stream Harvester
+# 7. Multi-Stream Harvester (Optimized for Government Tenders & Enterprise Deals)
 # ---------------------------------------------------------------------------
 def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
     seen_in_scan = set([i["link"] for i in all_items])
 
     stream_queries = [
-        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR "tender notice" OR corrigendum) India {time_window_query}',
-        f'"{product}" (hiring OR vacancy OR "job opening" OR drafter OR modeler) (site:linkedin.com/jobs OR site:naukri.com OR site:indeed.com) India {time_window_query}',
+        # --- PRIORITY 1: OFFICIAL GOVERNMENT PROCUREMENT PORTALS ---
+        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR site:etenders.gov.in) India {time_window_query}',
+        f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}',
+        
+        # --- PRIORITY 2: PRIVATE CAPEX & INFRASTRUCTURE WINS ---
         f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant" OR "groundbreaking") India {time_window_query}',
-        f'"{product}" (site:indiamart.com OR "request for proposal" OR "subcontract" OR "design consultancy") India {time_window_query}',
         f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) India {time_window_query}',
+        
+        # --- PRIORITY 3: CONSULTANCY & ARCHITECT EMPANELMENT ---
+        f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy" OR "subcontract") India {time_window_query}',
+        
+        # --- PRIORITY 4: CORPORATE SIGNALS & FUNDING ---
         f'"{product}" ("raises funding" OR "Series A" OR "Series B" OR "acquired by" OR "merger" OR "IPO" OR "DRHP") India {time_window_query}',
-        f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "appointed as" OR "joins as") ("Head of BIM" OR "Chief Architect" OR "VP Engineering" OR "Director Projects") India {time_window_query}'
+        
+        # --- PRIORITY 5: TARGETED HIRING MANDATES ---
+        f'"{product}" (hiring OR vacancy OR "job opening" OR drafter OR modeler) (site:linkedin.com/jobs OR site:naukri.com) India {time_window_query}'
     ]
 
     for q in stream_queries:
