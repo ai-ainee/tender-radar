@@ -4,6 +4,7 @@ import json
 import re
 import time
 import urllib.parse
+import io
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 import xml.etree.ElementTree as ET
@@ -12,13 +13,18 @@ from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 from typing import List
 
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 7.0 (STATE-MAPPED, MULTI-KEY & TELEGRAM SYNCED) ACTIVATED")
+log(">>> ENTERPRISE RADAR 8.0 ACTIVE (OMNI-CHANNEL, MULTI-KEY, PDF OCR, DOUBLE-LOCK)")
 
 # ---------------------------------------------------------------------------
-# 1. Environment Secrets & Config
+# 1. Credentials & Session Config
 # ---------------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -31,7 +37,6 @@ SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
 })
 
 COMMERCIAL_PATTERNS = re.compile(
@@ -39,7 +44,8 @@ COMMERCIAL_PATTERNS = re.compile(
     r"corrigendum|addendum|extension|license|licenses|subscription|renewal|contract|hiring|vacancy|"
     r"drafter|modeler|architect|engineer|job|jobs|capex|expansion|project win|awarded|contractor|"
     r"consultancy|freelance|subcontract|indiamart|rera|ireps|environmental clearance|seiaa|"
-    r"allotted land|dpr|feasibility|empanelment|appointed as|joins as|head of bim|chief architect|director projects)\b",
+    r"allotted land|dpr|feasibility|empanelment|appointed as|joins as|head of bim|chief architect|"
+    r"series a|series b|raises funding|acquired|acquisition|merger|ipo|drhp)\b",
     re.IGNORECASE,
 )
 
@@ -67,11 +73,10 @@ STATE_MAP = {
     'patna': 'Bihar', 'bihar': 'Bihar'
 }
 
-EXPIRED_YEARS_PATTERN = re.compile(r"\b(2018|2019|2020|2021|2022|2023|2024)\b")
+EXPIRED_YEARS_PATTERN = re.compile(r"\b(2018|2019|2020|2021|2022|2023)\b")
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 PHONE_REGEX = re.compile(r"(?:\+91[- ]?)?[6789]\d{9}\b")
-DECISION_MAKER_PATTERNS = re.compile(r"\b(?:Contact|HR|Director|Partner|Principal Architect|Procurement Head|Vice President|Project Director|Lead)[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b")
-VALUE_PATTERNS = re.compile(r"(?:₹|Rs\.?|INR)\s*[\d,]+(?:\.\d+)?\s*(?:Cr(?:ore)?|Lakh|L|K)?\b", re.IGNORECASE)
+VALUE_PATTERNS = re.compile(r"(?:₹|Rs\.?|INR|\$)\s*[\d,]+(?:\.\d+)?\s*(?:Cr(?:ore)?|Lakh|L|K|Million|M|Billion|B)?\b", re.IGNORECASE)
 DEADLINE_PATTERNS = re.compile(r"(?:due|closing|last|end)\s*(?:date|time)?[:\s\-]+(\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})", re.IGNORECASE)
 QUANTITY_PATTERNS = re.compile(r"(\d+)\s*(?:nos|qty|licenses|users|seats|posts|openings|positions|units)\b", re.IGNORECASE)
 EMD_PATTERNS = re.compile(r"(?:emd|earnest money|bid security)[:\s\-]+(?:₹|Rs\.?|INR)?\s*[\d,]+", re.IGNORECASE)
@@ -86,23 +91,17 @@ class APIKeyPool:
         self.current_index = 0
 
     def get_current_key(self):
-        if not self.keys:
-            return None
-        return self.keys[self.current_index]
+        return self.keys[self.current_index] if self.keys else None
 
     def rotate_key(self):
         if not self.keys or len(self.keys) <= 1:
-            log("    [Key Pool] No backup keys available. Exhausted.")
             return False
-        
         old_idx = self.current_index
         self.current_index = (self.current_index + 1) % len(self.keys)
-        
         if self.current_index == 0:
-            log("    [Key Pool] Entire API pool exhausted for this model tier.")
+            log("    [Key Pool] Exhausted all keys in the pool for this pass.")
             return False
-            
-        log(f"    ⚠️ [Quota Limit Hit] Rotated API Key {old_idx + 1} -> Key {self.current_index + 1}")
+        log(f"    ⚠️ [Quota Limit Hit] Switching API Key {old_idx + 1} -> Key {self.current_index + 1}")
         return True
 
     def get_client(self):
@@ -119,25 +118,25 @@ class APIKeyPool:
 KEY_POOL = APIKeyPool()
 
 # ---------------------------------------------------------------------------
-# 3. Pydantic Schemas for AI Outputs
+# 3. Pydantic Structured Outputs
 # ---------------------------------------------------------------------------
 class LeadData(BaseModel):
-    item_index: int = Field(description="The index number of the item provided.")
-    is_lead: bool = Field(description="True if genuine commercial, hiring, or procurement opportunity.")
-    lead_type: str = Field(description="Strictly one of: 'Government / GeM Tender', 'Hiring Mandate', 'Private Capex / Expansion Win', 'Upstream Project Clearance', 'Leadership Move', 'Architect / Consultant Empanelment', 'B2B Sub-Consultancy / Freelance', or 'Non-Lead'.")
-    org: str = Field(description="Name of the hiring company, developer, or government department.")
-    address: str = Field(description="City or local area in India.")
-    state: str = Field(description="The specific Indian State. 'Pan-India' if not specific.")
-    contact_person: str = Field(description="Name of the key decision maker, HR, or officer. 'Not Listed' if absent.")
+    item_index: int = Field(description="The index number of the evaluated item.")
+    is_lead: bool = Field(description="True if this is a commercial lead, hiring mandate, or corporate signal.")
+    lead_type: str = Field(description="Strictly one of: 'Corporate Signal (M&A / Funding)', 'Government / GeM Tender', 'Hiring Mandate', 'Private Capex / Expansion Win', 'Upstream Project Clearance', 'Leadership Move', 'Architect / Consultant Empanelment', 'B2B Sub-Consultancy', or 'Non-Lead'.")
+    org: str = Field(description="Target enterprise, PSU, builder, or hiring entity.")
+    address: str = Field(description="City or district location in India.")
+    state: str = Field(description="Specific Indian State. 'Pan-India' if not specific.")
+    contact_person: str = Field(description="Identified decision maker or HR contact. 'Not Listed' if absent.")
     email: str = Field(description="Email address. 'Not Listed' if absent.")
     phone: str = Field(description="Phone number. 'Not Listed' if absent.")
-    estimated_value: str = Field(description="Financial value, budget, or 'Not Disclosed'.")
-    quantity: str = Field(description="Scope, number of licenses, or positions.")
-    deadline: str = Field(description="Closing date, deadline, or 'Immediate / Open'.")
-    emd_fee: str = Field(description="EMD/Tender fee amount. STRICTLY 'N/A' if not a government tender.")
+    estimated_value: str = Field(description="Contract budget, capex value, or 'Not Disclosed'.")
+    quantity: str = Field(description="Required seats, units, or scope volume.")
+    deadline: str = Field(description="Closing deadline, or 'Immediate / Open'.")
+    emd_fee: str = Field(description="EMD/Tender fee. STRICTLY 'N/A' if private or non-governmental.")
     priority: str = Field(description="Strictly one of: '🔥 High Urgency', '⚡ Warm', or '🌱 Strategic Nurture'.")
-    eligibility: str = Field(description="Vendor or candidate requirements/qualifications.")
-    summary: str = Field(description="A clean, one-sentence executive summary of the requirement.")
+    eligibility: str = Field(description="Required vendor criteria, technical certifications, or strategic note.")
+    summary: str = Field(description="A clean, one-sentence executive summary of the commercial need.")
 
 class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
@@ -201,22 +200,20 @@ def is_item_recent(pubdate_str, max_days):
         return True
 
 def push_to_google_sheet(payload):
-    """Pushes to Google Sheet and returns True if it's a NEW lead, False if duplicate."""
     if not GOOGLE_SHEET_WEBHOOK:
-        return True 
+        return True
     try:
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
         try:
-            response_data = res.json()
-            if response_data.get("result") == "duplicate_ignored":
-                log("  -> [Double-Lock] Sheet caught a duplicate. Skipping Telegram.")
+            if res.json().get("result") == "duplicate_ignored":
+                log("  -> [Double-Lock] Sheet identified an existing link. Suppressing alert.")
                 return False
         except Exception:
             pass
-        log(f"  -> Sheet updated! Status: {res.status_code}")
+        log(f"  -> Google Sheet updated successfully. Status: {res.status_code}")
         return True
     except Exception as e:
-        log(f"  -> Sheet Push Error: {e}")
+        log(f"  -> Google Sheet Webhook Error: {e}")
         return True
 
 def send_telegram(text):
@@ -231,42 +228,82 @@ def send_telegram(text):
     }
     try:
         res = SESSION.post(url, json=payload, timeout=10)
-        log(f"  -> Telegram alert sent! Status: {res.status_code}")
+        log(f"  -> Telegram alert dispatched. Status: {res.status_code}")
     except Exception as e:
-        log(f"  -> Telegram Send Error: {e}")
+        log(f"  -> Telegram Dispatch Error: {e}")
 
 # ---------------------------------------------------------------------------
-# 5. Deep HTML Scraper
+# 5. In-Memory PDF Reader & Deep Web Scraper
 # ---------------------------------------------------------------------------
-def deep_scrape_page(url):
+def deep_scrape_content(url):
     try:
-        response = SESSION.get(url, timeout=7)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            for script in soup(["script", "style", "noscript", "header", "footer"]):
-                script.extract()
-            text = soup.get_text(separator=' ', strip=True)
-            text = re.sub(r'\s+', ' ', text)
-            return text[:15000]
-    except Exception as e:
+        response = SESSION.get(url, timeout=10)
+        if response.status_code != 200:
+            return ""
+
+        # Parse PDFs in-memory (handles government specifications & financial filings)
+        if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
+            if not PdfReader:
+                return "[PDF Detected - In-memory parsing active]"
+            log(f"    [Reading attached PDF specification: {url[:60]}...]")
+            pdf = PdfReader(io.BytesIO(response.content))
+            text = ""
+            for page in pdf.pages[:5]:
+                text += (page.extract_text() or "") + " "
+            return re.sub(r'\s+', ' ', text)[:15000]
+
+        # Parse Clean HTML text
+        soup = BeautifulSoup(response.content, 'html.parser')
+        for script in soup(["script", "style", "noscript", "header", "footer"]):
+            script.extract()
+        text = soup.get_text(separator=' ', strip=True)
+        return re.sub(r'\s+', ' ', text)[:15000]
+    except Exception:
         pass
     return ""
 
 # ---------------------------------------------------------------------------
-# 6. Multichannel Fetcher
+# 6. Direct CPPP Native XML Harvester
+# ---------------------------------------------------------------------------
+def fetch_direct_cppp_tenders(product):
+    url = "https://eprocure.gov.in/cppp/latestactivetenders/1/xml"
+    items = []
+    try:
+        resp = SESSION.get(url, timeout=10)
+        if resp.status_code == 200:
+            root = ET.fromstring(resp.content)
+            for tender in root.findall(".//Tender")[:40]:
+                title = tender.findtext("Title", "")
+                link = tender.findtext("TenderURL", "")
+                desc = tender.findtext("Description", "")
+                if product.lower() in title.lower() or product.lower() in desc.lower():
+                    items.append({
+                        "title": f"[DIRECT CPPP TENDER] {title}",
+                        "link": link,
+                        "summary": desc,
+                        "product": product,
+                        "raw_pubdate": datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+                    })
+    except Exception:
+        pass
+    return items
+
+# ---------------------------------------------------------------------------
+# 7. Multi-Stream Harvester
 # ---------------------------------------------------------------------------
 def fetch_all_opportunities(product, time_window_query, max_age_days):
+    all_items = fetch_direct_cppp_tenders(product)
+    seen_in_scan = set([i["link"] for i in all_items])
+
     stream_queries = [
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR "tender notice" OR corrigendum) India {time_window_query}',
         f'"{product}" (hiring OR vacancy OR "job opening" OR drafter OR modeler) (site:linkedin.com/jobs OR site:naukri.com OR site:indeed.com) India {time_window_query}',
         f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant" OR "groundbreaking") India {time_window_query}',
         f'"{product}" (site:indiamart.com OR "request for proposal" OR "subcontract" OR "design consultancy") India {time_window_query}',
         f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) India {time_window_query}',
+        f'"{product}" ("raises funding" OR "Series A" OR "Series B" OR "acquired by" OR "merger" OR "IPO" OR "DRHP") India {time_window_query}',
         f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "appointed as" OR "joins as") ("Head of BIM" OR "Chief Architect" OR "VP Engineering" OR "Director Projects") India {time_window_query}'
     ]
-
-    all_items = []
-    seen_in_scan = set()
 
     for q in stream_queries:
         encoded = urllib.parse.quote(q)
@@ -296,12 +333,12 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
                             "raw_pubdate": raw_pubdate
                         })
         except Exception as e:
-            log(f"Fetch notice for query: {e}")
+            log(f"Feed search note: {e}")
 
     return all_items
 
 # ---------------------------------------------------------------------------
-# 7. 3-Tier AI Engine (Multi-Key Managed)
+# 8. 3-Tier AI Cascade (Pro -> Flash -> Local)
 # ---------------------------------------------------------------------------
 def invoke_model_with_key_rotation(prompt, target_model):
     attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
@@ -323,21 +360,20 @@ def invoke_model_with_key_rotation(prompt, target_model):
                 ),
             )
             return json.loads(response.text)
-            
         except Exception as err:
             err_msg = str(err).lower()
             if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
-                log(f"    [429 Quota Exceeded on {target_model} via Key {KEY_POOL.current_index + 1}]")
+                log(f"    [429 Quota Exceeded on {target_model} with Key {KEY_POOL.current_index + 1}]")
                 has_rotated = KEY_POOL.rotate_key()
                 attempts_left -= 1
                 if not has_rotated:
                     break
             elif "503" in err_msg or "timeout" in err_msg:
-                log(f"    [503 Server Error / Timeout. Retrying in 3s...]")
+                log(f"    [503 Server Error/Timeout. Retrying in 3s...]")
                 time.sleep(3)
                 attempts_left -= 1
             else:
-                log(f"    [{target_model} Format/Execution Error: {err}]")
+                log(f"    [{target_model} Execution Error: {err}]")
                 break
 
     return None
@@ -349,42 +385,38 @@ def try_gemini_analysis(batch):
     items_block = ""
     for idx, it in enumerate(batch):
         clean_title = it['title'].replace('"', "'")
-        clean_desc = re.sub(r"<[^>]+>", " ", it['summary']).replace('"', "'")
-        
-        deep_text = deep_scrape_page(it['real_link'])
-        context_payload = deep_text if len(deep_text) > 500 else clean_desc
-        
-        items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nReal Link: {it['real_link']}\nPage Text/Snippet: {context_payload}\n"
+        deep_text = deep_scrape_content(it['real_link'])
+        context_payload = deep_text if len(deep_text) > 500 else it['summary']
+        items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nLink: {it['real_link']}\nData: {context_payload}\n"
 
     prompt = f"""
     You are an elite enterprise software sales strategist and Indian commercial intelligence director.
-    Analyze the following scraped webpage data for commercial opportunities.
-    Extract deep insights, hidden emails, deadlines, states, and project values.
+    Analyze the following scraped webpage and PDF data.
+    Extract direct deals, procurement tenders, hiring mandates, and macro corporate signals (Funding, Acquisitions, RERA Clearances).
     
     Data to process:
     {items_block}
     """
 
-    # TIER 1: Attempt Gemini 2.5 PRO across all keys
+    # TIER 1: Attempt Gemini 2.5 PRO across key pool
     log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
     pro_result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-pro')
     if pro_result and "leads" in pro_result:
         return pro_result["leads"]
-        
-    # Reset key index tracker so Flash starts fresh from Key 1
+
     KEY_POOL.current_index = 0
 
-    # TIER 2: Fallback to Gemini 3.6 FLASH across all keys
+    # TIER 2: Fallback to Gemini 3.6 FLASH across key pool
     log("    [Tier 1 Exhausted. Invoking Tier 2: Gemini 3.6 Flash...]")
     flash_result = invoke_model_with_key_rotation(prompt, 'gemini-3.6-flash')
     if flash_result and "leads" in flash_result:
         return flash_result["leads"]
 
-    log("    [All AI Tiers & Keys Exhausted. Dropping to Local Pipeline.]")
+    log("    [All AI Tiers & Keys Exhausted. Dropping to Tier 3 Local Engine.]")
     return None
 
 # ---------------------------------------------------------------------------
-# 8. Local Fallback Engine (Tier 3 Failsafe)
+# 9. Local Deterministic Failsafe (Tier 3)
 # ---------------------------------------------------------------------------
 def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
@@ -404,6 +436,8 @@ def extract_lead_locally(item, real_url):
         ltype = "💼 Hiring Mandate"
     elif any(k in lower_text for k in ["capex", "project win", "awarded", "epc", "groundbreaking"]):
         ltype = "🏗 Private Capex / Expansion Win"
+    elif any(k in lower_text for k in ["raises funding", "series a", "acquired by", "merger"]):
+        ltype = "Corporate Signal (M&A / Funding)"
     else:
         ltype = "🤝 B2B Sub-Consultancy"
 
@@ -430,15 +464,15 @@ def extract_lead_locally(item, real_url):
     deadline = deadline_match.group(0) if deadline_match else "Open / Immediate"
 
     emd_fee = "N/A"
-    eligibility = "Standard B2B Terms"
+    eligibility = "Standard Commercial Terms"
     if is_govt:
         emd_match = EMD_PATTERNS.search(text)
         emd_fee = emd_match.group(0) if emd_match else "Refer Tender Doc"
-        eligibility = "Partner Eligibility Required"
+        eligibility = "Authorized OEM Partner Required"
 
     priority = "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm"
     website = extract_base_website(real_url)
-    org_guess = item["title"].split("-")[-1].strip() if "-" in item["title"] else "Commercial Buyer"
+    org_guess = item["title"].split("-")[-1].strip() if "-" in item["title"] else "Commercial Enterprise"
 
     clean_summary = re.sub(r"<[^>]+>", " ", item['summary']).strip()
     return {
@@ -463,28 +497,28 @@ def extract_lead_locally(item, real_url):
     }
 
 # ---------------------------------------------------------------------------
-# 9. Main Pipeline Orchestration
+# 10. Pipeline Orchestrator
 # ---------------------------------------------------------------------------
 def main():
     if not KEY_POOL.keys:
-        log("[Init Warning] No API Keys detected in Environment Secrets.")
+        log("[Warning] No API Keys configured in Secrets.")
 
     products = load_products()
     seen = load_seen()
-    
+
     is_initial_bootstrap = len(seen) < 10
     if is_initial_bootstrap:
-        log("--> Mode: INITIAL BOOTSTRAP SWEEP (Scanning past 14 days)...")
+        log("--> Mode: BOOTSTRAP SWEEP (Scanning past 14 days)...")
         time_query = "when:14d"
         max_age = 14
     else:
-        log("--> Mode: ROUTINE HOURLY RADAR (Scanning sliding 3-day window)...")
+        log("--> Mode: ROUTINE RADAR (Scanning sliding 3-day window)...")
         time_query = "when:3d"
         max_age = 3
 
     candidates = []
     for prod in products:
-        log(f"Sweeping streams for: {prod}")
+        log(f"Sweeping Omni-Channel Streams for: {prod}")
         items = fetch_all_opportunities(prod, time_query, max_age)
         for item in items:
             if item["link"] in seen:
@@ -497,20 +531,20 @@ def main():
                 item["real_link"] = unwrap_destination_url(item["link"])
                 candidates.append(item)
 
-    log(f"Total actionable leads identified: {len(candidates)}")
+    log(f"Total actionable signals discovered: {len(candidates)}")
     if not candidates:
-        log("No fresh opportunities detected across channels this cycle.")
+        log("No fresh opportunities surfaced across channels this run.")
         return
 
     leads_recorded = 0
     batch_size = 10
-    
+
     for i in range(0, len(candidates), batch_size):
         batch = candidates[i:i + batch_size]
         log(f"Processing batch {i//batch_size + 1}...")
-        
+
         evaluations = try_gemini_analysis(batch)
-        
+
         if evaluations:
             for res_dict in evaluations:
                 idx = res_dict.get("item_index")
@@ -519,21 +553,21 @@ def main():
                     dispatch_lead(item, res_dict)
                     leads_recorded += 1
         else:
-            log("--> Processing batch via Tier 3 Local Engine (Failsafe)...")
+            log("--> Processing batch via Tier 3 Local Engine...")
             for item in batch:
                 res_dict = extract_lead_locally(item, item["real_link"])
                 if res_dict.get("is_lead") is True:
                     dispatch_lead(item, res_dict)
                     leads_recorded += 1
 
-    log(f"\nCompleted run. Total sales leads processed and alerted: {leads_recorded}")
+    log(f"\nRun completed. Fresh actionable leads pushed: {leads_recorded}")
 
 # ---------------------------------------------------------------------------
-# 10. Lead Dispatcher (Double-Lock Protected)
+# 11. Lead Dispatcher (Double-Lock & Telegram Sync)
 # ---------------------------------------------------------------------------
 def dispatch_lead(item, data):
     prod = item["product"]
-    org = data.get("org", "Enterprise Buyer")
+    org = data.get("org", "Commercial Buyer")
     address = data.get("address", "India")
     state = data.get("state", "Pan-India")
     real_link = item.get("real_link", item.get("clean_link", item["link"]))
@@ -554,11 +588,10 @@ def dispatch_lead(item, data):
     published_date = format_pubdate(item.get("raw_pubdate", ""))
     appearance_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    log(f"\n>>> [CONFIRMED COMMERCIAL LEAD - {priority}]: {item['title'][:70]}")
-    log(f"    Category: {ltype} | Org: {org} | Location: {address}, {state}")
+    log(f"\n>>> [CONFIRMED {priority}]: {item['title'][:70]}")
+    log(f"    Category: {ltype} | Org: {org} | State: {state}")
 
-    # Push to Google Sheet and check for duplicates
-    is_new_lead = push_to_google_sheet({
+    is_new = push_to_google_sheet({
         "appearance_date": appearance_date,
         "published_date": published_date,
         "deadline": deadline,
@@ -580,28 +613,29 @@ def dispatch_lead(item, data):
         "link": real_link,
     })
 
-    # Only send Telegram alert if the Google Sheet firewall confirms it is not a duplicate
-    if is_new_lead:
+    if is_new:
         emd_line = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != "N/A" else ""
-        eligibility_label = "Vendor Eligibility" if "Government" in ltype else "Qualification / Context"
+        eligibility_label = "Vendor Eligibility" if "Government" in ltype else "Strategic Relevance"
 
         msg = (
-            f"🚨 *Commercial Opportunity Alert!*\n\n"
+            f"🚨 *Intelligence Signal Alert!*\n\n"
             f"🎯 *Priority Level:* {priority}\n"
             f"🏷 *Category:* {ltype}\n"
-            f"🏢 *Enterprise / Buyer:* {org}\n"
-            f"📦 *Product / Trigger:* {prod} ({quantity})\n"
+            f"🏢 *Entity / Buyer:* {org}\n"
+            f"📦 *Product / Subject:* {prod} ({quantity})\n"
             f"💰 *Budget / Value:* {estimated_value}\n"
-            f"⏳ *Deadline:* `{deadline}`\n"
+            f"⏳ *Key Deadline / Date:* `{deadline}`\n"
             f"{emd_line}"
             f"📍 *Location:* {address}, {state}\n"
             f"📅 *Published:* {published_date}\n"
-            f"👤 *Contact:* {contact}\n"
+            f"⏱ *Discovered:* {appearance_date}\n"
+            f"👤 *Stakeholder / Contact:* {contact}\n"
             f"📧 *Email:* {email}\n"
             f"📞 *Phone:* {phone}\n"
             f"📝 *Sales Summary:* {summary}\n"
-            f"📋 *{eligibility_label}:* {eligibility}\n\n"
-            f"🔗 [Open Direct Opportunity Link]({real_link})"
+            f"📋 *{eligibility_label}:* {eligibility}\n"
+            f"🌐 *Portal:* {website}\n\n"
+            f"🔗 [Open Original Document Link]({real_link})"
         )
         send_telegram(msg)
 
