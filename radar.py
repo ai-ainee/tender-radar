@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.5 ACTIVE (EXPANDED STATE-CITY MAPPING)")
+log(">>> ENTERPRISE RADAR 9.6 ACTIVE (MANUFACTURING/CONSTRUCTION, GOV ROUTING, CITY-MAPPING)")
 
 # ---------------------------------------------------------------------------
 # 1. Credentials & Session Config
@@ -56,7 +56,7 @@ LOCATION_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Comprehensive city-to-state mapping ensuring all regional hubs route accurately
+# Comprehensive city-to-state mapping ensuring industrial hubs route accurately
 STATE_MAP = {
     # Delhi & NCR
     'new delhi': 'Delhi', 'delhi': 'Delhi', 'ncr': 'Delhi/NCR',
@@ -98,7 +98,7 @@ STATE_MAP = {
     'patna': 'Bihar', 'gaya': 'Bihar', 'bihar': 'Bihar',
 
     # Kerala & Rajasthan
-    'kochi': 'Cochin', 'thiruvananthapuram': 'Kerala', 'kozhikode': 'Kerala', 'kerala': 'Kerala',
+    'kochi': 'Kerala', 'thiruvananthapuram': 'Kerala', 'kozhikode': 'Kerala', 'kerala': 'Kerala',
     'jaipur': 'Rajasthan', 'jodhpur': 'Rajasthan', 'udaipur': 'Rajasthan', 'rajasthan': 'Rajasthan',
 
     # Madhya Pradesh, Haryana, Punjab, Others
@@ -118,6 +118,9 @@ DEADLINE_PATTERNS = re.compile(r"(?:due|closing|last|end)\s*(?:date|time)?[:\s\-
 QUANTITY_PATTERNS = re.compile(r"(\d+)\s*(?:nos|qty|licenses|users|seats|posts|openings|positions|units)\b", re.IGNORECASE)
 EMD_PATTERNS = re.compile(r"(?:emd|earnest money|bid security)[:\s\-]+(?:₹|Rs\.?|INR)?\s*[\d,]+", re.IGNORECASE)
 
+# ---------------------------------------------------------------------------
+# 2. Multi-Key API Pool Manager
+# ---------------------------------------------------------------------------
 class APIKeyPool:
     def __init__(self):
         raw_keys = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY") or ""
@@ -147,6 +150,9 @@ class APIKeyPool:
 
 KEY_POOL = APIKeyPool()
 
+# ---------------------------------------------------------------------------
+# 3. Pydantic Structured Outputs
+# ---------------------------------------------------------------------------
 class LeadData(BaseModel):
     item_index: int = Field(description="The index number of the evaluated item.")
     is_lead: bool = Field(description="True if this is a commercial lead, hiring mandate, or corporate signal.")
@@ -168,6 +174,9 @@ class LeadData(BaseModel):
 class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
 
+# ---------------------------------------------------------------------------
+# 4. Utilities, Sheet Push, and Telegram Routing
+# ---------------------------------------------------------------------------
 def load_products():
     if not os.path.exists(PRODUCTS_FILE): return ["AutoCAD", "Revit", "Civil 3D"]
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
@@ -264,15 +273,20 @@ def send_telegram(text, target_state="Pan-India"):
     except Exception as e:
         log(f"  -> Telegram Dispatch Error: {e}")
 
+# ---------------------------------------------------------------------------
+# 5. In-Memory PDF Reader & Deep Web Scraper
+# ---------------------------------------------------------------------------
 def deep_scrape_content(url):
     try:
         response = SESSION.get(url, timeout=10)
         if response.status_code != 200: return ""
+
         if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
             if not PdfReader: return "[PDF Detected - In-memory parsing active]"
             pdf = PdfReader(io.BytesIO(response.content))
             text = "".join([(page.extract_text() or "") + " " for page in pdf.pages[:5]])
             return re.sub(r'\s+', ' ', text)[:15000]
+
         soup = BeautifulSoup(response.content, 'html.parser')
         for script in soup(["script", "style", "noscript", "header", "footer"]): script.extract()
         return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:15000]
@@ -280,6 +294,9 @@ def deep_scrape_content(url):
         pass
     return ""
 
+# ---------------------------------------------------------------------------
+# 6. Direct CPPP Native XML Harvester
+# ---------------------------------------------------------------------------
 def fetch_direct_cppp_tenders(product):
     url = "https://eprocure.gov.in/cppp/latestactivetenders/1/xml"
     items = []
@@ -300,6 +317,9 @@ def fetch_direct_cppp_tenders(product):
         pass
     return items
 
+# ---------------------------------------------------------------------------
+# 7. Multi-Stream Harvester (Government Tenders Prioritized)
+# ---------------------------------------------------------------------------
 def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
     seen_in_scan = set([i["link"] for i in all_items])
@@ -331,6 +351,9 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
             pass
     return all_items
 
+# ---------------------------------------------------------------------------
+# 8. 3-Tier AI Cascade with Enhanced Contact Extraction
+# ---------------------------------------------------------------------------
 def invoke_model_with_key_rotation(prompt, target_model):
     attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
     while attempts_left > 0:
@@ -378,6 +401,9 @@ def try_gemini_analysis(batch):
     
     return None
 
+# ---------------------------------------------------------------------------
+# 9. Local Deterministic Failsafe (Tier 3) with Anti-Junk & Negative Filters
+# ---------------------------------------------------------------------------
 def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
     lower_text = text.lower()
@@ -427,6 +453,9 @@ def extract_lead_locally(item, real_url):
         "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180], "clean_link": real_url
     }
 
+# ---------------------------------------------------------------------------
+# 10. Pipeline Orchestrator & Dispatcher
+# ---------------------------------------------------------------------------
 def main():
     products = load_products()
     negatives = load_negatives()
@@ -464,7 +493,6 @@ def main():
             for res_dict in evaluations:
                 idx = res_dict.get("item_index")
                 if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
-                    # Enforce programmatic fallback state alignment if city was extracted
                     addr = res_dict.get("address", "").lower()
                     if addr in STATE_MAP:
                         res_dict["state"] = STATE_MAP[addr]
@@ -483,7 +511,6 @@ def dispatch_lead(item, data):
     address = data.get("address", "India")
     state = data.get("state", "Pan-India")
     
-    # Force alignment if state is generic but address points to a known city
     if state.lower() in ["pan-india", "india", "not listed", ""] and address.lower() in STATE_MAP:
         state = STATE_MAP[address.lower()]
 
