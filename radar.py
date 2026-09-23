@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.0 ACTIVE (STATE-ROUTING, OMNI-CHANNEL, PDF OCR, DOUBLE-LOCK)")
+log(">>> ENTERPRISE RADAR 9.1 ACTIVE (STATE-ROUTING, OMNI-CHANNEL, PDF OCR, DOUBLE-LOCK)")
 
 # ---------------------------------------------------------------------------
 # 1. Credentials & Session Config
@@ -338,7 +338,9 @@ def try_gemini_analysis(batch):
     for idx, it in enumerate(batch):
         deep_text = deep_scrape_content(it['real_link'])
         context_payload = deep_text if len(deep_text) > 500 else it['summary']
-        items_block += f"\n--- ITEM {idx} ---\nTitle: {it['title'].replace('"', "'")}\nLink: {it['real_link']}\nData: {context_payload}\n"
+        clean_title = it['title'].replace('"', "'")
+        real_link = it['real_link']
+        items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nLink: {real_link}\nData: {context_payload}\n"
 
     prompt = f"""
     You are an elite enterprise software sales strategist and Indian commercial intelligence director.
