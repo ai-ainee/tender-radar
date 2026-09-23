@@ -65,10 +65,11 @@ jobs:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
         run: python radar.py
 
-      - name: Commit updated seen links
+      - name: Commit and Push seen links
         run: |
           git config --global user.name "LeadRadarBot"
           git config --global user.email "bot@users.noreply.github.com"
+          git pull --rebase origin main
           git add seen_links.txt
-          git commit -m "Update seen links [skip ci]" || echo "No changes to seen_links.txt"
-          git push
+          git commit -m "Update seen links [skip ci]" || exit 0
+          git push origin main
