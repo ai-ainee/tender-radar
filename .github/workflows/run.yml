@@ -2,9 +2,13 @@ name: Indian Commercial Radar
 
 on:
   schedule:
-    # 02:30 UTC to 14:30 UTC = 08:00 AM to 08:00 PM IST
+    # Runs at minute 30 past every hour from 02:00 UTC to 14:00 UTC (08:00 AM to 08:00 PM IST)
     - cron: '30 2-14 * * *'
   workflow_dispatch:
+
+# CRITICAL FOR AUTOMATION: Allows the bot to save seen_links.txt back to the repository
+permissions:
+  contents: write 
 
 jobs:
   scan-and-alert:
