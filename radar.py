@@ -21,15 +21,12 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 8.1 ACTIVE (OMNI-CHANNEL, URL-UNMASKER, PDF OCR, DOUBLE-LOCK)")
+log(">>> ENTERPRISE RADAR 9.0 ACTIVE (STATE-ROUTING, OMNI-CHANNEL, PDF OCR, DOUBLE-LOCK)")
 
 # ---------------------------------------------------------------------------
 # 1. Credentials & Session Config
 # ---------------------------------------------------------------------------
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
-
 PRODUCTS_FILE = "products.txt"
 SEEN_FILE = "seen_links.txt"
 
@@ -67,8 +64,7 @@ STATE_MAP = {
     'noida': 'Uttar Pradesh', 'lucknow': 'Uttar Pradesh', 'uttar pradesh': 'Uttar Pradesh',
     'gurgaon': 'Haryana', 'gurugram': 'Haryana', 'haryana': 'Haryana',
     'jaipur': 'Rajasthan', 'rajasthan': 'Rajasthan',
-    'chandigarh': 'Chandigarh',
-    'kochi': 'Kerala', 'kerala': 'Kerala',
+    'chandigarh': 'Chandigarh', 'kochi': 'Kerala', 'kerala': 'Kerala',
     'bhopal': 'Madhya Pradesh', 'indore': 'Madhya Pradesh', 'madhya pradesh': 'Madhya Pradesh',
     'patna': 'Bihar', 'bihar': 'Bihar'
 }
@@ -94,20 +90,16 @@ class APIKeyPool:
         return self.keys[self.current_index] if self.keys else None
 
     def rotate_key(self):
-        if not self.keys or len(self.keys) <= 1:
-            return False
+        if not self.keys or len(self.keys) <= 1: return False
         old_idx = self.current_index
         self.current_index = (self.current_index + 1) % len(self.keys)
-        if self.current_index == 0:
-            log("    [Key Pool] Exhausted all keys in the pool for this pass.")
-            return False
-        log(f"    ⚠️ [Quota Limit Hit] Switching API Key {old_idx + 1} -> Key {self.current_index + 1}")
+        if self.current_index == 0: return False
+        log(f"    ⚠️ [Quota Limit] Switching API Key {old_idx + 1} -> Key {self.current_index + 1}")
         return True
 
     def get_client(self):
         key = self.get_current_key()
-        if not key:
-            return None
+        if not key: return None
         try:
             from google import genai
             return genai.Client(api_key=key)
@@ -133,20 +125,19 @@ class LeadData(BaseModel):
     estimated_value: str = Field(description="Contract budget, capex value, or 'Not Disclosed'.")
     quantity: str = Field(description="Required seats, units, or scope volume.")
     deadline: str = Field(description="Closing deadline, or 'Immediate / Open'.")
-    emd_fee: str = Field(description="EMD/Tender fee. STRICTLY 'N/A' if private or non-governmental.")
+    emd_fee: str = Field(description="EMD/Tender fee. STRICTLY 'N/A' if private.")
     priority: str = Field(description="Strictly one of: '🔥 High Urgency', '⚡ Warm', or '🌱 Strategic Nurture'.")
     eligibility: str = Field(description="Required vendor criteria, technical certifications, or strategic note.")
-    summary: str = Field(description="A clean, one-sentence executive summary of the commercial need.")
+    summary: str = Field(description="A clean, one-sentence executive summary.")
 
 class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
 
 # ---------------------------------------------------------------------------
-# 4. Utilities & Push Handlers
+# 4. Utilities, Sheet Push, and Telegram Routing
 # ---------------------------------------------------------------------------
 def load_products():
-    if not os.path.exists(PRODUCTS_FILE):
-        return ["AutoCAD", "Revit", "Civil 3D"]
+    if not os.path.exists(PRODUCTS_FILE): return ["AutoCAD", "Revit", "Civil 3D"]
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
@@ -161,61 +152,42 @@ def save_seen(link):
         f.write(link + "\n")
 
 def unwrap_destination_url(initial_url):
-    """Aggressively unwraps Google News links by reading hidden HTML routing tags."""
-    if "news.google.com" not in initial_url:
-        return initial_url
+    if "news.google.com" not in initial_url: return initial_url
     try:
-        # Use GET instead of HEAD, as Google blocks automated HEAD requests
         resp = SESSION.get(initial_url, allow_redirects=True, timeout=10)
         final_url = resp.url
-        
-        # If Google tries to trap us on a consent or redirect page, scrape the raw HTML
         if "google.com" in final_url:
             match = re.search(r'data-n-url="([^"]+)"', resp.text)
-            if not match:
-                match = re.search(r'<meta[^>]+http-equiv="refresh"[^>]+content="[^"]*url=([^"]+)"', resp.text, re.IGNORECASE)
-                
-            if match:
-                return match.group(1).replace("&amp;", "&")
-                
+            if not match: match = re.search(r'<meta[^>]+http-equiv="refresh"[^>]+content="[^"]*url=([^"]+)"', resp.text, re.IGNORECASE)
+            if match: return match.group(1).replace("&amp;", "&")
         return final_url
-    except Exception as e:
-        log(f"    [Unwrap Error: {e}]")
+    except Exception:
         return initial_url
 
 def extract_base_website(url):
-    try:
-        parsed = urllib.parse.urlparse(url)
-        return f"{parsed.scheme}://{parsed.netloc}"
-    except Exception:
-        return "Web Portal"
+    try: return f"{urllib.parse.urlparse(url).scheme}://{urllib.parse.urlparse(url).netloc}"
+    except Exception: return "Web Portal"
 
 def format_pubdate(pubdate_str):
-    if not pubdate_str:
-        return "Not Listed"
+    if not pubdate_str: return "Not Listed"
     try:
         dt = parsedate_to_datetime(pubdate_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     except Exception:
         return pubdate_str
 
 def is_item_recent(pubdate_str, max_days):
-    if not pubdate_str:
-        return True
+    if not pubdate_str: return True
     try:
         dt = parsedate_to_datetime(pubdate_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        age = datetime.now(timezone.utc) - dt
-        return age <= timedelta(days=max_days)
+        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt) <= timedelta(days=max_days)
     except Exception:
         return True
 
 def push_to_google_sheet(payload):
-    if not GOOGLE_SHEET_WEBHOOK:
-        return True
+    if not GOOGLE_SHEET_WEBHOOK: return True
     try:
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
         try:
@@ -224,25 +196,34 @@ def push_to_google_sheet(payload):
                 return False
         except Exception:
             pass
-        log(f"  -> Google Sheet updated successfully. Status: {res.status_code}")
         return True
     except Exception as e:
-        log(f"  -> Google Sheet Webhook Error: {e}")
+        log(f"  -> Sheet Push Error: {e}")
         return True
 
-def send_telegram(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": False,
-    }
+def send_telegram(text, target_state="Pan-India"):
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    default_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not bot_token: return
+    
+    generic_fallbacks = ["pan-india", "india", "not listed", "", "unknown", "pan india", "rest of india"]
+    clean_state = (target_state or "").strip().lower()
+    
+    active_chat_id = None
+    if clean_state not in generic_fallbacks:
+        safe_state = target_state.upper().replace(" ", "_").replace("-", "_")
+        active_chat_id = os.environ.get(f"TELEGRAM_CHAT_ID_{safe_state}")
+        
+    if not active_chat_id:
+        active_chat_id = default_chat_id
+        
+    if not active_chat_id: return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {"chat_id": active_chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": False}
     try:
         res = SESSION.post(url, json=payload, timeout=10)
-        log(f"  -> Telegram alert dispatched. Status: {res.status_code}")
+        log(f"  -> Telegram dispatched for [{target_state}]. Status: {res.status_code}")
     except Exception as e:
         log(f"  -> Telegram Dispatch Error: {e}")
 
@@ -252,24 +233,17 @@ def send_telegram(text):
 def deep_scrape_content(url):
     try:
         response = SESSION.get(url, timeout=10)
-        if response.status_code != 200:
-            return ""
+        if response.status_code != 200: return ""
 
         if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
-            if not PdfReader:
-                return "[PDF Detected - In-memory parsing active]"
-            log(f"    [Reading attached PDF specification: {url[:60]}...]")
+            if not PdfReader: return "[PDF Detected - In-memory parsing active]"
             pdf = PdfReader(io.BytesIO(response.content))
-            text = ""
-            for page in pdf.pages[:5]:
-                text += (page.extract_text() or "") + " "
+            text = "".join([(page.extract_text() or "") + " " for page in pdf.pages[:5]])
             return re.sub(r'\s+', ' ', text)[:15000]
 
         soup = BeautifulSoup(response.content, 'html.parser')
-        for script in soup(["script", "style", "noscript", "header", "footer"]):
-            script.extract()
-        text = soup.get_text(separator=' ', strip=True)
-        return re.sub(r'\s+', ' ', text)[:15000]
+        for script in soup(["script", "style", "noscript", "header", "footer"]): script.extract()
+        return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:15000]
     except Exception:
         pass
     return ""
@@ -290,11 +264,8 @@ def fetch_direct_cppp_tenders(product):
                 desc = tender.findtext("Description", "")
                 if product.lower() in title.lower() or product.lower() in desc.lower():
                     items.append({
-                        "title": f"[DIRECT CPPP TENDER] {title}",
-                        "link": link,
-                        "summary": desc,
-                        "product": product,
-                        "raw_pubdate": datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+                        "title": f"[DIRECT CPPP TENDER] {title}", "link": link, "summary": desc,
+                        "product": product, "raw_pubdate": datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
                     })
     except Exception:
         pass
@@ -325,106 +296,66 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
             if resp.status_code == 200 and resp.content:
                 root = ET.fromstring(resp.content)
                 for item in root.findall(".//item"):
-                    link = item.findtext("link", "").strip()
-                    title = item.findtext("title", "").strip()
-                    desc = item.findtext("description", "").strip()
-                    raw_pubdate = item.findtext("pubDate", "").strip()
-
-                    if not is_item_recent(raw_pubdate, max_age_days):
-                        continue
-                    if EXPIRED_YEARS_PATTERN.search(title + " " + desc):
-                        continue
-
+                    link, title, desc, raw_pubdate = [item.findtext(k, "").strip() for k in ["link", "title", "description", "pubDate"]]
+                    if not is_item_recent(raw_pubdate, max_age_days) or EXPIRED_YEARS_PATTERN.search(title + " " + desc): continue
                     if link and title and link not in seen_in_scan:
                         seen_in_scan.add(link)
-                        all_items.append({
-                            "title": title,
-                            "link": link,
-                            "summary": desc,
-                            "product": product,
-                            "raw_pubdate": raw_pubdate
-                        })
-        except Exception as e:
-            log(f"Feed search note: {e}")
-
+                        all_items.append({"title": title, "link": link, "summary": desc, "product": product, "raw_pubdate": raw_pubdate})
+        except Exception:
+            pass
     return all_items
 
 # ---------------------------------------------------------------------------
-# 8. 3-Tier AI Cascade (Pro -> Flash -> Local)
+# 8. 3-Tier AI Cascade
 # ---------------------------------------------------------------------------
 def invoke_model_with_key_rotation(prompt, target_model):
     attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
-
     while attempts_left > 0:
         client = KEY_POOL.get_client()
-        if not client:
-            return None
-
+        if not client: return None
         try:
             from google.genai import types
             response = client.models.generate_content(
-                model=target_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=LeadBatchResponse,
-                    temperature=0.1,
-                ),
+                model=target_model, contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LeadBatchResponse, temperature=0.1)
             )
             return json.loads(response.text)
         except Exception as err:
             err_msg = str(err).lower()
             if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
-                log(f"    [429 Quota Exceeded on {target_model} with Key {KEY_POOL.current_index + 1}]")
-                has_rotated = KEY_POOL.rotate_key()
+                if not KEY_POOL.rotate_key(): break
                 attempts_left -= 1
-                if not has_rotated:
-                    break
             elif "503" in err_msg or "timeout" in err_msg:
-                log(f"    [503 Server Error/Timeout. Retrying in 3s...]")
                 time.sleep(3)
                 attempts_left -= 1
             else:
-                log(f"    [{target_model} Execution Error: {err}]")
                 break
-
     return None
 
 def try_gemini_analysis(batch):
-    if not batch:
-        return None
-
+    if not batch: return None
     items_block = ""
     for idx, it in enumerate(batch):
-        clean_title = it['title'].replace('"', "'")
         deep_text = deep_scrape_content(it['real_link'])
         context_payload = deep_text if len(deep_text) > 500 else it['summary']
-        items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nLink: {it['real_link']}\nData: {context_payload}\n"
+        items_block += f"\n--- ITEM {idx} ---\nTitle: {it['title'].replace('"', "'")}\nLink: {it['real_link']}\nData: {context_payload}\n"
 
     prompt = f"""
     You are an elite enterprise software sales strategist and Indian commercial intelligence director.
     Analyze the following scraped webpage and PDF data.
-    Extract direct deals, procurement tenders, hiring mandates, and macro corporate signals (Funding, Acquisitions, RERA Clearances).
-    
-    Data to process:
-    {items_block}
+    Extract direct deals, procurement tenders, hiring mandates, and macro corporate signals.
+    Data to process: {items_block}
     """
 
-    # TIER 1: Attempt Gemini 2.5 PRO across key pool
     log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
     pro_result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-pro')
-    if pro_result and "leads" in pro_result:
-        return pro_result["leads"]
+    if pro_result and "leads" in pro_result: return pro_result["leads"]
 
     KEY_POOL.current_index = 0
-
-    # TIER 2: Fallback to Gemini 3.6 FLASH across key pool
     log("    [Tier 1 Exhausted. Invoking Tier 2: Gemini 3.6 Flash...]")
     flash_result = invoke_model_with_key_rotation(prompt, 'gemini-3.6-flash')
-    if flash_result and "leads" in flash_result:
-        return flash_result["leads"]
-
-    log("    [All AI Tiers & Keys Exhausted. Dropping to Tier 3 Local Engine.]")
+    if flash_result and "leads" in flash_result: return flash_result["leads"]
+    
     return None
 
 # ---------------------------------------------------------------------------
@@ -436,44 +367,24 @@ def extract_lead_locally(item, real_url):
     is_govt = False
 
     if any(k in lower_text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum", "cpwd"]):
-        ltype = "🏛 Government / GeM Tender"
-        is_govt = True
-    elif any(k in lower_text for k in ["appointed as", "joins as", "head of bim", "chief architect"]):
-        ltype = "👤 Leadership Move"
-    elif any(k in lower_text for k in ["environmental clearance", "seiaa", "dpr", "allotted land", "midc"]):
-        ltype = "🌱 Upstream Project Clearance"
-    elif any(k in lower_text for k in ["empanelment", "eoi for architectural"]):
-        ltype = "🤝 Architect Empanelment"
-    elif any(k in lower_text for k in ["naukri", "linkedin", "indeed", "hiring", "drafter", "vacancy"]):
-        ltype = "💼 Hiring Mandate"
-    elif any(k in lower_text for k in ["capex", "project win", "awarded", "epc", "groundbreaking"]):
-        ltype = "🏗 Private Capex / Expansion Win"
-    elif any(k in lower_text for k in ["raises funding", "series a", "acquired by", "merger"]):
-        ltype = "Corporate Signal (M&A / Funding)"
-    else:
-        ltype = "🤝 B2B Sub-Consultancy"
+        ltype = "🏛 Government / GeM Tender"; is_govt = True
+    elif any(k in lower_text for k in ["appointed as", "joins as", "head of bim", "chief architect"]): ltype = "👤 Leadership Move"
+    elif any(k in lower_text for k in ["environmental clearance", "seiaa", "dpr", "allotted land"]): ltype = "🌱 Upstream Project Clearance"
+    elif any(k in lower_text for k in ["empanelment", "eoi for architectural"]): ltype = "🤝 Architect Empanelment"
+    elif any(k in lower_text for k in ["naukri", "linkedin", "indeed", "hiring", "drafter", "vacancy"]): ltype = "💼 Hiring Mandate"
+    elif any(k in lower_text for k in ["capex", "project win", "awarded", "epc", "groundbreaking"]): ltype = "🏗 Private Capex / Expansion Win"
+    elif any(k in lower_text for k in ["raises funding", "series a", "acquired by", "merger"]): ltype = "Corporate Signal (M&A / Funding)"
+    else: ltype = "🤝 B2B Sub-Consultancy"
 
     loc_match = LOCATION_PATTERNS.search(text)
-    if loc_match:
-        address = loc_match.group(0)
-        state = STATE_MAP.get(address.lower(), "Pan-India")
-    else:
-        address = "India"
-        state = "Pan-India"
+    address = loc_match.group(0) if loc_match else "India"
+    state = STATE_MAP.get(address.lower(), "Pan-India")
 
     emails = EMAIL_REGEX.findall(text)
     phones = PHONE_REGEX.findall(text)
-    email = emails[0] if emails else "Not Listed"
-    phone = phones[0] if phones else "Not Listed"
-
     val_match = VALUE_PATTERNS.search(text)
-    estimated_value = val_match.group(0) if val_match else "Not Disclosed"
-
     qty_match = QUANTITY_PATTERNS.search(text)
-    quantity = qty_match.group(0) if qty_match else "1 Package / Position"
-
     deadline_match = DEADLINE_PATTERNS.search(text)
-    deadline = deadline_match.group(0) if deadline_match else "Open / Immediate"
 
     emd_fee = "N/A"
     eligibility = "Standard Commercial Terms"
@@ -483,98 +394,61 @@ def extract_lead_locally(item, real_url):
         eligibility = "Authorized OEM Partner Required"
 
     priority = "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm"
-    org_guess = item["title"].split("-")[-1].strip() if "-" in item["title"] else "Commercial Enterprise"
-
-    clean_summary = re.sub(r"<[^>]+>", " ", item['summary']).strip()
     return {
-        "item_index": 0,
-        "is_lead": True,
-        "lead_type": ltype,
-        "org": org_guess,
-        "address": address,
-        "state": state,
-        "contact_person": "Key Stakeholder",
-        "email": email,
-        "phone": phone,
-        "estimated_value": estimated_value,
-        "quantity": quantity,
-        "deadline": deadline,
-        "emd_fee": emd_fee,
-        "priority": priority,
-        "eligibility": eligibility,
-        "summary": clean_summary[:180],
-        "clean_link": real_url
+        "item_index": 0, "is_lead": True, "lead_type": ltype,
+        "org": item["title"].split("-")[-1].strip() if "-" in item["title"] else "Commercial Enterprise",
+        "address": address, "state": state, "contact_person": "Key Stakeholder",
+        "email": emails[0] if emails else "Not Listed", "phone": phones[0] if phones else "Not Listed",
+        "estimated_value": val_match.group(0) if val_match else "Not Disclosed",
+        "quantity": qty_match.group(0) if qty_match else "1 Package / Position",
+        "deadline": deadline_match.group(0) if deadline_match else "Open / Immediate",
+        "emd_fee": emd_fee, "priority": priority, "eligibility": eligibility,
+        "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180], "clean_link": real_url
     }
 
 # ---------------------------------------------------------------------------
-# 10. Pipeline Orchestrator
+# 10. Pipeline Orchestrator & Dispatcher
 # ---------------------------------------------------------------------------
 def main():
-    if not KEY_POOL.keys:
-        log("[Warning] No API Keys configured in Secrets.")
-
     products = load_products()
     seen = load_seen()
 
-    is_initial_bootstrap = len(seen) < 10
-    if is_initial_bootstrap:
-        log("--> Mode: BOOTSTRAP SWEEP (Scanning past 14 days)...")
-        time_query = "when:14d"
-        max_age = 14
-    else:
-        log("--> Mode: ROUTINE RADAR (Scanning sliding 3-day window)...")
-        time_query = "when:3d"
-        max_age = 3
+    time_query = "when:14d" if len(seen) < 10 else "when:3d"
+    max_age = 14 if len(seen) < 10 else 3
 
     candidates = []
     for prod in products:
-        log(f"Sweeping Omni-Channel Streams for: {prod}")
         items = fetch_all_opportunities(prod, time_query, max_age)
         for item in items:
-            if item["link"] in seen:
-                continue
+            if item["link"] in seen: continue
             seen.add(item["link"])
             save_seen(item["link"])
 
-            text_blob = f"{item['title']} {item['summary']}"
-            if COMMERCIAL_PATTERNS.search(text_blob):
+            if COMMERCIAL_PATTERNS.search(f"{item['title']} {item['summary']}"):
                 item["real_link"] = unwrap_destination_url(item["link"])
                 candidates.append(item)
 
-    log(f"Total actionable signals discovered: {len(candidates)}")
-    if not candidates:
-        log("No fresh opportunities surfaced across channels this run.")
-        return
-
+    if not candidates: return
     leads_recorded = 0
     batch_size = 10
 
     for i in range(0, len(candidates), batch_size):
         batch = candidates[i:i + batch_size]
-        log(f"Processing batch {i//batch_size + 1}...")
-
         evaluations = try_gemini_analysis(batch)
 
         if evaluations:
             for res_dict in evaluations:
                 idx = res_dict.get("item_index")
                 if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
-                    item = batch[idx]
-                    dispatch_lead(item, res_dict)
+                    dispatch_lead(batch[idx], res_dict)
                     leads_recorded += 1
         else:
-            log("--> Processing batch via Tier 3 Local Engine...")
             for item in batch:
                 res_dict = extract_lead_locally(item, item["real_link"])
                 if res_dict.get("is_lead") is True:
                     dispatch_lead(item, res_dict)
                     leads_recorded += 1
 
-    log(f"\nRun completed. Fresh actionable leads pushed: {leads_recorded}")
-
-# ---------------------------------------------------------------------------
-# 11. Lead Dispatcher (Double-Lock & Telegram Sync)
-# ---------------------------------------------------------------------------
 def dispatch_lead(item, data):
     prod = item["product"]
     org = data.get("org", "Commercial Buyer")
@@ -582,56 +456,24 @@ def dispatch_lead(item, data):
     state = data.get("state", "Pan-India")
     real_link = item.get("real_link", item.get("clean_link", item["link"]))
     
-    # FORCED FIX: Guarantee Python cuts the domain direct from the URL, bypassing AI guesses
     website = extract_base_website(real_link)
-    if "google.com" in website:
-        website = "Domain Hidden by Google"
+    if "google.com" in website: website = "Domain Hidden by Google"
 
-    ltype = data.get("lead_type", "Commercial Lead")
-    contact = data.get("contact_person", "Not Listed")
-    email = data.get("email", "Not Listed")
-    phone = data.get("phone", "Not Listed")
-    summary = data.get("summary", item['title'])
+    ltype, contact, email, phone = data.get("lead_type", "Commercial Lead"), data.get("contact_person", "Not Listed"), data.get("email", "Not Listed"), data.get("phone", "Not Listed")
+    summary, estimated_value, quantity, deadline, emd_fee = data.get("summary", item['title']), data.get("estimated_value", "Not Disclosed"), data.get("quantity", "1 Requirement"), data.get("deadline", "Check Notice"), data.get("emd_fee", "N/A")
+    priority, eligibility = data.get("priority", "⚡ Warm"), data.get("eligibility", "N/A")
+    
+    pub_date, app_date = format_pubdate(item.get("raw_pubdate", "")), datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    estimated_value = data.get("estimated_value", "Not Disclosed")
-    quantity = data.get("quantity", "1 Requirement")
-    deadline = data.get("deadline", "Check Notice")
-    emd_fee = data.get("emd_fee", "N/A")
-    priority = data.get("priority", "⚡ Warm")
-    eligibility = data.get("eligibility", "N/A")
-
-    published_date = format_pubdate(item.get("raw_pubdate", ""))
-    appearance_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    log(f"\n>>> [CONFIRMED {priority}]: {item['title'][:70]}")
-    log(f"    Category: {ltype} | Org: {org} | State: {state}")
+    log(f"\n>>> [CONFIRMED {priority}]: {item['title'][:70]}\n    Category: {ltype} | Org: {org} | State: {state}")
 
     is_new = push_to_google_sheet({
-        "appearance_date": appearance_date,
-        "published_date": published_date,
-        "deadline": deadline,
-        "priority": priority,
-        "product": prod,
-        "type": ltype,
-        "estimated_value": estimated_value,
-        "quantity": quantity,
-        "emd_fee": emd_fee,
-        "org": org,
-        "address": address,
-        "state": state,
-        "website": website,
-        "contact_person": contact,
-        "email": email,
-        "phone": phone,
-        "eligibility": eligibility,
-        "summary": summary,
-        "link": real_link,
+        "appearance_date": app_date, "published_date": pub_date, "deadline": deadline, "priority": priority, "product": prod, "type": ltype,
+        "estimated_value": estimated_value, "quantity": quantity, "emd_fee": emd_fee, "org": org, "address": address, "state": state,
+        "website": website, "contact_person": contact, "email": email, "phone": phone, "eligibility": eligibility, "summary": summary, "link": real_link
     })
 
     if is_new:
-        emd_line = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != "N/A" else ""
-        eligibility_label = "Vendor Eligibility" if "Government" in ltype else "Strategic Relevance"
-
         msg = (
             f"🚨 *Intelligence Signal Alert!*\n\n"
             f"🎯 *Priority Level:* {priority}\n"
@@ -640,19 +482,18 @@ def dispatch_lead(item, data):
             f"📦 *Product / Subject:* {prod} ({quantity})\n"
             f"💰 *Budget / Value:* {estimated_value}\n"
             f"⏳ *Key Deadline / Date:* `{deadline}`\n"
-            f"{emd_line}"
+            f"{f'💳 *EMD / Tender Fee:* {emd_fee}\n' if emd_fee != 'N/A' else ''}"
             f"📍 *Location:* {address}, {state}\n"
-            f"📅 *Published:* {published_date}\n"
-            f"⏱ *Discovered:* {appearance_date}\n"
+            f"📅 *Published:* {pub_date}\n"
             f"👤 *Stakeholder / Contact:* {contact}\n"
             f"📧 *Email:* {email}\n"
             f"📞 *Phone:* {phone}\n"
             f"📝 *Sales Summary:* {summary}\n"
-            f"📋 *{eligibility_label}:* {eligibility}\n"
+            f"📋 *Context:* {eligibility}\n"
             f"🌐 *Portal:* {website}\n\n"
             f"🔗 [Open Original Document Link]({real_link})"
         )
-        send_telegram(msg)
+        send_telegram(msg, state)
 
 if __name__ == "__main__":
     main()
