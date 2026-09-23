@@ -28,13 +28,11 @@ Forma for Model Management
 Forma for Preconstruction
 Forma Site Design
 Forma Takeoff
-Fusion
 InfoWorks ICM
 InfoWater Pro
 InfoWorks WS Pro
 InfraWorks
 Inventor
-Inventor CAM
 Navisworks Manage
 Navisworks Simulate
 Product Design & Manufacturing Collection
