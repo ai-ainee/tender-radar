@@ -4,5 +4,167 @@ fashion
 interior styling
 jewelry
 python coding
+coding
 software developer
 Medical
+IT
+Data Science
+tutorial
+how to
+manual
+forum
+reddit
+alternative
+free CAD
+free
+crack
+torrent
+keygen
+warez
+pirated
+nulled
+graphic design
+photoshop
+illustrator
+coreldraw
+logo design
+vector art
+laser cut file
+tattoo design
+woodworking
+cabinet design
+cnc router pattern
+furniture maker
+epoxy table
+3d printing hobby
+assignment help
+final year project
+homework
+thesis help
+tuition
+online classes
+training institute certification
+software engineer
+web developer
+python
+java
+full stack
+data science
+cybersecurity
+cloud computing
+digital marketing
+seo expert
+content writer
+graphic design
+fashion design
+ui/ux design
+game design
+retail sales
+jewelry design
+tattoo design
+healthcare
+hospital management
+doctor
+nurse
+pharmacist
+accountant
+human resources
+hr manager
+banking
+insurance sales
+legal advisor
+upsc
+ias
+ips
+civil services exam
+syllabus
+previous year questions
+exam date
+admit card
+results declared
+current affairs quiz
+share price
+stock target
+dividend
+nse bse
+quarterly results
+financial results net profit
+market capitalization
+online course
+free tutorial
+youtube video
+udemy
+coursera
+certification exam
+training institute
+bootcamp
+rent agreement
+pg accommodation
+flat for rent
+brokerage fee
+tenant
+lease agreement residential
+# --- Exclude Academic, Research & University Noise ---
+research paper
+journal article
+phd thesis
+semester exam
+university admission
+professor recruitment
+campus placement
+engineering college ranking
+car review
+bike launch
+test drive
+smartphone specifications
+consumer electronics
+gadget unboxing
+living room decor
+vastu tips
+home renovation on a budget
+diy furniture
+curtain design
+wall paint color
+interior styling guide
+labor welfare scheme
+pension scheme
+subsidy for farmers
+ration card distribution
+poverty alleviation
+welfare fund allocation
+csr initiative
+corporate social responsibility award
+cultural fest
+sports tournament
+appoints brand ambassador
+annual general meeting agm speech
+foundation day celebration
+nclt bankruptcy proceedings
+winding up petition
+court injunction order
+legal dispute between partners
+defamation case
+game asset
+character modeling
+unreal engine
+unity developer
+vfx artist
+visual effects studio
+3ds max animation
+blender tutorial
+rigging artist
+level design
+cinematic rendering
+fashion design
+garment pattern making
+apparel CAD
+textile printing design
+boutique collection
+clothing line production
+embroidery digitizing
+jewelry CAD
+gemstone setting
+gold smith
+ring design
+pendant modeling
+jewelry manufacturing
