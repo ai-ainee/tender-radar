@@ -15,7 +15,7 @@ from typing import List
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 6.0 (MULTI-KEY POOL & 3-TIER CASCADE) ACTIVATED")
+log(">>> ENTERPRISE RADAR 7.0 (STATE-MAPPED, MULTI-KEY & TELEGRAM SYNCED) ACTIVATED")
 
 # ---------------------------------------------------------------------------
 # 1. Environment Secrets & Config
@@ -98,7 +98,6 @@ class APIKeyPool:
         old_idx = self.current_index
         self.current_index = (self.current_index + 1) % len(self.keys)
         
-        # If we loop back to the start, the entire pool is exhausted
         if self.current_index == 0:
             log("    [Key Pool] Entire API pool exhausted for this model tier.")
             return False
@@ -144,7 +143,7 @@ class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
 
 # ---------------------------------------------------------------------------
-# 4. Utilities & HTML Web Scraper
+# 4. Utilities & Push Handlers
 # ---------------------------------------------------------------------------
 def load_products():
     if not os.path.exists(PRODUCTS_FILE):
@@ -202,13 +201,23 @@ def is_item_recent(pubdate_str, max_days):
         return True
 
 def push_to_google_sheet(payload):
+    """Pushes to Google Sheet and returns True if it's a NEW lead, False if duplicate."""
     if not GOOGLE_SHEET_WEBHOOK:
-        return
+        return True 
     try:
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
+        try:
+            response_data = res.json()
+            if response_data.get("result") == "duplicate_ignored":
+                log("  -> [Double-Lock] Sheet caught a duplicate. Skipping Telegram.")
+                return False
+        except Exception:
+            pass
         log(f"  -> Sheet updated! Status: {res.status_code}")
+        return True
     except Exception as e:
         log(f"  -> Sheet Push Error: {e}")
+        return True
 
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -226,6 +235,9 @@ def send_telegram(text):
     except Exception as e:
         log(f"  -> Telegram Send Error: {e}")
 
+# ---------------------------------------------------------------------------
+# 5. Deep HTML Scraper
+# ---------------------------------------------------------------------------
 def deep_scrape_page(url):
     try:
         response = SESSION.get(url, timeout=7)
@@ -241,7 +253,7 @@ def deep_scrape_page(url):
     return ""
 
 # ---------------------------------------------------------------------------
-# 5. Multichannel Fetcher
+# 6. Multichannel Fetcher
 # ---------------------------------------------------------------------------
 def fetch_all_opportunities(product, time_window_query, max_age_days):
     stream_queries = [
@@ -289,14 +301,9 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
     return all_items
 
 # ---------------------------------------------------------------------------
-# 6. 3-Tier AI Engine (Multi-Key Managed)
+# 7. 3-Tier AI Engine (Multi-Key Managed)
 # ---------------------------------------------------------------------------
 def invoke_model_with_key_rotation(prompt, target_model):
-    """
-    Attempts to generate content with the active model. If a 429 quota or 
-    Resource Exhausted error occurs, it automatically cycles to the next API key.
-    If 503/Timeouts occur, it performs standard retries.
-    """
     attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
 
     while attempts_left > 0:
@@ -377,7 +384,7 @@ def try_gemini_analysis(batch):
     return None
 
 # ---------------------------------------------------------------------------
-# 7. Local Fallback Engine (Tier 3 Failsafe)
+# 8. Local Fallback Engine (Tier 3 Failsafe)
 # ---------------------------------------------------------------------------
 def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
@@ -456,7 +463,7 @@ def extract_lead_locally(item, real_url):
     }
 
 # ---------------------------------------------------------------------------
-# 8. Main Pipeline Orchestration
+# 9. Main Pipeline Orchestration
 # ---------------------------------------------------------------------------
 def main():
     if not KEY_POOL.keys:
@@ -509,20 +516,20 @@ def main():
                 idx = res_dict.get("item_index")
                 if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
                     item = batch[idx]
-                    leads_recorded += 1
                     dispatch_lead(item, res_dict)
+                    leads_recorded += 1
         else:
             log("--> Processing batch via Tier 3 Local Engine (Failsafe)...")
             for item in batch:
                 res_dict = extract_lead_locally(item, item["real_link"])
                 if res_dict.get("is_lead") is True:
-                    leads_recorded += 1
                     dispatch_lead(item, res_dict)
+                    leads_recorded += 1
 
     log(f"\nCompleted run. Total sales leads processed and alerted: {leads_recorded}")
 
 # ---------------------------------------------------------------------------
-# 9. Lead Dispatcher
+# 10. Lead Dispatcher (Double-Lock Protected)
 # ---------------------------------------------------------------------------
 def dispatch_lead(item, data):
     prod = item["product"]
@@ -550,7 +557,8 @@ def dispatch_lead(item, data):
     log(f"\n>>> [CONFIRMED COMMERCIAL LEAD - {priority}]: {item['title'][:70]}")
     log(f"    Category: {ltype} | Org: {org} | Location: {address}, {state}")
 
-    push_to_google_sheet({
+    # Push to Google Sheet and check for duplicates
+    is_new_lead = push_to_google_sheet({
         "appearance_date": appearance_date,
         "published_date": published_date,
         "deadline": deadline,
@@ -572,28 +580,30 @@ def dispatch_lead(item, data):
         "link": real_link,
     })
 
-    emd_line = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != "N/A" else ""
-    eligibility_label = "Vendor Eligibility" if "Government" in ltype else "Qualification / Context"
+    # Only send Telegram alert if the Google Sheet firewall confirms it is not a duplicate
+    if is_new_lead:
+        emd_line = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != "N/A" else ""
+        eligibility_label = "Vendor Eligibility" if "Government" in ltype else "Qualification / Context"
 
-    msg = (
-        f"🚨 *Commercial Opportunity Alert!*\n\n"
-        f"🎯 *Priority Level:* {priority}\n"
-        f"🏷 *Category:* {ltype}\n"
-        f"🏢 *Enterprise / Buyer:* {org}\n"
-        f"📦 *Product / Trigger:* {prod} ({quantity})\n"
-        f"💰 *Budget / Value:* {estimated_value}\n"
-        f"⏳ *Deadline:* `{deadline}`\n"
-        f"{emd_line}"
-        f"📍 *Location:* {address}, {state}\n"
-        f"📅 *Published:* {published_date}\n"
-        f"👤 *Contact:* {contact}\n"
-        f"📧 *Email:* {email}\n"
-        f"📞 *Phone:* {phone}\n"
-        f"📝 *Sales Summary:* {summary}\n"
-        f"📋 *{eligibility_label}:* {eligibility}\n\n"
-        f"🔗 [Open Direct Opportunity Link]({real_link})"
-    )
-    send_telegram(msg)
+        msg = (
+            f"🚨 *Commercial Opportunity Alert!*\n\n"
+            f"🎯 *Priority Level:* {priority}\n"
+            f"🏷 *Category:* {ltype}\n"
+            f"🏢 *Enterprise / Buyer:* {org}\n"
+            f"📦 *Product / Trigger:* {prod} ({quantity})\n"
+            f"💰 *Budget / Value:* {estimated_value}\n"
+            f"⏳ *Deadline:* `{deadline}`\n"
+            f"{emd_line}"
+            f"📍 *Location:* {address}, {state}\n"
+            f"📅 *Published:* {published_date}\n"
+            f"👤 *Contact:* {contact}\n"
+            f"📧 *Email:* {email}\n"
+            f"📞 *Phone:* {phone}\n"
+            f"📝 *Sales Summary:* {summary}\n"
+            f"📋 *{eligibility_label}:* {eligibility}\n\n"
+            f"🔗 [Open Direct Opportunity Link]({real_link})"
+        )
+        send_telegram(msg)
 
 if __name__ == "__main__":
     main()
