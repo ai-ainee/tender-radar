@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.2 ACTIVE (SYNTAX ERROR FIXED)")
+log(">>> ENTERPRISE RADAR 9.3 ACTIVE (STATE-ROUTING, GOvt PRIORITY, ANTI-SPAM)")
 
 # ---------------------------------------------------------------------------
 # 1. Credentials & Session Config
@@ -272,28 +272,19 @@ def fetch_direct_cppp_tenders(product):
     return items
 
 # ---------------------------------------------------------------------------
-# 7. Multi-Stream Harvester (Optimized for Government Tenders & Enterprise Deals)
+# 7. Multi-Stream Harvester (Government Tenders Prioritized)
 # ---------------------------------------------------------------------------
 def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
     seen_in_scan = set([i["link"] for i in all_items])
 
     stream_queries = [
-        # --- PRIORITY 1: OFFICIAL GOVERNMENT PROCUREMENT PORTALS ---
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR site:etenders.gov.in) India {time_window_query}',
         f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}',
-        
-        # --- PRIORITY 2: PRIVATE CAPEX & INFRASTRUCTURE WINS ---
         f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant" OR "groundbreaking") India {time_window_query}',
         f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) India {time_window_query}',
-        
-        # --- PRIORITY 3: CONSULTANCY & ARCHITECT EMPANELMENT ---
         f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy" OR "subcontract") India {time_window_query}',
-        
-        # --- PRIORITY 4: CORPORATE SIGNALS & FUNDING ---
         f'"{product}" ("raises funding" OR "Series A" OR "Series B" OR "acquired by" OR "merger" OR "IPO" OR "DRHP") India {time_window_query}',
-        
-        # --- PRIORITY 5: TARGETED HIRING MANDATES ---
         f'"{product}" (hiring OR vacancy OR "job opening" OR drafter OR modeler) (site:linkedin.com/jobs OR site:naukri.com) India {time_window_query}'
     ]
 
@@ -315,7 +306,7 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
     return all_items
 
 # ---------------------------------------------------------------------------
-# 8. 3-Tier AI Cascade
+# 8. 3-Tier AI Cascade with Enhanced Contact Extraction
 # ---------------------------------------------------------------------------
 def invoke_model_with_key_rotation(prompt, target_model):
     attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
@@ -351,13 +342,7 @@ def try_gemini_analysis(batch):
         real_link = it['real_link']
         items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nLink: {real_link}\nData: {context_payload}\n"
 
-   prompt = f"""
-    You are an elite enterprise software sales strategist and Indian commercial intelligence director.
-    Thoroughly analyze the following scraped webpage text and PDF content. 
-    EXTRACT ALL AVAILABLE CONTACT INTELLIGENCE: Look closely for any hidden or explicit contact person names, HR managers, procurement officers, email addresses, phone numbers, and exact company/organization names. If an email or phone number appears anywhere in the text, you MUST extract it. Do not leave them as 'Not Listed' if they exist in the data text below.
-    
-    Data to process: {items_block}
-    """
+    prompt = f"You are an elite enterprise software sales strategist and Indian commercial intelligence director.\nThoroughly analyze the following scraped webpage text and PDF content.\nEXTRACT ALL AVAILABLE CONTACT INTELLIGENCE: Look closely for any hidden or explicit contact person names, HR managers, procurement officers, email addresses, phone numbers, and exact company/organization names. If an email or phone number appears anywhere in the text, you MUST extract it.\n\nData to process: {items_block}"
 
     log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
     pro_result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-pro')
@@ -377,7 +362,6 @@ def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
     lower_text = text.lower()
     
-    # IMMEDIATE JUNK / FOREIGN FILTER: Drop international or spammy listings
     foreign_markers = ["singapore", "united states", "usa", " uk ", "canada", "dubai", "uae", "australia", "germany", " 幸运飞车", "등기부등본"]
     if any(m in lower_text for m in foreign_markers):
         return {"is_lead": False}
