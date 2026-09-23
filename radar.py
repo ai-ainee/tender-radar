@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import re
+import time
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
@@ -10,17 +11,15 @@ import requests
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 from typing import List
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 5.3 (STATE-FILTERING & AI CASCADE) ACTIVATED")
+log(">>> ENTERPRISE RADAR 6.0 (MULTI-KEY POOL & 3-TIER CASCADE) ACTIVATED")
 
 # ---------------------------------------------------------------------------
 # 1. Environment Secrets & Config
 # ---------------------------------------------------------------------------
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
@@ -51,7 +50,6 @@ LOCATION_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Automated Mapping for the Local Engine
 STATE_MAP = {
     'new delhi': 'Delhi', 'delhi': 'Delhi', 'ncr': 'Delhi/NCR',
     'mumbai': 'Maharashtra', 'pune': 'Maharashtra', 'nagpur': 'Maharashtra', 'maharashtra': 'Maharashtra',
@@ -79,7 +77,50 @@ QUANTITY_PATTERNS = re.compile(r"(\d+)\s*(?:nos|qty|licenses|users|seats|posts|o
 EMD_PATTERNS = re.compile(r"(?:emd|earnest money|bid security)[:\s\-]+(?:₹|Rs\.?|INR)?\s*[\d,]+", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
-# 2. Pydantic Schemas for AI Outputs
+# 2. Multi-Key API Pool Manager
+# ---------------------------------------------------------------------------
+class APIKeyPool:
+    def __init__(self):
+        raw_keys = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY") or ""
+        self.keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+        self.current_index = 0
+
+    def get_current_key(self):
+        if not self.keys:
+            return None
+        return self.keys[self.current_index]
+
+    def rotate_key(self):
+        if not self.keys or len(self.keys) <= 1:
+            log("    [Key Pool] No backup keys available. Exhausted.")
+            return False
+        
+        old_idx = self.current_index
+        self.current_index = (self.current_index + 1) % len(self.keys)
+        
+        # If we loop back to the start, the entire pool is exhausted
+        if self.current_index == 0:
+            log("    [Key Pool] Entire API pool exhausted for this model tier.")
+            return False
+            
+        log(f"    ⚠️ [Quota Limit Hit] Rotated API Key {old_idx + 1} -> Key {self.current_index + 1}")
+        return True
+
+    def get_client(self):
+        key = self.get_current_key()
+        if not key:
+            return None
+        try:
+            from google import genai
+            return genai.Client(api_key=key)
+        except Exception as e:
+            log(f"Client init error on key {self.current_index + 1}: {e}")
+            return None
+
+KEY_POOL = APIKeyPool()
+
+# ---------------------------------------------------------------------------
+# 3. Pydantic Schemas for AI Outputs
 # ---------------------------------------------------------------------------
 class LeadData(BaseModel):
     item_index: int = Field(description="The index number of the item provided.")
@@ -87,7 +128,7 @@ class LeadData(BaseModel):
     lead_type: str = Field(description="Strictly one of: 'Government / GeM Tender', 'Hiring Mandate', 'Private Capex / Expansion Win', 'Upstream Project Clearance', 'Leadership Move', 'Architect / Consultant Empanelment', 'B2B Sub-Consultancy / Freelance', or 'Non-Lead'.")
     org: str = Field(description="Name of the hiring company, developer, or government department.")
     address: str = Field(description="City or local area in India.")
-    state: str = Field(description="The specific Indian State (e.g., 'Maharashtra', 'Delhi'). 'Pan-India' if not specific.")
+    state: str = Field(description="The specific Indian State. 'Pan-India' if not specific.")
     contact_person: str = Field(description="Name of the key decision maker, HR, or officer. 'Not Listed' if absent.")
     email: str = Field(description="Email address. 'Not Listed' if absent.")
     phone: str = Field(description="Phone number. 'Not Listed' if absent.")
@@ -103,7 +144,7 @@ class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
 
 # ---------------------------------------------------------------------------
-# 3. Utilities
+# 4. Utilities & HTML Web Scraper
 # ---------------------------------------------------------------------------
 def load_products():
     if not os.path.exists(PRODUCTS_FILE):
@@ -185,9 +226,6 @@ def send_telegram(text):
     except Exception as e:
         log(f"  -> Telegram Send Error: {e}")
 
-# ---------------------------------------------------------------------------
-# 4. Deep HTML Scraper
-# ---------------------------------------------------------------------------
 def deep_scrape_page(url):
     try:
         response = SESSION.get(url, timeout=7)
@@ -199,7 +237,7 @@ def deep_scrape_page(url):
             text = re.sub(r'\s+', ' ', text)
             return text[:15000]
     except Exception as e:
-        log(f"    [Deep Scrape Notice for {url[:50]}...: {e}]")
+        pass
     return ""
 
 # ---------------------------------------------------------------------------
@@ -251,24 +289,54 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
     return all_items
 
 # ---------------------------------------------------------------------------
-# 6. 3-Tier AI Engine (2.5 Pro -> 3.6 Flash -> Local)
+# 6. 3-Tier AI Engine (Multi-Key Managed)
 # ---------------------------------------------------------------------------
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def invoke_gemini_api(client, prompt_text, target_model):
-    from google.genai import types
-    response = client.models.generate_content(
-        model=target_model,
-        contents=prompt_text,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=LeadBatchResponse,
-            temperature=0.1,
-        ),
-    )
-    return json.loads(response.text)
+def invoke_model_with_key_rotation(prompt, target_model):
+    """
+    Attempts to generate content with the active model. If a 429 quota or 
+    Resource Exhausted error occurs, it automatically cycles to the next API key.
+    If 503/Timeouts occur, it performs standard retries.
+    """
+    attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
 
-def try_gemini_analysis(client, batch):
-    if not client or not batch:
+    while attempts_left > 0:
+        client = KEY_POOL.get_client()
+        if not client:
+            return None
+
+        try:
+            from google.genai import types
+            response = client.models.generate_content(
+                model=target_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=LeadBatchResponse,
+                    temperature=0.1,
+                ),
+            )
+            return json.loads(response.text)
+            
+        except Exception as err:
+            err_msg = str(err).lower()
+            if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
+                log(f"    [429 Quota Exceeded on {target_model} via Key {KEY_POOL.current_index + 1}]")
+                has_rotated = KEY_POOL.rotate_key()
+                attempts_left -= 1
+                if not has_rotated:
+                    break
+            elif "503" in err_msg or "timeout" in err_msg:
+                log(f"    [503 Server Error / Timeout. Retrying in 3s...]")
+                time.sleep(3)
+                attempts_left -= 1
+            else:
+                log(f"    [{target_model} Format/Execution Error: {err}]")
+                break
+
+    return None
+
+def try_gemini_analysis(batch):
+    if not batch:
         return None
 
     items_block = ""
@@ -290,22 +358,26 @@ def try_gemini_analysis(client, batch):
     {items_block}
     """
 
-    try:
-        log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
-        raw_dict = invoke_gemini_api(client, prompt, 'gemini-2.5-pro')
-        return raw_dict.get("leads", [])
-    except Exception as e_pro:
-        log(f"    [Warning] Gemini Pro failed (Limit/Quota). Switching to Tier 2: Gemini 3.6 Flash... ({e_pro})")
-        try:
-            log("    [Invoking Tier 2: Gemini 3.6 Flash...]")
-            raw_dict = invoke_gemini_api(client, prompt, 'gemini-3.6-flash')
-            return raw_dict.get("leads", [])
-        except Exception as e_flash:
-            log(f"    [Error] Gemini Flash also failed. Triggering Tier 3: Local Offline Engine. ({e_flash})")
-            return None
+    # TIER 1: Attempt Gemini 2.5 PRO across all keys
+    log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
+    pro_result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-pro')
+    if pro_result and "leads" in pro_result:
+        return pro_result["leads"]
+        
+    # Reset key index tracker so Flash starts fresh from Key 1
+    KEY_POOL.current_index = 0
+
+    # TIER 2: Fallback to Gemini 3.6 FLASH across all keys
+    log("    [Tier 1 Exhausted. Invoking Tier 2: Gemini 3.6 Flash...]")
+    flash_result = invoke_model_with_key_rotation(prompt, 'gemini-3.6-flash')
+    if flash_result and "leads" in flash_result:
+        return flash_result["leads"]
+
+    log("    [All AI Tiers & Keys Exhausted. Dropping to Local Pipeline.]")
+    return None
 
 # ---------------------------------------------------------------------------
-# 7. Local Fallback Engine (Tier 3)
+# 7. Local Fallback Engine (Tier 3 Failsafe)
 # ---------------------------------------------------------------------------
 def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
@@ -328,7 +400,6 @@ def extract_lead_locally(item, real_url):
     else:
         ltype = "🤝 B2B Sub-Consultancy"
 
-    # Match Location & State
     loc_match = LOCATION_PATTERNS.search(text)
     if loc_match:
         address = loc_match.group(0)
@@ -385,16 +456,11 @@ def extract_lead_locally(item, real_url):
     }
 
 # ---------------------------------------------------------------------------
-# 8. Main Pipeline
+# 8. Main Pipeline Orchestration
 # ---------------------------------------------------------------------------
 def main():
-    client = None
-    if GEMINI_API_KEY:
-        try:
-            from google import genai
-            client = genai.Client(api_key=GEMINI_API_KEY)
-        except Exception as e:
-            log(f"Client init note: {e}")
+    if not KEY_POOL.keys:
+        log("[Init Warning] No API Keys detected in Environment Secrets.")
 
     products = load_products()
     seen = load_seen()
@@ -436,7 +502,7 @@ def main():
         batch = candidates[i:i + batch_size]
         log(f"Processing batch {i//batch_size + 1}...")
         
-        evaluations = try_gemini_analysis(client, batch)
+        evaluations = try_gemini_analysis(batch)
         
         if evaluations:
             for res_dict in evaluations:
@@ -456,7 +522,7 @@ def main():
     log(f"\nCompleted run. Total sales leads processed and alerted: {leads_recorded}")
 
 # ---------------------------------------------------------------------------
-# 9. Dispatcher
+# 9. Lead Dispatcher
 # ---------------------------------------------------------------------------
 def dispatch_lead(item, data):
     prod = item["product"]
