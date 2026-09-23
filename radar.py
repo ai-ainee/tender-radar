@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.1 ACTIVE (STATE-ROUTING, OMNI-CHANNEL, PDF OCR, DOUBLE-LOCK)")
+log(">>> ENTERPRISE RADAR 9.2 ACTIVE (SYNTAX ERROR FIXED)")
 
 # ---------------------------------------------------------------------------
 # 1. Credentials & Session Config
@@ -476,6 +476,7 @@ def dispatch_lead(item, data):
     })
 
     if is_new:
+        emd_str = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != 'N/A' else ""
         msg = (
             f"🚨 *Intelligence Signal Alert!*\n\n"
             f"🎯 *Priority Level:* {priority}\n"
@@ -484,7 +485,7 @@ def dispatch_lead(item, data):
             f"📦 *Product / Subject:* {prod} ({quantity})\n"
             f"💰 *Budget / Value:* {estimated_value}\n"
             f"⏳ *Key Deadline / Date:* `{deadline}`\n"
-            f"{f'💳 *EMD / Tender Fee:* {emd_fee}\n' if emd_fee != 'N/A' else ''}"
+            f"{emd_str}"
             f"📍 *Location:* {address}, {state}\n"
             f"📅 *Published:* {pub_date}\n"
             f"👤 *Stakeholder / Contact:* {contact}\n"
