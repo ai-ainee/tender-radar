@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.17 ACTIVE (NO LEAD CAP)")
+log(">>> ENTERPRISE RADAR 9.20 ACTIVE (STABLE MODEL & CLEAN INDENTATION)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -273,18 +273,15 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
     target_states = load_states()
     stream_queries = []
 
-    # 1. Government Tenders & GeM: ALL INDIA LOOK ("India")
     stream_queries.extend([
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR site:etenders.gov.in) India {time_window_query}',
         f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}'
     ])
 
-    # 2. Industry Media Portals: ALL INDIA LOOK
     stream_queries.append(
         f'"{product}" (site:constructionbusinesstoday.com OR site:constructionweekonline.in OR site:moneycontrol.com OR site:economictimes.indiatimes.com OR site:themachinist.in) {time_window_query}'
     )
 
-    # 3. Non-Government / Private Capex & Hiring: STATE-TARGETED LOOK (driven by states.txt)
     for state in target_states:
         stream_queries.extend([
             f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant") {state} {time_window_query}',
@@ -346,14 +343,10 @@ def try_gemini_analysis(batch):
 
     prompt = f"Analyze the following text and extract leads. Extract contacts, emails, phones, and metadata.\nData: {items_block}"
 
-    log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
-    pro_result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-pro')
-    if pro_result and "leads" in pro_result: return pro_result["leads"]
-
-    KEY_POOL.current_index = 0
-    log("    [Tier 1 Exhausted. Invoking Tier 2: Gemini 3.6 Flash...]")
-    flash_result = invoke_model_with_key_rotation(prompt, 'gemini-3.6-flash')
-    if flash_result and "leads" in flash_result: return flash_result["leads"]
+    log("    [Invoking Gemini Flash...]")
+    # Fixed to use active stable model identifier
+    result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-flash')
+    if result and "leads" in result: return result["leads"]
 
     return None
 
@@ -432,7 +425,7 @@ def main():
                 if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
                     dispatch_lead(batch[idx], res_dict)
         else:
-            log("    [Tier 1 & 2 AI Failed. Falling back to Tier 3 Local Extraction...]")
+            log("    [AI Failed. Falling back to Local Extraction...]")
             for item in batch:
                 res_dict = extract_lead_locally(item, item["real_link"])
                 if res_dict.get("is_lead") is True:
