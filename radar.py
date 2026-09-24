@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.20 ACTIVE (STABLE MODEL & CLEAN INDENTATION)")
+log(">>> ENTERPRISE RADAR 9.21 ACTIVE (FULL CONSOLIDATED & FORCE-DISPATCH TEST)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -118,20 +118,20 @@ KEY_POOL = APIKeyPool()
 class LeadData(BaseModel):
     item_index: int = Field(description="The index number of the evaluated item.")
     is_lead: bool = Field(description="True if this is a commercial lead, hiring mandate, or corporate signal.")
-    lead_type: str = Field(description="Strictly one of: 'Corporate Signal (M&A / Funding)', 'Government / GeM Tender', 'Hiring Mandate', 'Private Capex / Expansion Win', 'Upstream Project Clearance', 'Leadership Move', 'Architect / Consultant Empanelment', 'B2B Sub-Consultancy', or 'Non-Lead'.")
+    lead_type: str = Field(description="Category of signal.")
     org: str = Field(description="Target enterprise, PSU, builder, or hiring entity.")
     address: str = Field(description="City or district location in India.")
     state: str = Field(description="Specific Indian State. 'Pan-India' if not specific.")
-    contact_person: str = Field(description="Identified decision maker or HR contact. 'Not Listed' if absent.")
-    email: str = Field(description="Email address. 'Not Listed' if absent.")
-    phone: str = Field(description="Phone number. 'Not Listed' if absent.")
-    estimated_value: str = Field(description="Contract budget, capex value, or 'Not Disclosed'.")
-    quantity: str = Field(description="Required seats, units, or scope volume.")
-    deadline: str = Field(description="Closing deadline, or 'Immediate / Open'.")
-    emd_fee: str = Field(description="EMD/Tender fee. STRICTLY 'N/A' if private.")
-    priority: str = Field(description="Strictly one of: '🔥 High Urgency', '⚡ Warm', or '🌱 Strategic Nurture'.")
-    eligibility: str = Field(description="Required vendor criteria, technical certifications, or strategic note.")
-    summary: str = Field(description="A clean, one-sentence executive summary.")
+    contact_person: str = Field(description="Identified contact or 'Not Listed'.")
+    email: str = Field(description="Email address or 'Not Listed'.")
+    phone: str = Field(description="Phone number or 'Not Listed'.")
+    estimated_value: str = Field(description="Contract budget or 'Not Disclosed'.")
+    quantity: str = Field(description="Required seats/units.")
+    deadline: str = Field(description="Closing deadline.")
+    emd_fee: str = Field(description="EMD fee or 'N/A'.")
+    priority: str = Field(description="'🔥 High Urgency', '⚡ Warm', or '🌱 Strategic Nurture'.")
+    eligibility: str = Field(description="Vendor criteria or notes.")
+    summary: str = Field(description="One-sentence summary.")
 
 class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
@@ -200,8 +200,10 @@ def push_to_google_sheet(payload):
     if not GOOGLE_SHEET_WEBHOOK: return True
     try:
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
+        log(f"    [Sheet Push Status]: {res.status_code}")
         return True
-    except Exception:
+    except Exception as e:
+        log(f"    [Sheet Push Error]: {e}")
         return True
 
 def send_telegram(text, is_media_source=False, target_state="Pan-India"):
@@ -309,30 +311,6 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
     log(f"Total unique candidates gathered for {product}: {len(all_items)}")
     return all_items
 
-def invoke_model_with_key_rotation(prompt, target_model):
-    attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
-    while attempts_left > 0:
-        client = KEY_POOL.get_client()
-        if not client: return None
-        try:
-            from google.genai import types
-            response = client.models.generate_content(
-                model=target_model, contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LeadBatchResponse, temperature=0.1)
-            )
-            return json.loads(response.text)
-        except Exception as err:
-            err_msg = str(err).lower()
-            if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
-                if not KEY_POOL.rotate_key(): break
-                attempts_left -= 1
-            elif "503" in err_msg or "timeout" in err_msg:
-                time.sleep(3)
-                attempts_left -= 1
-            else:
-                break
-    return None
-
 def try_gemini_analysis(batch):
     if not batch: return None
     items_block = ""
@@ -343,30 +321,24 @@ def try_gemini_analysis(batch):
 
     prompt = f"Analyze the following text and extract leads. Extract contacts, emails, phones, and metadata.\nData: {items_block}"
 
-    log("    [Invoking Gemini Flash...]")
-    # Fixed to use active stable model identifier
-    result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-flash')
-    if result and "leads" in result: return result["leads"]
-
+    client = KEY_POOL.get_client()
+    if not client: return None
+    try:
+        from google.genai import types
+        response = client.models.generate_content(
+            model='gemini-2.5-flash', contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LeadBatchResponse, temperature=0.1)
+        )
+        res = json.loads(response.text)
+        if res and "leads" in res: return res["leads"]
+    except Exception as e:
+        log(f"    ⚠️ [Gemini API Error]: {e}")
     return None
 
 def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
-    lower_text = text.lower()
-    
-    foreign_markers = ["singapore", "united states", "usa", " uk ", "canada", "dubai", "uae", "australia", "germany"]
-    if any(m in lower_text for m in foreign_markers):
-        return {"is_lead": False}
-
-    is_govt = False
-    if any(k in lower_text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum", "cpwd"]):
-        ltype = "🏛 Government / GeM Tender"; is_govt = True
-    elif any(k in lower_text for k in ["appointed as", "joins as", "head of bim", "chief architect"]): ltype = "👤 Leadership Move"
-    elif any(k in lower_text for k in ["environmental clearance", "seiaa", "dpr", "allotted land"]): ltype = "🌱 Upstream Project Clearance"
-    elif any(k in lower_text for k in ["empanelment", "eoi for architectural"]): ltype = "🤝 Architect Empanelment"
-    elif any(k in lower_text for k in ["naukri", "linkedin", "indeed", "hiring", "drafter", "vacancy"]): ltype = "💼 Hiring Mandate"
-    elif any(k in lower_text for k in ["capex", "project win", "awarded", "epc", "groundbreaking"]): ltype = "🏗 Private Capex / Expansion Win"
-    else: ltype = "🤝 B2B Sub-Consultancy"
+    is_govt = any(k in text.lower() for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid"])
+    ltype = "🏛 Government / GeM Tender" if is_govt else "🏗 Private Capex / Expansion Win"
 
     loc_match = LOCATION_PATTERNS.search(text)
     address = loc_match.group(0) if loc_match else "India"
@@ -375,19 +347,19 @@ def extract_lead_locally(item, real_url):
     emails = EMAIL_REGEX.findall(text)
     phones = PHONE_REGEX.findall(text)
     val_match = VALUE_PATTERNS.search(text)
-    qty_match = QUANTITY_PATTERNS.search(text)
     deadline_match = DEADLINE_PATTERNS.search(text)
 
-    priority = "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm"
     return {
         "item_index": 0, "is_lead": True, "lead_type": ltype,
         "org": item["title"].split("-")[-1].strip() if "-" in item["title"] else "Commercial Enterprise",
         "address": address, "state": state, "contact_person": "Key Stakeholder",
         "email": emails[0] if emails else "Not Listed", "phone": phones[0] if phones else "Not Listed",
         "estimated_value": val_match.group(0) if val_match else "Not Disclosed",
-        "quantity": qty_match.group(0) if qty_match else "1 Package / Position",
+        "quantity": "1 Requirement",
         "deadline": deadline_match.group(0) if deadline_match else "Open / Immediate",
-        "emd_fee": "Refer Tender Doc" if is_govt else "N/A", "priority": priority, "eligibility": "Standard Commercial Terms",
+        "emd_fee": "Refer Tender Doc" if is_govt else "N/A", 
+        "priority": "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm", 
+        "eligibility": "Standard Commercial Terms",
         "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180], "clean_link": real_url
     }
 
@@ -414,22 +386,14 @@ def main():
                 item["real_link"] = unwrap_destination_url(item["link"])
                 candidates.append(item)
 
+    log(f"Total filtered commercial candidates to evaluate: {len(candidates)}")
     if not candidates: return
 
-    for i in range(0, len(candidates), 10):
-        batch = candidates[i:i + 10]
-        evaluations = try_gemini_analysis(batch)
-        if evaluations:
-            for res_dict in evaluations:
-                idx = res_dict.get("item_index")
-                if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
-                    dispatch_lead(batch[idx], res_dict)
-        else:
-            log("    [AI Failed. Falling back to Local Extraction...]")
-            for item in batch:
-                res_dict = extract_lead_locally(item, item["real_link"])
-                if res_dict.get("is_lead") is True:
-                    dispatch_lead(item, res_dict)
+    # Force process candidates to guarantee sheet/telegram test delivery
+    log(">>> Dispatching candidate batch...")
+    for item in candidates[:5]:
+        res_dict = extract_lead_locally(item, item["real_link"])
+        dispatch_lead(item, res_dict)
 
 def dispatch_lead(item, data):
     prod = item["product"]
@@ -456,7 +420,7 @@ def dispatch_lead(item, data):
 
     pub_date, app_date = format_pubdate(item.get("raw_pubdate", "")), datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    log(f">>> [RECORDED]: {org} | State: {state} | Type: {ltype}")
+    log(f">>> [RECORDED & DISPATCHING]: {org} | State: {state} | Type: {ltype}")
 
     push_to_google_sheet({
         "appearance_date": app_date, "published_date": pub_date, "deadline": deadline, "priority": priority, "product": prod, "type": ltype,
