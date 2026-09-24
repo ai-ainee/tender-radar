@@ -13,25 +13,18 @@ AutoCAD Revit LT Suite
 Civil 3D
 Forma Build
 Autodesk Build
-Forma Build Essentials
 Forma Building Design
 Forma Construction Connect
 Forma Data Management
 Autodesk Docs
 Forma Design Collaboration
 BIM Collaborate Pro
-Forma Estimate
 Forma for Buildings
 Forma for Construction
 Autodesk Construction Cloud
 Forma for Model Management
 Forma for Preconstruction
-Forma Site Design
 Forma Takeoff
-InfoWorks ICM
-InfoWater Pro
-InfoWorks WS Pro
-InfraWorks
 Inventor
 Navisworks Manage
 Navisworks Simulate
@@ -40,8 +33,6 @@ Revit
 Revit LT
 Vault Professional
 Fusion 360
-Infrastructure Design Suite
-Autodesk License Renewal
 Architectural Consultancy Tender
 DBMS
 DMS
