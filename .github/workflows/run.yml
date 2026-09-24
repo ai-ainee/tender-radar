@@ -69,7 +69,7 @@ jobs:
         run: |
           git config --global user.name "LeadRadarBot"
           git config --global user.email "bot@users.noreply.github.com"
-          git pull --rebase origin main
           git add seen_links.txt
-          git commit -m "Update seen links [skip ci]" || exit 0
+          git commit -m "Update seen links [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin main
           git push origin main
