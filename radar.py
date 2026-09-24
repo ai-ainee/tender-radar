@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR MASTER ACTIVE (CLEAN REPO DEPLOYMENT)")
+log(">>> ENTERPRISE RADAR MASTER ACTIVE (LIGHTNING FAST DEPLOYMENT)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -160,19 +160,6 @@ def save_seen(link):
     with open(SEEN_FILE, "a", encoding="utf-8") as f:
         f.write(link + "\n")
 
-def unwrap_destination_url(initial_url):
-    if "news.google.com" not in initial_url: return initial_url
-    try:
-        resp = SESSION.get(initial_url, allow_redirects=True, timeout=10)
-        final_url = resp.url
-        if "google.com" in final_url:
-            match = re.search(r'data-n-url="([^"]+)"', resp.text)
-            if not match: match = re.search(r'<meta[^>]+http-equiv="refresh"[^>]+content="[^"]*url=([^"]+)"', resp.text, re.IGNORECASE)
-            if match: return match.group(1).replace("&amp;", "&")
-        return final_url
-    except Exception:
-        return initial_url
-
 def extract_base_website(url):
     try: return f"{urllib.parse.urlparse(url).scheme}://{urllib.parse.urlparse(url).netloc}"
     except Exception: return "Web Portal"
@@ -200,9 +187,8 @@ def push_to_google_sheet(payload):
         log("    ❌ [Sheet Error]: GOOGLE_SHEET_WEBHOOK is missing!")
         return False
     try:
-        # allow_redirects=False prevents Google Apps Script from dropping POST JSON payload
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=15, allow_redirects=False)
-        log(f"    📊 [Sheet Response]: Status {res.status_code} | Text: {res.text[:100]}")
+        log(f"    📊 [Sheet Response]: Status {res.status_code}")
         return True
     except Exception as e:
         log(f"    ❌ [Sheet Exception]: {e}")
@@ -235,15 +221,16 @@ def send_telegram(text, is_media_source=False, target_state="Pan-India"):
     try:
         res = SESSION.post(url, json=payload, timeout=10)
         if res.status_code == 200:
-            log(f"    📱 [Telegram Sent]: Dispatched successfully")
+            log(f"    📱 [Telegram Sent]: Dispatched successfully to {active_chat_id}")
         else:
-            log(f"    ❌ [Telegram Failed]: Status {res.status_code} | Response: {res.text}")
+            log(f"    ❌ [Telegram Failed]: Status {res.status_code} | {res.text}")
     except Exception as e:
         log(f"    ❌ [Telegram Exception]: {e}")
 
 def deep_scrape_content(url):
     try:
-        response = SESSION.get(url, timeout=10)
+        # allow_redirects=True lets requests handle the Google News redirection naturally and fast
+        response = SESSION.get(url, timeout=8, allow_redirects=True)
         if response.status_code != 200: return ""
         if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
             if not PdfReader: return "[PDF Detected]"
@@ -344,12 +331,23 @@ def try_gemini_analysis(batch):
     return None
 
 def extract_lead_locally(item, real_url):
-    text = f"{item['title']} {item['summary']}"
-    is_govt = any(k in text.lower() for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid"])
-    ltype = "🏛 Government / GeM Tender" if is_govt else "🏗 Private Capex / Expansion Win"
+    text = f"{item['title']} {item['summary']}".lower()
+    
+    foreign_markers = ["singapore", "united states", "usa", " uk ", "canada", "dubai", "uae", "australia", "germany"]
+    if any(m in text for m in foreign_markers):
+        return {"is_lead": False}
+
+    is_govt = any(k in text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum"])
+    is_capex = any(k in text for k in ["capex", "project win", "awarded", "expansion", "empanelment"])
+    is_hiring = any(k in text for k in ["hiring", "vacancy", "jobs", "opening"])
+    
+    if not (is_govt or is_capex or is_hiring):
+        return {"is_lead": False}
+
+    ltype = "🏛 Government / GeM Tender" if is_govt else ("💼 Hiring Mandate" if is_hiring else "🏗 Private Capex / Expansion Win")
 
     loc_match = LOCATION_PATTERNS.search(text)
-    address = loc_match.group(0) if loc_match else "India"
+    address = loc_match.group(0).title() if loc_match else "India"
     state = STATE_MAP.get(address.lower(), "Pan-India")
 
     emails = EMAIL_REGEX.findall(text)
@@ -380,6 +378,8 @@ def main():
     max_age = 7
 
     candidates = []
+    
+    log(">>> Phase 1: Gathering Intelligence Signals...")
     for prod in products:
         items = fetch_all_opportunities(prod, time_query, max_age)
         for item in items:
@@ -391,25 +391,29 @@ def main():
             save_seen(item["link"])
 
             if COMMERCIAL_PATTERNS.search(combined_text):
-                item["real_link"] = unwrap_destination_url(item["link"])
+                # REPLACED SLOW UNWRAP WITH DIRECT LINK
+                item["real_link"] = item["link"]
                 candidates.append(item)
 
-    log(f"Total filtered commercial candidates to evaluate: {len(candidates)}")
+    log(f"\n>>> Phase 2: Total filtered commercial candidates to evaluate: {len(candidates)}")
     if not candidates: return
 
     for i in range(0, len(candidates), 10):
         batch = candidates[i:i + 10]
+        log(f"\n>>> Processing Batch {i//10 + 1}/{(len(candidates)+9)//10} ({len(batch)} items)...")
         evaluations = try_gemini_analysis(batch)
+        
         if evaluations:
             for res_dict in evaluations:
                 idx = res_dict.get("item_index")
                 if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
                     dispatch_lead(batch[idx], res_dict)
         else:
-            log("    [Gemini API Failed/Skipped. Using Reliable Local Extraction...]")
+            log("    [Gemini API Skipped/Failed. Using Reliable Local Extraction...]")
             for item in batch:
                 res_dict = extract_lead_locally(item, item["real_link"])
-                dispatch_lead(item, res_dict)
+                if res_dict.get("is_lead") is True:
+                    dispatch_lead(item, res_dict)
 
 def dispatch_lead(item, data):
     prod = item["product"]
@@ -436,7 +440,7 @@ def dispatch_lead(item, data):
 
     pub_date, app_date = format_pubdate(item.get("raw_pubdate", "")), datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    log(f">>> [RECORDED & DISPATCHING]: {org} | State: {state} | Type: {ltype}")
+    log(f"    >>> [RECORDED & DISPATCHING]: {org} | State: {state} | Type: {ltype}")
 
     push_to_google_sheet({
         "appearance_date": app_date, "published_date": pub_date, "deadline": deadline, "priority": priority, "product": prod, "type": ltype,
