@@ -45,6 +45,7 @@ tuition
 online classes
 training institute certification
 software engineer
+data Analyst
 web developer
 python
 java
