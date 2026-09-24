@@ -34,7 +34,4 @@ Revit LT
 Vault Professional
 Fusion 360
 Architectural Consultancy Tender
-DBMS
-DMS
-Data Management
-PMC
+Software Government Tender
