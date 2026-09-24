@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.6 ACTIVE (MANUFACTURING/CONSTRUCTION, GOV ROUTING, CITY-MAPPING)")
+log(">>> ENTERPRISE RADAR 9.10 ACTIVE (FULL CONSOLIDATED PIPELINE & SEPARATE MEDIA ROUTING)")
 
 # ---------------------------------------------------------------------------
 # 1. Credentials & Session Config
@@ -56,58 +56,28 @@ LOCATION_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Comprehensive city-to-state mapping ensuring industrial hubs route accurately
 STATE_MAP = {
-    # Delhi & NCR
     'new delhi': 'Delhi', 'delhi': 'Delhi', 'ncr': 'Delhi/NCR',
     'noida': 'Uttar Pradesh', 'greater noida': 'Uttar Pradesh',
     'gurgaon': 'Haryana', 'gurugram': 'Haryana', 'faridabad': 'Haryana',
     'ghaziabad': 'Uttar Pradesh', 'meerut': 'Uttar Pradesh',
-
-    # Maharashtra
     'mumbai': 'Maharashtra', 'pune': 'Maharashtra', 'nagpur': 'Maharashtra',
-    'thane': 'Maharashtra', 'pimpri': 'Maharashtra', 'pimpri-chinchwad': 'Maharashtra',
-    'nashik': 'Maharashtra', 'nasik': 'Maharashtra', 'kalyan': 'Maharashtra',
-    'vasai': 'Maharashtra', 'aurangabad': 'Maharashtra', 'maharashtra': 'Maharashtra',
-
-    # Karnataka
-    'bengaluru': 'Karnataka', 'bangalore': 'Karnataka', 'mysore': 'Karnataka',
-    'mysuru': 'Karnataka', 'hubli': 'Karnataka', 'mangaluru': 'Karnataka', 'karnataka': 'Karnataka',
-
-    # Tamil Nadu
-    'chennai': 'Tamil Nadu', 'coimbatore': 'Tamil Nadu', 'madurai': 'Tamil Nadu',
-    'tiruchirappalli': 'Tamil Nadu', 'salem': 'Tamil Nadu', 'erode': 'Tamil Nadu',
-    'tamil nadu': 'Tamil Nadu',
-
-    # Gujarat
-    'ahmedabad': 'Gujarat', 'surat': 'Gujarat', 'vadodara': 'Gujarat', 'baroda': 'Gujarat',
-    'rajkot': 'Gujarat', 'gandhinagar': 'Gujarat', 'dholera': 'Gujarat', 'gujarat': 'Gujarat',
-
-    # Uttar Pradesh
-    'lucknow': 'Uttar Pradesh', 'kanpur': 'Uttar Pradesh', 'agra': 'Uttar Pradesh',
-    'varanasi': 'Uttar Pradesh', 'prayagraj': 'Uttar Pradesh', 'allahabad': 'Uttar Pradesh',
-    'uttar pradesh': 'Uttar Pradesh',
-
-    # Telangana & Andhra Pradesh
-    'hyderabad': 'Telangana', 'secunderabad': 'Telangana', 'warangal': 'Telangana', 'telangana': 'Telangana',
-    'visakhapatnam': 'Andhra Pradesh', 'vizag': 'Andhra Pradesh', 'vijayawada': 'Andhra Pradesh',
-    'amaravati': 'Andhra Pradesh', 'andhra pradesh': 'Andhra Pradesh',
-
-    # West Bengal & Bihar
-    'kolkata': 'West Bengal', 'asansol': 'West Bengal', 'siliguri': 'West Bengal', 'west bengal': 'West Bengal',
-    'patna': 'Bihar', 'gaya': 'Bihar', 'bihar': 'Bihar',
-
-    # Kerala & Rajasthan
-    'kochi': 'Kerala', 'thiruvananthapuram': 'Kerala', 'kozhikode': 'Kerala', 'kerala': 'Kerala',
-    'jaipur': 'Rajasthan', 'jodhpur': 'Rajasthan', 'udaipur': 'Rajasthan', 'rajasthan': 'Rajasthan',
-
-    # Madhya Pradesh, Haryana, Punjab, Others
-    'bhopal': 'Madhya Pradesh', 'indore': 'Madhya Pradesh', 'gwalior': 'Madhya Pradesh', 'madhya pradesh': 'Madhya Pradesh',
-    'chandigarh': 'Chandigarh', 'ludhiana': 'Punjab', 'amritsar': 'Punjab', 'punjab': 'Punjab',
-    'bhubaneswar': 'Odisha', 'cuttack': 'Odisha', 'odisha': 'Odisha',
-    'ranchi': 'Jharkhand', 'jamshedpur': 'Jharkhand', 'jharkhand': 'Jharkhand',
-    'raipur': 'Chhattisgarh', 'bhilai': 'Chhattisgarh', 'chhattisgarh': 'Chhattisgarh',
-    'guwahati': 'Assam', 'assam': 'Assam', 'dehradun': 'Uttarakhand', 'uttarakhand': 'Uttarakhand'
+    'thane': 'Maharashtra', 'pimpri': 'Maharashtra', 'nashik': 'Maharashtra', 'maharashtra': 'Maharashtra',
+    'bengaluru': 'Karnataka', 'bangalore': 'Karnataka', 'karnataka': 'Karnataka',
+    'chennai': 'Tamil Nadu', 'coimbatore': 'Tamil Nadu', 'tamil nadu': 'Tamil Nadu',
+    'ahmedabad': 'Gujarat', 'vadodara': 'Gujarat', 'surat': 'Gujarat', 'gujarat': 'Gujarat',
+    'lucknow': 'Uttar Pradesh', 'kanpur': 'Uttar Pradesh', 'uttar pradesh': 'Uttar Pradesh',
+    'hyderabad': 'Telangana', 'telangana': 'Telangana',
+    'visakhapatnam': 'Andhra Pradesh', 'andhra pradesh': 'Andhra Pradesh',
+    'kolkata': 'West Bengal', 'west bengal': 'West Bengal',
+    'patna': 'Bihar', 'bihar': 'Bihar',
+    'kochi': 'Kerala', 'kerala': 'Kerala',
+    'jaipur': 'Rajasthan', 'rajasthan': 'Rajasthan',
+    'bhopal': 'Madhya Pradesh', 'indore': 'Madhya Pradesh', 'madhya pradesh': 'Madhya Pradesh',
+    'chandigarh': 'Chandigarh', 'ludhiana': 'Punjab', 'punjab': 'Punjab',
+    'bhubaneswar': 'Odisha', 'odisha': 'Odisha', 'ranchi': 'Jharkhand', 'jharkhand': 'Jharkhand',
+    'raipur': 'Chhattisgarh', 'chhattisgarh': 'Chhattisgarh', 'guwahati': 'Assam', 'assam': 'Assam',
+    'dehradun': 'Uttarakhand', 'uttarakhand': 'Uttarakhand'
 }
 
 EXPIRED_YEARS_PATTERN = re.compile(r"\b(2018|2019|2020|2021|2022|2023)\b")
@@ -118,9 +88,6 @@ DEADLINE_PATTERNS = re.compile(r"(?:due|closing|last|end)\s*(?:date|time)?[:\s\-
 QUANTITY_PATTERNS = re.compile(r"(\d+)\s*(?:nos|qty|licenses|users|seats|posts|openings|positions|units)\b", re.IGNORECASE)
 EMD_PATTERNS = re.compile(r"(?:emd|earnest money|bid security)[:\s\-]+(?:₹|Rs\.?|INR)?\s*[\d,]+", re.IGNORECASE)
 
-# ---------------------------------------------------------------------------
-# 2. Multi-Key API Pool Manager
-# ---------------------------------------------------------------------------
 class APIKeyPool:
     def __init__(self):
         raw_keys = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY") or ""
@@ -150,9 +117,6 @@ class APIKeyPool:
 
 KEY_POOL = APIKeyPool()
 
-# ---------------------------------------------------------------------------
-# 3. Pydantic Structured Outputs
-# ---------------------------------------------------------------------------
 class LeadData(BaseModel):
     item_index: int = Field(description="The index number of the evaluated item.")
     is_lead: bool = Field(description="True if this is a commercial lead, hiring mandate, or corporate signal.")
@@ -174,9 +138,6 @@ class LeadData(BaseModel):
 class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
 
-# ---------------------------------------------------------------------------
-# 4. Utilities, Sheet Push, and Telegram Routing
-# ---------------------------------------------------------------------------
 def load_products():
     if not os.path.exists(PRODUCTS_FILE): return ["AutoCAD", "Revit", "Civil 3D"]
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
@@ -247,46 +208,41 @@ def push_to_google_sheet(payload):
         log(f"  -> Sheet Push Error: {e}")
         return True
 
-def send_telegram(text, target_state="Pan-India"):
+def send_telegram(text, is_media_source=False, target_state="Pan-India"):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    default_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not bot_token: return
     
-    generic_fallbacks = ["pan-india", "india", "not listed", "", "unknown", "pan india", "rest of india"]
-    clean_state = (target_state or "").strip().lower()
-    
     active_chat_id = None
-    if clean_state not in generic_fallbacks:
-        safe_state = target_state.upper().replace(" ", "_").replace("-", "_")
-        active_chat_id = os.environ.get(f"TELEGRAM_CHAT_ID_{safe_state}")
-        
+    if is_media_source:
+        active_chat_id = os.environ.get("TELEGRAM_CHAT_ID_INDUSTRY_MEDIA")
+    
     if not active_chat_id:
-        active_chat_id = default_chat_id
+        generic_fallbacks = ["pan-india", "india", "not listed", "", "unknown", "pan india", "rest of india"]
+        clean_state = (target_state or "").strip().lower()
+        if clean_state not in generic_fallbacks:
+            active_chat_id = os.environ.get(f"TELEGRAM_CHAT_ID_{target_state.upper().replace(' ', '_').replace('-', '_')}")
+            
+    if not active_chat_id:
+        active_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         
     if not active_chat_id: return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": active_chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": False}
     try:
-        res = SESSION.post(url, json=payload, timeout=10)
-        log(f"  -> Telegram dispatched for [{target_state}]. Status: {res.status_code}")
-    except Exception as e:
-        log(f"  -> Telegram Dispatch Error: {e}")
+        SESSION.post(url, json=payload, timeout=10)
+    except Exception:
+        pass
 
-# ---------------------------------------------------------------------------
-# 5. In-Memory PDF Reader & Deep Web Scraper
-# ---------------------------------------------------------------------------
 def deep_scrape_content(url):
     try:
         response = SESSION.get(url, timeout=10)
         if response.status_code != 200: return ""
-
         if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
             if not PdfReader: return "[PDF Detected - In-memory parsing active]"
             pdf = PdfReader(io.BytesIO(response.content))
             text = "".join([(page.extract_text() or "") + " " for page in pdf.pages[:5]])
             return re.sub(r'\s+', ' ', text)[:15000]
-
         soup = BeautifulSoup(response.content, 'html.parser')
         for script in soup(["script", "style", "noscript", "header", "footer"]): script.extract()
         return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:15000]
@@ -294,9 +250,6 @@ def deep_scrape_content(url):
         pass
     return ""
 
-# ---------------------------------------------------------------------------
-# 6. Direct CPPP Native XML Harvester
-# ---------------------------------------------------------------------------
 def fetch_direct_cppp_tenders(product):
     url = "https://eprocure.gov.in/cppp/latestactivetenders/1/xml"
     items = []
@@ -317,20 +270,17 @@ def fetch_direct_cppp_tenders(product):
         pass
     return items
 
-# ---------------------------------------------------------------------------
-# 7. Multi-Stream Harvester (Government Tenders Prioritized)
-# ---------------------------------------------------------------------------
 def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
     seen_in_scan = set([i["link"] for i in all_items])
 
     stream_queries = [
+        f'"{product}" (site:constructionbusinesstoday.com OR site:constructionweekonline.in OR site:moneycontrol.com OR site:economictimes.indiatimes.com OR site:themachinist.in) {time_window_query}',
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR site:etenders.gov.in) India {time_window_query}',
         f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}',
         f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant" OR "groundbreaking") India {time_window_query}',
         f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) India {time_window_query}',
         f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy" OR "subcontract") India {time_window_query}',
-        f'"{product}" ("raises funding" OR "Series A" OR "Series B" OR "acquired by" OR "merger" OR "IPO" OR "DRHP") India {time_window_query}',
         f'"{product}" (hiring OR vacancy OR "job opening" OR drafter OR modeler) (site:linkedin.com/jobs OR site:naukri.com) India {time_window_query}'
     ]
 
@@ -351,9 +301,6 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
             pass
     return all_items
 
-# ---------------------------------------------------------------------------
-# 8. 3-Tier AI Cascade with Enhanced Contact Extraction
-# ---------------------------------------------------------------------------
 def invoke_model_with_key_rotation(prompt, target_model):
     attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
     while attempts_left > 0:
@@ -401,9 +348,6 @@ def try_gemini_analysis(batch):
     
     return None
 
-# ---------------------------------------------------------------------------
-# 9. Local Deterministic Failsafe (Tier 3) with Anti-Junk & Negative Filters
-# ---------------------------------------------------------------------------
 def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}"
     lower_text = text.lower()
@@ -453,9 +397,6 @@ def extract_lead_locally(item, real_url):
         "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180], "clean_link": real_url
     }
 
-# ---------------------------------------------------------------------------
-# 10. Pipeline Orchestrator & Dispatcher
-# ---------------------------------------------------------------------------
 def main():
     products = load_products()
     negatives = load_negatives()
@@ -482,11 +423,9 @@ def main():
                 candidates.append(item)
 
     if not candidates: return
-    leads_recorded = 0
-    batch_size = 10
 
-    for i in range(0, len(candidates), batch_size):
-        batch = candidates[i:i + batch_size]
+    for i in range(0, len(candidates), 10):
+        batch = candidates[i:i + 10]
         evaluations = try_gemini_analysis(batch)
 
         if evaluations:
@@ -497,13 +436,11 @@ def main():
                     if addr in STATE_MAP:
                         res_dict["state"] = STATE_MAP[addr]
                     dispatch_lead(batch[idx], res_dict)
-                    leads_recorded += 1
         else:
             for item in batch:
                 res_dict = extract_lead_locally(item, item["real_link"])
                 if res_dict.get("is_lead") is True:
                     dispatch_lead(item, res_dict)
-                    leads_recorded += 1
 
 def dispatch_lead(item, data):
     prod = item["product"]
@@ -518,6 +455,10 @@ def dispatch_lead(item, data):
     website = extract_base_website(real_link)
     if "google.com" in website: website = "Domain Hidden by Google"
 
+    is_media = any(domain in website for domain in ["constructionbusinesstoday.com", "constructionweekonline.in", "moneycontrol.com", "economictimes.indiatimes.com", "themachinist.in"])
+    if is_media:
+        data["lead_type"] = "📰 Industry Media News"
+
     ltype, contact, email, phone = data.get("lead_type", "Commercial Lead"), data.get("contact_person", "Not Listed"), data.get("email", "Not Listed"), data.get("phone", "Not Listed")
     summary, estimated_value, quantity, deadline, emd_fee = data.get("summary", item['title']), data.get("estimated_value", "Not Disclosed"), data.get("quantity", "1 Requirement"), data.get("deadline", "Check Notice"), data.get("emd_fee", "N/A")
     priority, eligibility = data.get("priority", "⚡ Warm"), data.get("eligibility", "N/A")
@@ -526,34 +467,33 @@ def dispatch_lead(item, data):
 
     log(f"\n>>> [CONFIRMED {priority}]: {item['title'][:70]}\n    Category: {ltype} | Org: {org} | State: {state} (City: {address})")
 
-    is_new = push_to_google_sheet({
+    push_to_google_sheet({
         "appearance_date": app_date, "published_date": pub_date, "deadline": deadline, "priority": priority, "product": prod, "type": ltype,
         "estimated_value": estimated_value, "quantity": quantity, "emd_fee": emd_fee, "org": org, "address": address, "state": state,
         "website": website, "contact_person": contact, "email": email, "phone": phone, "eligibility": eligibility, "summary": summary, "link": real_link
     })
 
-    if is_new:
-        emd_str = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != 'N/A' else ""
-        msg = (
-            f"🚨 *Intelligence Signal Alert!*\n\n"
-            f"🎯 *Priority Level:* {priority}\n"
-            f"🏷 *Category:* {ltype}\n"
-            f"🏢 *Entity / Buyer:* {org}\n"
-            f"📦 *Product / Subject:* {prod} ({quantity})\n"
-            f"💰 *Budget / Value:* {estimated_value}\n"
-            f"⏳ *Key Deadline / Date:* `{deadline}`\n"
-            f"{emd_str}"
-            f"📍 *Location:* {address}, {state}\n"
-            f"📅 *Published:* {pub_date}\n"
-            f"👤 *Stakeholder / Contact:* {contact}\n"
-            f"📧 *Email:* {email}\n"
-            f"📞 *Phone:* {phone}\n"
-            f"📝 *Sales Summary:* {summary}\n"
-            f"📋 *Context:* {eligibility}\n"
-            f"🌐 *Portal:* {website}\n\n"
-            f"🔗 [Open Original Document Link]({real_link})"
-        )
-        send_telegram(msg, state)
+    emd_str = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != 'N/A' else ""
+    msg = (
+        f"🚨 *Intelligence Signal Alert!*\n\n"
+        f"🎯 *Priority Level:* {priority}\n"
+        f"🏷 *Category:* {ltype}\n"
+        f"🏢 *Entity / Buyer:* {org}\n"
+        f"📦 *Product / Subject:* {prod} ({quantity})\n"
+        f"💰 *Budget / Value:* {estimated_value}\n"
+        f"⏳ *Key Deadline / Date:* `{deadline}`\n"
+        f"{emd_str}"
+        f"📍 *Location:* {address}, {state}\n"
+        f"📅 *Published:* {pub_date}\n"
+        f"👤 *Stakeholder / Contact:* {contact}\n"
+        f"📧 *Email:* {email}\n"
+        f"📞 *Phone:* {phone}\n"
+        f"📝 *Sales Summary:* {summary}\n"
+        f"📋 *Context:* {eligibility}\n"
+        f"🌐 *Portal:* {website}\n\n"
+        f"🔗 [Open Original Document Link]({real_link})"
+    )
+    send_telegram(msg, is_media_source=is_media, target_state=state)
 
 if __name__ == "__main__":
     main()
