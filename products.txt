@@ -38,10 +38,6 @@ Navisworks Simulate
 Product Design & Manufacturing Collection
 Revit
 Revit LT
-Vault
-Vault Basic
-Vault Office
-Vault PLM
 Vault Professional
 Fusion 360
 Infrastructure Design Suite
