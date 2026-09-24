@@ -21,10 +21,11 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.13 ACTIVE (DIAGNOSTIC & BROAD WINDOW)")
+log(">>> ENTERPRISE RADAR 9.16 ACTIVE (DYNAMIC STATES.TXT INTEGRATION)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
+STATES_FILE = "states.txt"
 NEGATIVE_FILE = "negative_keywords.txt"
 SEEN_FILE = "seen_links.txt"
 MAX_LEADS_PER_RUN = 100
@@ -100,6 +101,7 @@ class APIKeyPool:
         old_idx = self.current_index
         self.current_index = (self.current_index + 1) % len(self.keys)
         if self.current_index == 0: return False
+        log(f"    ⚠️ [Quota Limit] Switching API Key {old_idx + 1} -> Key {self.current_index + 1}")
         return True
 
     def get_client(self):
@@ -108,7 +110,8 @@ class APIKeyPool:
         try:
             from google import genai
             return genai.Client(api_key=key)
-        except Exception:
+        except Exception as e:
+            log(f"Client init error on key {self.current_index + 1}: {e}")
             return None
 
 KEY_POOL = APIKeyPool()
@@ -137,6 +140,11 @@ class LeadBatchResponse(BaseModel):
 def load_products():
     if not os.path.exists(PRODUCTS_FILE): return ["AutoCAD", "Revit"]
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+def load_states():
+    if not os.path.exists(STATES_FILE): return ["Maharashtra", "Karnataka", "Tamil Nadu", "Gujarat", "Delhi", "Uttar Pradesh"]
+    with open(STATES_FILE, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
 def load_negatives():
@@ -261,18 +269,31 @@ def fetch_direct_cppp_tenders(product):
 
 def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
-    log(f"  -> CPPP Tenders found for {product}: {len(all_items)}")
     seen_in_scan = set([i["link"] for i in all_items])
 
-    stream_queries = [
-        f'"{product}" (site:constructionbusinesstoday.com OR site:constructionweekonline.in OR site:moneycontrol.com OR site:economictimes.indiatimes.com OR site:themachinist.in) {time_window_query}',
+    # Load target non-govt states dynamically from states.txt
+    target_states = load_states()
+    stream_queries = []
+
+    # 1. Government Tenders & GeM: ALL INDIA LOOK ("India")
+    stream_queries.extend([
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR site:etenders.gov.in) India {time_window_query}',
-        f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}',
-        f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant") India {time_window_query}',
-        f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) India {time_window_query}',
-        f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy") India {time_window_query}',
-        f'"{product}" (hiring OR vacancy OR "job opening") (site:linkedin.com/jobs OR site:naukri.com) India {time_window_query}'
-    ]
+        f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}'
+    ])
+
+    # 2. Industry Media Portals: ALL INDIA LOOK
+    stream_queries.append(
+        f'"{product}" (site:constructionbusinesstoday.com OR site:constructionweekonline.in OR site:moneycontrol.com OR site:economictimes.indiatimes.com OR site:themachinist.in) {time_window_query}'
+    )
+
+    # 3. Non-Government / Private Capex & Hiring: STATE-TARGETED LOOK (driven by states.txt)
+    for state in target_states:
+        stream_queries.extend([
+            f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant") {state} {time_window_query}',
+            f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) {state} {time_window_query}',
+            f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy") {state} {time_window_query}',
+            f'"{product}" (hiring OR vacancy OR "job opening") (site:linkedin.com/jobs OR site:naukri.com) {state} {time_window_query}'
+        ])
 
     for q in stream_queries:
         encoded = urllib.parse.quote(q)
@@ -281,19 +302,41 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
             resp = SESSION.get(url, timeout=10)
             if resp.status_code == 200 and resp.content:
                 root = ET.fromstring(resp.content)
-                items_in_query = root.findall(".//item")
-                log(f"  -> Query [{q[:30]}...] returned {len(items_in_query)} raw articles.")
-                for item in items_in_query:
+                for item in root.findall(".//item"):
                     link, title, desc, raw_pubdate = [item.findtext(k, "").strip() for k in ["link", "title", "description", "pubDate"]]
                     if not is_item_recent(raw_pubdate, max_age_days) or EXPIRED_YEARS_PATTERN.search(title + " " + desc): continue
                     if link and title and link not in seen_in_scan:
                         seen_in_scan.add(link)
                         all_items.append({"title": title, "link": link, "summary": desc, "product": product, "raw_pubdate": raw_pubdate})
-        except Exception as e:
-            log(f"  -> RSS Fetch Error: {e}")
+        except Exception:
             pass
+    
     log(f"Total unique candidates gathered for {product}: {len(all_items)}")
     return all_items
+
+def invoke_model_with_key_rotation(prompt, target_model):
+    attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
+    while attempts_left > 0:
+        client = KEY_POOL.get_client()
+        if not client: return None
+        try:
+            from google.genai import types
+            response = client.models.generate_content(
+                model=target_model, contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LeadBatchResponse, temperature=0.1)
+            )
+            return json.loads(response.text)
+        except Exception as err:
+            err_msg = str(err).lower()
+            if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
+                if not KEY_POOL.rotate_key(): break
+                attempts_left -= 1
+            elif "503" in err_msg or "timeout" in err_msg:
+                time.sleep(3)
+                attempts_left -= 1
+            else:
+                break
+    return None
 
 def try_gemini_analysis(batch):
     if not batch: return None
@@ -304,33 +347,69 @@ def try_gemini_analysis(batch):
         items_block += f"\n--- ITEM {idx} ---\nTitle: {it['title']}\nLink: {it['real_link']}\nData: {context_payload}\n"
 
     prompt = f"Analyze the following text and extract leads. Extract contacts, emails, phones, and metadata.\nData: {items_block}"
-    
-    client = KEY_POOL.get_client()
-    if not client: return None
-    try:
-        from google.genai import types
-        response = client.models.generate_content(
-            model='gemini-2.5-pro', contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LeadBatchResponse, temperature=0.1)
-        )
-        res = json.loads(response.text)
-        if res and "leads" in res: return res["leads"]
-    except Exception:
-        pass
+
+    log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
+    pro_result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-pro')
+    if pro_result and "leads" in pro_result: return pro_result["leads"]
+
+    KEY_POOL.current_index = 0
+    log("    [Tier 1 Exhausted. Invoking Tier 2: Gemini 3.6 Flash...]")
+    flash_result = invoke_model_with_key_rotation(prompt, 'gemini-3.6-flash')
+    if flash_result and "leads" in flash_result: return flash_result["leads"]
+
     return None
+
+def extract_lead_locally(item, real_url):
+    text = f"{item['title']} {item['summary']}"
+    lower_text = text.lower()
+    
+    foreign_markers = ["singapore", "united states", "usa", " uk ", "canada", "dubai", "uae", "australia", "germany"]
+    if any(m in lower_text for m in foreign_markers):
+        return {"is_lead": False}
+
+    is_govt = False
+    if any(k in lower_text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum", "cpwd"]):
+        ltype = "🏛 Government / GeM Tender"; is_govt = True
+    elif any(k in lower_text for k in ["appointed as", "joins as", "head of bim", "chief architect"]): ltype = "👤 Leadership Move"
+    elif any(k in lower_text for k in ["environmental clearance", "seiaa", "dpr", "allotted land"]): ltype = "🌱 Upstream Project Clearance"
+    elif any(k in lower_text for k in ["empanelment", "eoi for architectural"]): ltype = "🤝 Architect Empanelment"
+    elif any(k in lower_text for k in ["naukri", "linkedin", "indeed", "hiring", "drafter", "vacancy"]): ltype = "💼 Hiring Mandate"
+    elif any(k in lower_text for k in ["capex", "project win", "awarded", "epc", "groundbreaking"]): ltype = "🏗 Private Capex / Expansion Win"
+    else: ltype = "🤝 B2B Sub-Consultancy"
+
+    loc_match = LOCATION_PATTERNS.search(text)
+    address = loc_match.group(0) if loc_match else "India"
+    state = STATE_MAP.get(address.lower(), "Pan-India")
+
+    emails = EMAIL_REGEX.findall(text)
+    phones = PHONE_REGEX.findall(text)
+    val_match = VALUE_PATTERNS.search(text)
+    qty_match = QUANTITY_PATTERNS.search(text)
+    deadline_match = DEADLINE_PATTERNS.search(text)
+
+    priority = "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm"
+    return {
+        "item_index": 0, "is_lead": True, "lead_type": ltype,
+        "org": item["title"].split("-")[-1].strip() if "-" in item["title"] else "Commercial Enterprise",
+        "address": address, "state": state, "contact_person": "Key Stakeholder",
+        "email": emails[0] if emails else "Not Listed", "phone": phones[0] if phones else "Not Listed",
+        "estimated_value": val_match.group(0) if val_match else "Not Disclosed",
+        "quantity": qty_match.group(0) if qty_match else "1 Package / Position",
+        "deadline": deadline_match.group(0) if deadline_match else "Open / Immediate",
+        "emd_fee": "Refer Tender Doc" if is_govt else "N/A", "priority": priority, "eligibility": "Standard Commercial Terms",
+        "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180], "clean_link": real_url
+    }
 
 def main():
     products = load_products()
     negatives = load_negatives()
     seen = load_seen()
 
-    # Broadened window to 7 days to ensure hourly runs capture enough candidates
     time_query = "when:7d"
     max_age = 7
 
     candidates = []
     for prod in products:
-        log(f"Scanning opportunities for product: {prod}")
         items = fetch_all_opportunities(prod, time_query, max_age)
         for item in items:
             if item["link"] in seen: continue
@@ -344,7 +423,6 @@ def main():
                 item["real_link"] = unwrap_destination_url(item["link"])
                 candidates.append(item)
 
-    log(f"Total filtered commercial candidates to evaluate: {len(candidates)}")
     if not candidates: return
 
     leads_recorded = 0
@@ -361,6 +439,14 @@ def main():
                 idx = res_dict.get("item_index")
                 if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
                     if dispatch_lead(batch[idx], res_dict):
+                        leads_recorded += 1
+        else:
+            log("    [Tier 1 & 2 AI Failed. Falling back to Tier 3 Local Extraction...]")
+            for item in batch:
+                if leads_recorded >= MAX_LEADS_PER_RUN: break
+                res_dict = extract_lead_locally(item, item["real_link"])
+                if res_dict.get("is_lead") is True:
+                    if dispatch_lead(item, res_dict):
                         leads_recorded += 1
 
 def dispatch_lead(item, data):
@@ -383,7 +469,6 @@ def dispatch_lead(item, data):
     summary, estimated_value, quantity, deadline, emd_fee = data.get("summary", item['title']), data.get("estimated_value", "Not Disclosed"), data.get("quantity", "1 Requirement"), data.get("deadline", "Check Notice"), data.get("emd_fee", "N/A")
     priority = data.get("priority", "⚡ Warm")
     
-    # Urgent Booster Check
     if any(k in summary.lower() for k in ["urgent", "immediate", "flash", "closing soon"]):
         priority = "🔥 High Urgency (ACTION REQUIRED)"
 
