@@ -104,7 +104,6 @@ flat for rent
 brokerage fee
 tenant
 lease agreement residential
-# --- Exclude Academic, Research & University Noise ---
 research paper
 journal article
 phd thesis
