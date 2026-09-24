@@ -21,14 +21,13 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.16 ACTIVE (DYNAMIC STATES.TXT INTEGRATION)")
+log(">>> ENTERPRISE RADAR 9.17 ACTIVE (NO LEAD CAP)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
 STATES_FILE = "states.txt"
 NEGATIVE_FILE = "negative_keywords.txt"
 SEEN_FILE = "seen_links.txt"
-MAX_LEADS_PER_RUN = 100
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -271,7 +270,6 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
     seen_in_scan = set([i["link"] for i in all_items])
 
-    # Load target non-govt states dynamically from states.txt
     target_states = load_states()
     stream_queries = []
 
@@ -425,29 +423,20 @@ def main():
 
     if not candidates: return
 
-    leads_recorded = 0
     for i in range(0, len(candidates), 10):
-        if leads_recorded >= MAX_LEADS_PER_RUN:
-            log(f">>> [Lead Limit Reached] Reached maximum cap of {MAX_LEADS_PER_RUN} leads for this run. Stopping.")
-            break
-
         batch = candidates[i:i + 10]
         evaluations = try_gemini_analysis(batch)
         if evaluations:
             for res_dict in evaluations:
-                if leads_recorded >= MAX_LEADS_PER_RUN: break
                 idx = res_dict.get("item_index")
                 if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
-                    if dispatch_lead(batch[idx], res_dict):
-                        leads_recorded += 1
+                    dispatch_lead(batch[idx], res_dict)
         else:
             log("    [Tier 1 & 2 AI Failed. Falling back to Tier 3 Local Extraction...]")
             for item in batch:
-                if leads_recorded >= MAX_LEADS_PER_RUN: break
                 res_dict = extract_lead_locally(item, item["real_link"])
                 if res_dict.get("is_lead") is True:
-                    if dispatch_lead(item, res_dict):
-                        leads_recorded += 1
+                    dispatch_lead(item, res_dict)
 
 def dispatch_lead(item, data):
     prod = item["product"]
