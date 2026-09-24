@@ -229,7 +229,7 @@ def send_telegram(text, is_media_source=False, target_state="Pan-India"):
 
 def deep_scrape_content(url):
     try:
-        # allow_redirects=True lets requests handle the Google News redirection naturally and fast
+        # allow_redirects=True lets requests handle the Google News redirection naturally and fast during evaluation phase
         response = SESSION.get(url, timeout=8, allow_redirects=True)
         if response.status_code != 200: return ""
         if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
@@ -267,25 +267,16 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
     seen_in_scan = set([i["link"] for i in all_items])
 
-    target_states = load_states()
-    stream_queries = []
-
-    stream_queries.extend([
+    # HIGHLY OPTIMIZED PAN-INDIA QUERIES (Removes 80+ redundant state loops per product)
+    stream_queries = [
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR site:etenders.gov.in) India {time_window_query}',
-        f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}'
-    ])
-
-    stream_queries.append(
-        f'"{product}" (site:constructionbusinesstoday.com OR site:constructionweekonline.in OR site:moneycontrol.com OR site:economictimes.indiatimes.com OR site:themachinist.in) {time_window_query}'
-    )
-
-    for state in target_states:
-        stream_queries.extend([
-            f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant") {state} {time_window_query}',
-            f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) {state} {time_window_query}',
-            f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy") {state} {time_window_query}',
-            f'"{product}" (hiring OR vacancy OR "job opening") (site:linkedin.com/jobs OR site:naukri.com) {state} {time_window_query}'
-        ])
+        f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}',
+        f'"{product}" (site:constructionbusinesstoday.com OR site:constructionweekonline.in OR site:moneycontrol.com OR site:economictimes.indiatimes.com OR site:themachinist.in) {time_window_query}',
+        f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant") India {time_window_query}',
+        f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) India {time_window_query}',
+        f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy") India {time_window_query}',
+        f'"{product}" (hiring OR vacancy OR "job opening") (site:linkedin.com/jobs OR site:naukri.com) India {time_window_query}'
+    ]
 
     for q in stream_queries:
         encoded = urllib.parse.quote(q)
@@ -391,7 +382,6 @@ def main():
             save_seen(item["link"])
 
             if COMMERCIAL_PATTERNS.search(combined_text):
-                # REPLACED SLOW UNWRAP WITH DIRECT LINK
                 item["real_link"] = item["link"]
                 candidates.append(item)
 
