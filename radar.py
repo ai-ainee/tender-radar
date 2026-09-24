@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR MASTER ACTIVE (LIGHTNING FAST DEPLOYMENT)")
+log(">>> ENTERPRISE RADAR MASTER ACTIVE (ENRICHED B2B DATA PIPELINE)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -52,6 +52,17 @@ LOCATION_PATTERNS = re.compile(
     r"Maharashtra|Karnataka|Tamil Nadu|Uttar Pradesh|Gujarat|Telangana|Haryana|Kerala|Rajasthan|"
     r"Madhya Pradesh|Bihar|West Bengal|Andhra Pradesh|Punjab|Odisha|Jharkhand|Chhattisgarh|Assam|Uttarakhand)\b",
     re.IGNORECASE,
+)
+
+TECH_STACK_PATTERNS = re.compile(
+    r"\b(AutoCAD|Revit|Civil 3D|Navisworks|Fusion 360|Advance Steel|Inventor|3ds Max|Maya|"
+    r"Tekla|STAAD\.?Pro|ETABS|SolidWorks|CATIA|Rhino|SketchUp|MicroStation|BIM 360|ACC)\b",
+    re.IGNORECASE
+)
+
+TENDER_ID_PATTERNS = re.compile(
+    r"(?:Tender\s*(?:ID|Ref|No|Notice|Number)?[:\s#-]+|NIT\s*(?:No|Number)?[:\s#-]+|GEM/\d{4}/[A-Z]/\d+)([A-Za-z0-9\/\-_]{5,32})",
+    re.IGNORECASE
 )
 
 STATE_MAP = {
@@ -116,7 +127,7 @@ KEY_POOL = APIKeyPool()
 
 class LeadData(BaseModel):
     item_index: int = Field(description="The index number of the evaluated item.")
-    is_lead: bool = Field(description="True if this is a commercial lead, hiring mandate, or corporate signal.")
+    is_lead: bool = Field(description="True if this is a commercial lead, tender, hiring mandate, or capex signal.")
     lead_type: str = Field(description="Category of signal.")
     org: str = Field(description="Target enterprise, PSU, builder, or hiring entity.")
     address: str = Field(description="City or district location in India.")
@@ -130,7 +141,10 @@ class LeadData(BaseModel):
     emd_fee: str = Field(description="EMD fee or 'N/A'.")
     priority: str = Field(description="'🔥 High Urgency', '⚡ Warm', or '🌱 Strategic Nurture'.")
     eligibility: str = Field(description="Vendor criteria or notes.")
-    summary: str = Field(description="One-sentence summary.")
+    summary: str = Field(description="One-sentence executive summary.")
+    tender_id: str = Field(description="Tender/Ref Number, GeM Bid ID, or 'N/A'.")
+    project_stage: str = Field(description="Planning & Feasibility, Design & Engineering, Tender & Bidding, Under Construction, or Team Expansion.")
+    tech_stack: str = Field(description="Comma-separated CAD/BIM/AEC software stack mentioned or inferred.")
 
 class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
@@ -229,7 +243,6 @@ def send_telegram(text, is_media_source=False, target_state="Pan-India"):
 
 def deep_scrape_content(url):
     try:
-        # allow_redirects=True lets requests handle the Google News redirection naturally and fast during evaluation phase
         response = SESSION.get(url, timeout=8, allow_redirects=True)
         if response.status_code != 200: return ""
         if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
@@ -254,9 +267,10 @@ def fetch_direct_cppp_tenders(product):
                 title = tender.findtext("Title", "")
                 link = tender.findtext("TenderURL", "")
                 desc = tender.findtext("Description", "")
+                ref_no = tender.findtext("TenderReferenceNumber", "N/A")
                 if product.lower() in title.lower() or product.lower() in desc.lower():
                     items.append({
-                        "title": f"[DIRECT CPPP TENDER] {title}", "link": link, "summary": desc,
+                        "title": f"[DIRECT CPPP TENDER] {title}", "link": link, "summary": f"{desc} | Ref: {ref_no}",
                         "product": product, "raw_pubdate": datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
                     })
     except Exception:
@@ -267,7 +281,6 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
     seen_in_scan = set([i["link"] for i in all_items])
 
-    # HIGHLY OPTIMIZED PAN-INDIA QUERIES (Removes 80+ redundant state loops per product)
     stream_queries = [
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR site:etenders.gov.in) India {time_window_query}',
         f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}',
@@ -305,7 +318,12 @@ def try_gemini_analysis(batch):
         context_payload = deep_text if len(deep_text) > 300 else it['summary']
         items_block += f"\n--- ITEM {idx} ---\nTitle: {it['title']}\nLink: {it['real_link']}\nData: {context_payload}\n"
 
-    prompt = f"Analyze the following text and extract leads. Extract contacts, emails, phones, and metadata.\nData: {items_block}"
+    prompt = (
+        "Analyze the following Indian business, government, and recruitment items for software sales intelligence.\n"
+        "Extract key sales data: Tender/Ref ID, Project Stage (Planning, Design, Tender/Bidding, Construction, or Team Expansion), "
+        "and any CAD/BIM/AEC tech stack software mentioned.\n"
+        f"Data: {items_block}"
+    )
 
     client = KEY_POOL.get_client()
     if not client: return None
@@ -319,6 +337,7 @@ def try_gemini_analysis(batch):
         if res and "leads" in res: return res["leads"]
     except Exception as e:
         log(f"    ⚠️ [Gemini API Error]: {e}")
+        KEY_POOL.rotate_key()
     return None
 
 def extract_lead_locally(item, real_url):
@@ -337,14 +356,37 @@ def extract_lead_locally(item, real_url):
 
     ltype = "🏛 Government / GeM Tender" if is_govt else ("💼 Hiring Mandate" if is_hiring else "🏗 Private Capex / Expansion Win")
 
-    loc_match = LOCATION_PATTERNS.search(text)
+    # Determine Project Stage
+    if is_govt:
+        p_stage = "Tender & Bidding"
+    elif is_hiring:
+        p_stage = "Team Expansion"
+    elif any(k in text for k in ["dpr", "clearance", "rera", "feasibility", "planned", "planning"]):
+        p_stage = "Planning & Feasibility"
+    elif any(k in text for k in ["epc", "civil work", "construction", "plant", "expansion"]):
+        p_stage = "Under Construction"
+    else:
+        p_stage = "Design & Engineering"
+
+    # Extract Tech Stack
+    raw_text = f"{item['title']} {item['summary']}"
+    found_tools = list(set(TECH_STACK_PATTERNS.findall(raw_text)))
+    if item['product'] not in found_tools:
+        found_tools.insert(0, item['product'])
+    tech_stack_str = ", ".join(found_tools)
+
+    # Extract Tender Ref ID
+    tender_id_match = TENDER_ID_PATTERNS.search(raw_text)
+    tender_id = tender_id_match.group(1).strip() if tender_id_match else "N/A"
+
+    loc_match = LOCATION_PATTERNS.search(raw_text)
     address = loc_match.group(0).title() if loc_match else "India"
     state = STATE_MAP.get(address.lower(), "Pan-India")
 
-    emails = EMAIL_REGEX.findall(text)
-    phones = PHONE_REGEX.findall(text)
-    val_match = VALUE_PATTERNS.search(text)
-    deadline_match = DEADLINE_PATTERNS.search(text)
+    emails = EMAIL_REGEX.findall(raw_text)
+    phones = PHONE_REGEX.findall(raw_text)
+    val_match = VALUE_PATTERNS.search(raw_text)
+    deadline_match = DEADLINE_PATTERNS.search(raw_text)
 
     return {
         "item_index": 0, "is_lead": True, "lead_type": ltype,
@@ -357,7 +399,11 @@ def extract_lead_locally(item, real_url):
         "emd_fee": "Refer Tender Doc" if is_govt else "N/A", 
         "priority": "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm", 
         "eligibility": "Standard Commercial Terms",
-        "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180], "clean_link": real_url
+        "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180],
+        "tender_id": tender_id,
+        "project_stage": p_stage,
+        "tech_stack": tech_stack_str,
+        "clean_link": real_url
     }
 
 def main():
@@ -395,11 +441,13 @@ def main():
         
         if evaluations:
             for res_dict in evaluations:
-                idx = res_dict.get("item_index")
-                if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
-                    dispatch_lead(batch[idx], res_dict)
+                idx = res_dict.get("item_index") if isinstance(res_dict, dict) else getattr(res_dict, "item_index", None)
+                is_lead = res_dict.get("is_lead") if isinstance(res_dict, dict) else getattr(res_dict, "is_lead", False)
+                if idx is not None and idx < len(batch) and is_lead:
+                    data = res_dict if isinstance(res_dict, dict) else res_dict.model_dump()
+                    dispatch_lead(batch[idx], data)
         else:
-            log("    [Gemini API Skipped/Failed. Using Reliable Local Extraction...]")
+            log("    [Using Reliable Local Extraction Engine...]")
             for item in batch:
                 res_dict = extract_lead_locally(item, item["real_link"])
                 if res_dict.get("is_lead") is True:
@@ -421,36 +469,55 @@ def dispatch_lead(item, data):
     if is_media:
         data["lead_type"] = "📰 Industry Media News"
 
-    ltype, contact, email, phone = data.get("lead_type", "Commercial Lead"), data.get("contact_person", "Not Listed"), data.get("email", "Not Listed"), data.get("phone", "Not Listed")
-    summary, estimated_value, quantity, deadline, emd_fee = data.get("summary", item['title']), data.get("estimated_value", "Not Disclosed"), data.get("quantity", "1 Requirement"), data.get("deadline", "Check Notice"), data.get("emd_fee", "N/A")
+    ltype = data.get("lead_type", "Commercial Lead")
+    contact = data.get("contact_person", "Not Listed")
+    email = data.get("email", "Not Listed")
+    phone = data.get("phone", "Not Listed")
+    summary = data.get("summary", item['title'])
+    estimated_value = data.get("estimated_value", "Not Disclosed")
+    quantity = data.get("quantity", "1 Requirement")
+    deadline = data.get("deadline", "Check Notice")
+    emd_fee = data.get("emd_fee", "N/A")
     priority = data.get("priority", "⚡ Warm")
     
+    project_stage = data.get("project_stage", "Design & Engineering")
+    tech_stack = data.get("tech_stack", prod)
+    tender_id = data.get("tender_id", "N/A")
+
     if any(k in summary.lower() for k in ["urgent", "immediate", "flash", "closing soon"]):
         priority = "🔥 High Urgency (ACTION REQUIRED)"
 
-    pub_date, app_date = format_pubdate(item.get("raw_pubdate", "")), datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    pub_date = format_pubdate(item.get("raw_pubdate", ""))
+    app_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    log(f"    >>> [RECORDED & DISPATCHING]: {org} | State: {state} | Type: {ltype}")
+    log(f"    >>> [RECORDED]: {org} | {project_stage} | Stack: {tech_stack}")
 
     push_to_google_sheet({
-        "appearance_date": app_date, "published_date": pub_date, "deadline": deadline, "priority": priority, "product": prod, "type": ltype,
-        "estimated_value": estimated_value, "quantity": quantity, "emd_fee": emd_fee, "org": org, "address": address, "state": state,
-        "website": website, "contact_person": contact, "email": email, "phone": phone, "eligibility": data.get("eligibility", "N/A"), "summary": summary, "link": real_link
+        "appearance_date": app_date, "published_date": pub_date, "deadline": deadline, "priority": priority,
+        "product": prod, "type": ltype, "project_stage": project_stage, "tech_stack": tech_stack,
+        "tender_id": tender_id, "estimated_value": estimated_value, "quantity": quantity, "emd_fee": emd_fee,
+        "org": org, "address": address, "state": state, "website": website, "contact_person": contact,
+        "email": email, "phone": phone, "eligibility": data.get("eligibility", "N/A"), "summary": summary, "link": real_link
     })
 
     emd_str = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != 'N/A' else ""
+    ref_str = f"🆔 *Tender / Ref ID:* `{tender_id}`\n" if tender_id != 'N/A' else ""
+
     msg = (
         f"🚨 *Intelligence Signal Alert!*\n\n"
-        f"🎯 *Priority Level:* {priority}\n"
+        f"🎯 *Priority:* {priority}\n"
         f"🏷 *Category:* {ltype}\n"
+        f"🏗 *Project Stage:* {project_stage}\n"
+        f"🛠 *Tech Stack:* `{tech_stack}`\n"
         f"🏢 *Entity / Buyer:* {org}\n"
-        f"📦 *Product / Subject:* {prod} ({quantity})\n"
+        f"{ref_str}"
+        f"📦 *Product / Scope:* {prod} ({quantity})\n"
         f"💰 *Budget / Value:* {estimated_value}\n"
-        f"⏳ *Key Deadline / Date:* `{deadline}`\n"
+        f"⏳ *Key Deadline:* `{deadline}`\n"
         f"{emd_str}"
         f"📍 *Location:* {address}, {state}\n"
         f"📅 *Published:* {pub_date}\n"
-        f"👤 *Stakeholder / Contact:* {contact}\n"
+        f"👤 *Stakeholder:* {contact}\n"
         f"📧 *Email:* {email}\n"
         f"📞 *Phone:* {phone}\n"
         f"📝 *Sales Summary:* {summary}\n"
