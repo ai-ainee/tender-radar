@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.12 ACTIVE (FULLY CONSOLIDATED & BULLETPROOF)")
+log(">>> ENTERPRISE RADAR 9.13 ACTIVE (DIAGNOSTIC & BROAD WINDOW)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -261,6 +261,7 @@ def fetch_direct_cppp_tenders(product):
 
 def fetch_all_opportunities(product, time_window_query, max_age_days):
     all_items = fetch_direct_cppp_tenders(product)
+    log(f"  -> CPPP Tenders found for {product}: {len(all_items)}")
     seen_in_scan = set([i["link"] for i in all_items])
 
     stream_queries = [
@@ -280,14 +281,18 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
             resp = SESSION.get(url, timeout=10)
             if resp.status_code == 200 and resp.content:
                 root = ET.fromstring(resp.content)
-                for item in root.findall(".//item"):
+                items_in_query = root.findall(".//item")
+                log(f"  -> Query [{q[:30]}...] returned {len(items_in_query)} raw articles.")
+                for item in items_in_query:
                     link, title, desc, raw_pubdate = [item.findtext(k, "").strip() for k in ["link", "title", "description", "pubDate"]]
                     if not is_item_recent(raw_pubdate, max_age_days) or EXPIRED_YEARS_PATTERN.search(title + " " + desc): continue
                     if link and title and link not in seen_in_scan:
                         seen_in_scan.add(link)
                         all_items.append({"title": title, "link": link, "summary": desc, "product": product, "raw_pubdate": raw_pubdate})
-        except Exception:
+        except Exception as e:
+            log(f"  -> RSS Fetch Error: {e}")
             pass
+    log(f"Total unique candidates gathered for {product}: {len(all_items)}")
     return all_items
 
 def try_gemini_analysis(batch):
@@ -319,11 +324,13 @@ def main():
     negatives = load_negatives()
     seen = load_seen()
 
-    time_query = "when:2d"
-    max_age = 2
+    # Broadened window to 7 days to ensure hourly runs capture enough candidates
+    time_query = "when:7d"
+    max_age = 7
 
     candidates = []
     for prod in products:
+        log(f"Scanning opportunities for product: {prod}")
         items = fetch_all_opportunities(prod, time_query, max_age)
         for item in items:
             if item["link"] in seen: continue
@@ -337,6 +344,7 @@ def main():
                 item["real_link"] = unwrap_destination_url(item["link"])
                 candidates.append(item)
 
+    log(f"Total filtered commercial candidates to evaluate: {len(candidates)}")
     if not candidates: return
 
     leads_recorded = 0
