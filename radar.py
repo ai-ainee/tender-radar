@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.21 ACTIVE (FULL CONSOLIDATED & FORCE-DISPATCH TEST)")
+log(">>> ENTERPRISE RADAR 9.22 ACTIVE (DIAGNOSTIC DISPATCH & REDIRECT FIX)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -197,18 +197,23 @@ def is_item_recent(pubdate_str, max_days):
         return True
 
 def push_to_google_sheet(payload):
-    if not GOOGLE_SHEET_WEBHOOK: return True
+    if not GOOGLE_SHEET_WEBHOOK:
+        log("    ❌ [Sheet Error]: GOOGLE_SHEET_WEBHOOK environment variable is missing!")
+        return False
     try:
-        res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
-        log(f"    [Sheet Push Status]: {res.status_code}")
+        # allow_redirects=False ensures Google Apps Script receives the POST body intact
+        res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=15, allow_redirects=False)
+        log(f"    [Sheet Push Response]: Status {res.status_code} | Text: {res.text[:100]}")
         return True
     except Exception as e:
-        log(f"    [Sheet Push Error]: {e}")
-        return True
+        log(f"    ❌ [Sheet Push Exception]: {e}")
+        return False
 
 def send_telegram(text, is_media_source=False, target_state="Pan-India"):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not bot_token: return
+    if not bot_token:
+        log("    ❌ [Telegram Error]: TELEGRAM_BOT_TOKEN environment variable is missing!")
+        return
     
     active_chat_id = None
     if is_media_source:
@@ -224,14 +229,20 @@ def send_telegram(text, is_media_source=False, target_state="Pan-India"):
     if not active_chat_id:
         active_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         
-    if not active_chat_id: return
+    if not active_chat_id:
+        log(f"    ❌ [Telegram Error]: No valid Chat ID found for state '{target_state}' or general fallback!")
+        return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": active_chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": False}
     try:
-        SESSION.post(url, json=payload, timeout=10)
-    except Exception:
-        pass
+        res = SESSION.post(url, json=payload, timeout=10)
+        if res.status_code == 200:
+            log(f"    [Telegram Sent]: Successfully dispatched to chat {active_chat_id}")
+        else:
+            log(f"    ❌ [Telegram Failed]: Status {res.status_code} | Response: {res.text}")
+    except Exception as e:
+        log(f"    ❌ [Telegram Exception]: {e}")
 
 def deep_scrape_content(url):
     try:
@@ -389,7 +400,6 @@ def main():
     log(f"Total filtered commercial candidates to evaluate: {len(candidates)}")
     if not candidates: return
 
-    # Force process candidates to guarantee sheet/telegram test delivery
     log(">>> Dispatching candidate batch...")
     for item in candidates[:5]:
         res_dict = extract_lead_locally(item, item["real_link"])
