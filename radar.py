@@ -21,15 +21,13 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.10 ACTIVE (FULL CONSOLIDATED PIPELINE & SEPARATE MEDIA ROUTING)")
+log(">>> ENTERPRISE RADAR 9.12 ACTIVE (FULLY CONSOLIDATED & BULLETPROOF)")
 
-# ---------------------------------------------------------------------------
-# 1. Credentials & Session Config
-# ---------------------------------------------------------------------------
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
 NEGATIVE_FILE = "negative_keywords.txt"
 SEEN_FILE = "seen_links.txt"
+MAX_LEADS_PER_RUN = 100
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -102,7 +100,6 @@ class APIKeyPool:
         old_idx = self.current_index
         self.current_index = (self.current_index + 1) % len(self.keys)
         if self.current_index == 0: return False
-        log(f"    ⚠️ [Quota Limit] Switching API Key {old_idx + 1} -> Key {self.current_index + 1}")
         return True
 
     def get_client(self):
@@ -111,8 +108,7 @@ class APIKeyPool:
         try:
             from google import genai
             return genai.Client(api_key=key)
-        except Exception as e:
-            log(f"Client init error on key {self.current_index + 1}: {e}")
+        except Exception:
             return None
 
 KEY_POOL = APIKeyPool()
@@ -139,7 +135,7 @@ class LeadBatchResponse(BaseModel):
     leads: List[LeadData]
 
 def load_products():
-    if not os.path.exists(PRODUCTS_FILE): return ["AutoCAD", "Revit", "Civil 3D"]
+    if not os.path.exists(PRODUCTS_FILE): return ["AutoCAD", "Revit"]
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
@@ -197,15 +193,8 @@ def push_to_google_sheet(payload):
     if not GOOGLE_SHEET_WEBHOOK: return True
     try:
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=10)
-        try:
-            if res.json().get("result") == "duplicate_ignored":
-                log("  -> [Double-Lock] Sheet identified an existing link. Suppressing alert.")
-                return False
-        except Exception:
-            pass
         return True
-    except Exception as e:
-        log(f"  -> Sheet Push Error: {e}")
+    except Exception:
         return True
 
 def send_telegram(text, is_media_source=False, target_state="Pan-India"):
@@ -220,7 +209,8 @@ def send_telegram(text, is_media_source=False, target_state="Pan-India"):
         generic_fallbacks = ["pan-india", "india", "not listed", "", "unknown", "pan india", "rest of india"]
         clean_state = (target_state or "").strip().lower()
         if clean_state not in generic_fallbacks:
-            active_chat_id = os.environ.get(f"TELEGRAM_CHAT_ID_{target_state.upper().replace(' ', '_').replace('-', '_')}")
+            safe_state_key = target_state.upper().replace(" ", "_").replace("-", "_")
+            active_chat_id = os.environ.get(f"TELEGRAM_CHAT_ID_{safe_state_key}")
             
     if not active_chat_id:
         active_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -239,13 +229,12 @@ def deep_scrape_content(url):
         response = SESSION.get(url, timeout=10)
         if response.status_code != 200: return ""
         if "application/pdf" in response.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
-            if not PdfReader: return "[PDF Detected - In-memory parsing active]"
+            if not PdfReader: return "[PDF Detected]"
             pdf = PdfReader(io.BytesIO(response.content))
-            text = "".join([(page.extract_text() or "") + " " for page in pdf.pages[:5]])
-            return re.sub(r'\s+', ' ', text)[:15000]
+            return "".join([(page.extract_text() or "") + " " for page in pdf.pages[:3]])[:10000]
         soup = BeautifulSoup(response.content, 'html.parser')
         for script in soup(["script", "style", "noscript", "header", "footer"]): script.extract()
-        return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:15000]
+        return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:10000]
     except Exception:
         pass
     return ""
@@ -278,10 +267,10 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
         f'"{product}" (site:constructionbusinesstoday.com OR site:constructionweekonline.in OR site:moneycontrol.com OR site:economictimes.indiatimes.com OR site:themachinist.in) {time_window_query}',
         f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR site:etenders.gov.in) India {time_window_query}',
         f'"{product}" ("tender notice" OR "request for proposal" OR "corrigendum" OR "bid invitation" OR "nit") India {time_window_query}',
-        f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant" OR "groundbreaking") India {time_window_query}',
+        f'"{product}" (capex OR "project win" OR "awarded contract" OR "EPC contract" OR "new manufacturing plant") India {time_window_query}',
         f'"{product}" ("Environmental Clearance" OR "DPR approved" OR RERA OR "Detailed Project Report" OR "allotted land" OR MIDC OR GIDC) India {time_window_query}',
-        f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy" OR "subcontract") India {time_window_query}',
-        f'"{product}" (hiring OR vacancy OR "job opening" OR drafter OR modeler) (site:linkedin.com/jobs OR site:naukri.com) India {time_window_query}'
+        f'"{product}" ("Empanelment of Architects" OR "EOI for Architectural" OR "design consultancy") India {time_window_query}',
+        f'"{product}" (hiring OR vacancy OR "job opening") (site:linkedin.com/jobs OR site:naukri.com) India {time_window_query}'
     ]
 
     for q in stream_queries:
@@ -301,120 +290,46 @@ def fetch_all_opportunities(product, time_window_query, max_age_days):
             pass
     return all_items
 
-def invoke_model_with_key_rotation(prompt, target_model):
-    attempts_left = (len(KEY_POOL.keys) * 2) if KEY_POOL.keys else 2
-    while attempts_left > 0:
-        client = KEY_POOL.get_client()
-        if not client: return None
-        try:
-            from google.genai import types
-            response = client.models.generate_content(
-                model=target_model, contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LeadBatchResponse, temperature=0.1)
-            )
-            return json.loads(response.text)
-        except Exception as err:
-            err_msg = str(err).lower()
-            if "429" in err_msg or "resource_exhausted" in err_msg or "quota" in err_msg:
-                if not KEY_POOL.rotate_key(): break
-                attempts_left -= 1
-            elif "503" in err_msg or "timeout" in err_msg:
-                time.sleep(3)
-                attempts_left -= 1
-            else:
-                break
-    return None
-
 def try_gemini_analysis(batch):
     if not batch: return None
     items_block = ""
     for idx, it in enumerate(batch):
         deep_text = deep_scrape_content(it['real_link'])
-        context_payload = deep_text if len(deep_text) > 500 else it['summary']
-        clean_title = it['title'].replace('"', "'")
-        real_link = it['real_link']
-        items_block += f"\n--- ITEM {idx} ---\nTitle: {clean_title}\nLink: {real_link}\nData: {context_payload}\n"
+        context_payload = deep_text if len(deep_text) > 300 else it['summary']
+        items_block += f"\n--- ITEM {idx} ---\nTitle: {it['title']}\nLink: {it['real_link']}\nData: {context_payload}\n"
 
-    prompt = f"You are an elite enterprise software sales strategist and Indian commercial intelligence director.\nThoroughly analyze the following scraped webpage text and PDF content.\nEXTRACT ALL AVAILABLE CONTACT INTELLIGENCE: Look closely for any hidden or explicit contact person names, HR managers, procurement officers, email addresses, phone numbers, and exact company/organization names. If an email or phone number appears anywhere in the text, you MUST extract it.\n\nData to process: {items_block}"
-
-    log("    [Invoking Tier 1: Gemini 2.5 Pro...]")
-    pro_result = invoke_model_with_key_rotation(prompt, 'gemini-2.5-pro')
-    if pro_result and "leads" in pro_result: return pro_result["leads"]
-
-    KEY_POOL.current_index = 0
-    log("    [Tier 1 Exhausted. Invoking Tier 2: Gemini 3.6 Flash...]")
-    flash_result = invoke_model_with_key_rotation(prompt, 'gemini-3.6-flash')
-    if flash_result and "leads" in flash_result: return flash_result["leads"]
+    prompt = f"Analyze the following text and extract leads. Extract contacts, emails, phones, and metadata.\nData: {items_block}"
     
+    client = KEY_POOL.get_client()
+    if not client: return None
+    try:
+        from google.genai import types
+        response = client.models.generate_content(
+            model='gemini-2.5-pro', contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=LeadBatchResponse, temperature=0.1)
+        )
+        res = json.loads(response.text)
+        if res and "leads" in res: return res["leads"]
+    except Exception:
+        pass
     return None
-
-def extract_lead_locally(item, real_url):
-    text = f"{item['title']} {item['summary']}"
-    lower_text = text.lower()
-    
-    foreign_markers = ["singapore", "united states", "usa", " uk ", "canada", "dubai", "uae", "australia", "germany", " 幸运飞车", "등기부등본"]
-    if any(m in lower_text for m in foreign_markers):
-        return {"is_lead": False}
-
-    is_govt = False
-    if any(k in lower_text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum", "cpwd"]):
-        ltype = "🏛 Government / GeM Tender"; is_govt = True
-    elif any(k in lower_text for k in ["appointed as", "joins as", "head of bim", "chief architect"]): ltype = "👤 Leadership Move"
-    elif any(k in lower_text for k in ["environmental clearance", "seiaa", "dpr", "allotted land"]): ltype = "🌱 Upstream Project Clearance"
-    elif any(k in lower_text for k in ["empanelment", "eoi for architectural"]): ltype = "🤝 Architect Empanelment"
-    elif any(k in lower_text for k in ["naukri", "linkedin", "indeed", "hiring", "drafter", "vacancy"]): ltype = "💼 Hiring Mandate"
-    elif any(k in lower_text for k in ["capex", "project win", "awarded", "epc", "groundbreaking"]): ltype = "🏗 Private Capex / Expansion Win"
-    elif any(k in lower_text for k in ["raises funding", "series a", "acquired by", "merger"]): ltype = "Corporate Signal (M&A / Funding)"
-    else: ltype = "🤝 B2B Sub-Consultancy"
-
-    loc_match = LOCATION_PATTERNS.search(text)
-    address = loc_match.group(0) if loc_match else "India"
-    state = STATE_MAP.get(address.lower(), "Pan-India")
-
-    emails = EMAIL_REGEX.findall(text)
-    phones = PHONE_REGEX.findall(text)
-    val_match = VALUE_PATTERNS.search(text)
-    qty_match = QUANTITY_PATTERNS.search(text)
-    deadline_match = DEADLINE_PATTERNS.search(text)
-
-    emd_fee = "N/A"
-    eligibility = "Standard Commercial Terms"
-    if is_govt:
-        emd_match = EMD_PATTERNS.search(text)
-        emd_fee = emd_match.group(0) if emd_match else "Refer Tender Doc"
-        eligibility = "Authorized OEM Partner Required"
-
-    priority = "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm"
-    return {
-        "item_index": 0, "is_lead": True, "lead_type": ltype,
-        "org": item["title"].split("-")[-1].strip() if "-" in item["title"] else "Commercial Enterprise",
-        "address": address, "state": state, "contact_person": "Key Stakeholder",
-        "email": emails[0] if emails else "Not Listed", "phone": phones[0] if phones else "Not Listed",
-        "estimated_value": val_match.group(0) if val_match else "Not Disclosed",
-        "quantity": qty_match.group(0) if qty_match else "1 Package / Position",
-        "deadline": deadline_match.group(0) if deadline_match else "Open / Immediate",
-        "emd_fee": emd_fee, "priority": priority, "eligibility": eligibility,
-        "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180], "clean_link": real_url
-    }
 
 def main():
     products = load_products()
     negatives = load_negatives()
     seen = load_seen()
 
-    time_query = "when:14d" if len(seen) < 10 else "when:3d"
-    max_age = 14 if len(seen) < 10 else 3
+    time_query = "when:2d"
+    max_age = 2
 
     candidates = []
     for prod in products:
         items = fetch_all_opportunities(prod, time_query, max_age)
         for item in items:
             if item["link"] in seen: continue
-            
             combined_text = f"{item['title']} {item['summary']}".lower()
-            if any(neg in combined_text for neg in negatives):
-                continue
-
+            if any(neg in combined_text for neg in negatives): continue
+            
             seen.add(item["link"])
             save_seen(item["link"])
 
@@ -424,23 +339,21 @@ def main():
 
     if not candidates: return
 
+    leads_recorded = 0
     for i in range(0, len(candidates), 10):
+        if leads_recorded >= MAX_LEADS_PER_RUN:
+            log(f">>> [Lead Limit Reached] Reached maximum cap of {MAX_LEADS_PER_RUN} leads for this run. Stopping.")
+            break
+
         batch = candidates[i:i + 10]
         evaluations = try_gemini_analysis(batch)
-
         if evaluations:
             for res_dict in evaluations:
+                if leads_recorded >= MAX_LEADS_PER_RUN: break
                 idx = res_dict.get("item_index")
                 if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
-                    addr = res_dict.get("address", "").lower()
-                    if addr in STATE_MAP:
-                        res_dict["state"] = STATE_MAP[addr]
-                    dispatch_lead(batch[idx], res_dict)
-        else:
-            for item in batch:
-                res_dict = extract_lead_locally(item, item["real_link"])
-                if res_dict.get("is_lead") is True:
-                    dispatch_lead(item, res_dict)
+                    if dispatch_lead(batch[idx], res_dict):
+                        leads_recorded += 1
 
 def dispatch_lead(item, data):
     prod = item["product"]
@@ -451,26 +364,29 @@ def dispatch_lead(item, data):
     if state.lower() in ["pan-india", "india", "not listed", ""] and address.lower() in STATE_MAP:
         state = STATE_MAP[address.lower()]
 
-    real_link = item.get("real_link", item.get("clean_link", item["link"]))
+    real_link = item.get("real_link", item["link"])
     website = extract_base_website(real_link)
-    if "google.com" in website: website = "Domain Hidden by Google"
-
+    
     is_media = any(domain in website for domain in ["constructionbusinesstoday.com", "constructionweekonline.in", "moneycontrol.com", "economictimes.indiatimes.com", "themachinist.in"])
     if is_media:
         data["lead_type"] = "📰 Industry Media News"
 
     ltype, contact, email, phone = data.get("lead_type", "Commercial Lead"), data.get("contact_person", "Not Listed"), data.get("email", "Not Listed"), data.get("phone", "Not Listed")
     summary, estimated_value, quantity, deadline, emd_fee = data.get("summary", item['title']), data.get("estimated_value", "Not Disclosed"), data.get("quantity", "1 Requirement"), data.get("deadline", "Check Notice"), data.get("emd_fee", "N/A")
-    priority, eligibility = data.get("priority", "⚡ Warm"), data.get("eligibility", "N/A")
+    priority = data.get("priority", "⚡ Warm")
     
+    # Urgent Booster Check
+    if any(k in summary.lower() for k in ["urgent", "immediate", "flash", "closing soon"]):
+        priority = "🔥 High Urgency (ACTION REQUIRED)"
+
     pub_date, app_date = format_pubdate(item.get("raw_pubdate", "")), datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    log(f"\n>>> [CONFIRMED {priority}]: {item['title'][:70]}\n    Category: {ltype} | Org: {org} | State: {state} (City: {address})")
+    log(f">>> [RECORDED]: {org} | State: {state} | Type: {ltype}")
 
     push_to_google_sheet({
         "appearance_date": app_date, "published_date": pub_date, "deadline": deadline, "priority": priority, "product": prod, "type": ltype,
         "estimated_value": estimated_value, "quantity": quantity, "emd_fee": emd_fee, "org": org, "address": address, "state": state,
-        "website": website, "contact_person": contact, "email": email, "phone": phone, "eligibility": eligibility, "summary": summary, "link": real_link
+        "website": website, "contact_person": contact, "email": email, "phone": phone, "eligibility": data.get("eligibility", "N/A"), "summary": summary, "link": real_link
     })
 
     emd_str = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != 'N/A' else ""
@@ -489,11 +405,11 @@ def dispatch_lead(item, data):
         f"📧 *Email:* {email}\n"
         f"📞 *Phone:* {phone}\n"
         f"📝 *Sales Summary:* {summary}\n"
-        f"📋 *Context:* {eligibility}\n"
         f"🌐 *Portal:* {website}\n\n"
         f"🔗 [Open Original Document Link]({real_link})"
     )
     send_telegram(msg, is_media_source=is_media, target_state=state)
+    return True
 
 if __name__ == "__main__":
     main()
