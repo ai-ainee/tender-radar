@@ -18,10 +18,15 @@ try:
 except ImportError:
     PdfReader = None
 
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    DDGS = None
+
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR MASTER ACTIVE (ENRICHED B2B DATA PIPELINE)")
+log(">>> ENTERPRISE RADAR MASTER ACTIVE (STRICT B2B BUYER FILTER + AI ENRICHMENT ENABLED)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -35,11 +40,12 @@ SESSION.headers.update({
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 })
 
+# Positive signals
 COMMERCIAL_PATTERNS = re.compile(
     r"\b(tender|tenders|rfp|bid|bids|bidding|gem|eprocure|procurement|supply|quotation|eoi|nit|"
     r"corrigendum|addendum|extension|license|licenses|subscription|renewal|contract|hiring|vacancy|"
     r"drafter|modeler|architect|engineer|job|jobs|capex|expansion|project win|awarded|contractor|"
-    r"consultancy|freelance|subcontract|indiamart|rera|ireps|environmental clearance|seiaa|"
+    r"consultancy|freelance|subcontract|rera|ireps|environmental clearance|seiaa|"
     r"allotted land|dpr|feasibility|empanelment|appointed as|joins as|head of bim|chief architect|"
     r"series a|series b|raises funding|acquired|acquisition|merger|ipo|drhp)\b",
     re.IGNORECASE,
@@ -94,7 +100,21 @@ EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 PHONE_REGEX = re.compile(r"(?:\+91[- ]?)?[6789]\d{9}\b")
 VALUE_PATTERNS = re.compile(r"(?:₹|Rs\.?|INR|\$)\s*[\d,]+(?:\.\d+)?\s*(?:Cr(?:ore)?|Lakh|L|K|Million|M|Billion|B)?\b", re.IGNORECASE)
 DEADLINE_PATTERNS = re.compile(r"(?:due|closing|last|end)\s*(?:date|time)?[:\s\-]+(\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})", re.IGNORECASE)
-QUANTITY_PATTERNS = re.compile(r"(\d+)\s*(?:nos|qty|licenses|users|seats|posts|openings|positions|units)\b", re.IGNORECASE)
+
+# Strict Reseller & Junk Filters
+SELLER_MARKERS = [
+    "indiamart", "tradeindia", "justdial", "dealer", "dealers", "reseller", "resellers",
+    "distributor", "distributors", "authorized partner", "channel partner", "training center",
+    "course", "syllabus", "learn autocad", "tutorial", "wholesale", "we sell", "buy from us",
+    "gold partner", "platinum partner"
+]
+
+JUNK_MARKERS = [
+    "housekeeping", "security guard", "security services", "catering", "canteen", 
+    "stationery", "taxi", "vehicle hiring", "scrap", "auction", "medicines", 
+    "medical equipment", "hospital supply", "sweeping", "cleaning", "manpower outsourcing",
+    "printer cartridge", "photocopier"
+]
 
 class APIKeyPool:
     def __init__(self):
@@ -127,7 +147,7 @@ KEY_POOL = APIKeyPool()
 
 class LeadData(BaseModel):
     item_index: int = Field(description="The index number of the evaluated item.")
-    is_lead: bool = Field(description="True if this is a commercial lead, tender, hiring mandate, or capex signal.")
+    is_lead: bool = Field(description="True ONLY if genuine B2B software buyer, engineering/CAD hiring role, or capex project. FALSE if seller or irrelevant.")
     lead_type: str = Field(description="Category of signal.")
     org: str = Field(description="Target enterprise, PSU, builder, or hiring entity.")
     address: str = Field(description="City or district location in India.")
@@ -196,10 +216,43 @@ def is_item_recent(pubdate_str, max_days):
     except Exception:
         return True
 
+def free_b2b_enrichment(company_name, lead_type):
+    """Automatically searches the web for the Official Website and LinkedIn Decision Makers."""
+    enriched_data = {"dm_name": "Not Found", "linkedin_url": "", "website": ""}
+    
+    if not DDGS: return enriched_data
+    if not company_name or len(company_name) < 4 or company_name.lower() in ["commercial enterprise", "commercial buyer"]:
+        return enriched_data
+        
+    try:
+        ddgs = DDGS()
+        # 1. Search for official website
+        web_results = ddgs.text(f"{company_name} official website india", max_results=1)
+        if web_results:
+            enriched_data["website"] = web_results[0].get("href", "")
+            
+        # 2. Search for exact Decision Maker on LinkedIn
+        if "hiring" in lead_type.lower() or "design" in lead_type.lower():
+            role_keywords = '"Head of BIM" OR "Chief Architect" OR "Design Head" OR HR'
+        else:
+            role_keywords = 'Procurement OR "Purchase Manager" OR Director OR "General Manager"'
+            
+        dork_query = f'"{company_name}" ({role_keywords}) site:linkedin.com/in/'
+        li_results = ddgs.text(dork_query, max_results=1)
+        
+        if li_results:
+            title_text = li_results[0].get("title", "")
+            enriched_data["linkedin_url"] = li_results[0].get("href", "")
+            enriched_data["dm_name"] = title_text.replace(" | LinkedIn", "").replace(" - LinkedIn", "")
+            
+        time.sleep(1) # Prevent rate limits
+    except Exception as e:
+        log(f"    ⚠️ [Enrichment Warning]: {e}")
+        
+    return enriched_data
+
 def push_to_google_sheet(payload):
-    if not GOOGLE_SHEET_WEBHOOK:
-        log("    ❌ [Sheet Error]: GOOGLE_SHEET_WEBHOOK is missing!")
-        return False
+    if not GOOGLE_SHEET_WEBHOOK: return False
     try:
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=15, allow_redirects=False)
         log(f"    📊 [Sheet Response]: Status {res.status_code}")
@@ -210,9 +263,7 @@ def push_to_google_sheet(payload):
 
 def send_telegram(text, is_media_source=False, target_state="Pan-India"):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not bot_token:
-        log("    ❌ [Telegram Error]: TELEGRAM_BOT_TOKEN is missing!")
-        return
+    if not bot_token: return
     
     active_chat_id = None
     if is_media_source:
@@ -233,13 +284,9 @@ def send_telegram(text, is_media_source=False, target_state="Pan-India"):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": active_chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": False}
     try:
-        res = SESSION.post(url, json=payload, timeout=10)
-        if res.status_code == 200:
-            log(f"    📱 [Telegram Sent]: Dispatched successfully to {active_chat_id}")
-        else:
-            log(f"    ❌ [Telegram Failed]: Status {res.status_code} | {res.text}")
-    except Exception as e:
-        log(f"    ❌ [Telegram Exception]: {e}")
+        SESSION.post(url, json=payload, timeout=10)
+    except Exception:
+        pass
 
 def deep_scrape_content(url):
     try:
@@ -319,9 +366,17 @@ def try_gemini_analysis(batch):
         items_block += f"\n--- ITEM {idx} ---\nTitle: {it['title']}\nLink: {it['real_link']}\nData: {context_payload}\n"
 
     prompt = (
-        "Analyze the following Indian business, government, and recruitment items for software sales intelligence.\n"
-        "Extract key sales data: Tender/Ref ID, Project Stage (Planning, Design, Tender/Bidding, Construction, or Team Expansion), "
-        "and any CAD/BIM/AEC tech stack software mentioned.\n"
+        "You are a strict B2B Sales Intelligence filter for CAD/BIM/AEC software (like AutoCAD, Revit).\n"
+        "Analyze the following Indian business/government items.\n\n"
+        "CRITICAL REJECTION RULES (Set 'is_lead' to FALSE if):\n"
+        "1. Sellers/Dealers: The entity is selling, teaching, or reselling software.\n"
+        "2. Junk/Irrelevant Industry: The text is about unrelated tenders (e.g., housekeeping, catering, security, medical equipment, vehicle hiring, scrap).\n"
+        "3. Passing Mentions: The software is just mentioned in a website sidebar or unrelated context.\n\n"
+        "ACCEPT ONLY (Set 'is_lead' to TRUE if):\n"
+        "1. Genuine software buyers/tenders looking for CAD/BIM licenses.\n"
+        "2. Companies actively hiring for CAD/BIM/Drafting roles.\n"
+        "3. Large Capex/Construction project announcements (potential buyers).\n\n"
+        "Extract: Tender/Ref ID, Project Stage (Planning, Design, Tender, Construction, Team Expansion), & CAD/BIM Tech Stack.\n"
         f"Data: {items_block}"
     )
 
@@ -344,38 +399,29 @@ def extract_lead_locally(item, real_url):
     text = f"{item['title']} {item['summary']}".lower()
     
     foreign_markers = ["singapore", "united states", "usa", " uk ", "canada", "dubai", "uae", "australia", "germany"]
-    if any(m in text for m in foreign_markers):
-        return {"is_lead": False}
+    if any(m in text for m in foreign_markers): return {"is_lead": False}
+    if any(sm in text for sm in SELLER_MARKERS): return {"is_lead": False}
+    if any(jm in text for jm in JUNK_MARKERS): return {"is_lead": False}
 
     is_govt = any(k in text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum"])
     is_capex = any(k in text for k in ["capex", "project win", "awarded", "expansion", "empanelment"])
     is_hiring = any(k in text for k in ["hiring", "vacancy", "jobs", "opening"])
     
-    if not (is_govt or is_capex or is_hiring):
-        return {"is_lead": False}
+    if not (is_govt or is_capex or is_hiring): return {"is_lead": False}
 
     ltype = "🏛 Government / GeM Tender" if is_govt else ("💼 Hiring Mandate" if is_hiring else "🏗 Private Capex / Expansion Win")
 
-    # Determine Project Stage
-    if is_govt:
-        p_stage = "Tender & Bidding"
-    elif is_hiring:
-        p_stage = "Team Expansion"
-    elif any(k in text for k in ["dpr", "clearance", "rera", "feasibility", "planned", "planning"]):
-        p_stage = "Planning & Feasibility"
-    elif any(k in text for k in ["epc", "civil work", "construction", "plant", "expansion"]):
-        p_stage = "Under Construction"
-    else:
-        p_stage = "Design & Engineering"
+    if is_govt: p_stage = "Tender & Bidding"
+    elif is_hiring: p_stage = "Team Expansion"
+    elif any(k in text for k in ["dpr", "clearance", "rera", "feasibility", "planned"]): p_stage = "Planning & Feasibility"
+    elif any(k in text for k in ["epc", "civil work", "construction", "plant"]): p_stage = "Under Construction"
+    else: p_stage = "Design & Engineering"
 
-    # Extract Tech Stack
     raw_text = f"{item['title']} {item['summary']}"
     found_tools = list(set(TECH_STACK_PATTERNS.findall(raw_text)))
-    if item['product'] not in found_tools:
-        found_tools.insert(0, item['product'])
+    if item['product'] not in found_tools: found_tools.insert(0, item['product'])
     tech_stack_str = ", ".join(found_tools)
 
-    # Extract Tender Ref ID
     tender_id_match = TENDER_ID_PATTERNS.search(raw_text)
     tender_id = tender_id_match.group(1).strip() if tender_id_match else "N/A"
 
@@ -394,26 +440,17 @@ def extract_lead_locally(item, real_url):
         "address": address, "state": state, "contact_person": "Key Stakeholder",
         "email": emails[0] if emails else "Not Listed", "phone": phones[0] if phones else "Not Listed",
         "estimated_value": val_match.group(0) if val_match else "Not Disclosed",
-        "quantity": "1 Requirement",
-        "deadline": deadline_match.group(0) if deadline_match else "Open / Immediate",
-        "emd_fee": "Refer Tender Doc" if is_govt else "N/A", 
-        "priority": "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm", 
-        "eligibility": "Standard Commercial Terms",
-        "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180],
-        "tender_id": tender_id,
-        "project_stage": p_stage,
-        "tech_stack": tech_stack_str,
-        "clean_link": real_url
+        "quantity": "1 Requirement", "deadline": deadline_match.group(0) if deadline_match else "Open / Immediate",
+        "emd_fee": "Refer Tender Doc" if is_govt else "N/A", "priority": "🔥 High Urgency" if deadline_match or val_match else "⚡ Warm", 
+        "eligibility": "Standard Commercial Terms", "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180],
+        "tender_id": tender_id, "project_stage": p_stage, "tech_stack": tech_stack_str, "clean_link": real_url
     }
 
 def main():
     products = load_products()
     negatives = load_negatives()
     seen = load_seen()
-
-    time_query = "when:7d"
-    max_age = 7
-
+    time_query, max_age = "when:7d", 7
     candidates = []
     
     log(">>> Phase 1: Gathering Intelligence Signals...")
@@ -422,11 +459,13 @@ def main():
         for item in items:
             if item["link"] in seen: continue
             combined_text = f"{item['title']} {item['summary']}".lower()
-            if any(neg in combined_text for neg in negatives): continue
+            
+            # MASSIVE JUNK FILTER BEFORE AI
+            if any(neg in combined_text for neg in negatives) or any(sm in combined_text for sm in SELLER_MARKERS) or any(jm in combined_text for jm in JUNK_MARKERS):
+                continue
             
             seen.add(item["link"])
             save_seen(item["link"])
-
             if COMMERCIAL_PATTERNS.search(combined_text):
                 item["real_link"] = item["link"]
                 candidates.append(item)
@@ -466,63 +505,52 @@ def dispatch_lead(item, data):
     website = extract_base_website(real_link)
     
     is_media = any(domain in website for domain in ["constructionbusinesstoday.com", "constructionweekonline.in", "moneycontrol.com", "economictimes.indiatimes.com", "themachinist.in"])
-    if is_media:
-        data["lead_type"] = "📰 Industry Media News"
-
+    if is_media: data["lead_type"] = "📰 Industry Media News"
     ltype = data.get("lead_type", "Commercial Lead")
-    contact = data.get("contact_person", "Not Listed")
-    email = data.get("email", "Not Listed")
-    phone = data.get("phone", "Not Listed")
-    summary = data.get("summary", item['title'])
-    estimated_value = data.get("estimated_value", "Not Disclosed")
-    quantity = data.get("quantity", "1 Requirement")
-    deadline = data.get("deadline", "Check Notice")
-    emd_fee = data.get("emd_fee", "N/A")
-    priority = data.get("priority", "⚡ Warm")
+
+    # --- FREE AI ENRICHMENT ---
+    log(f"    🔍 [Enriching]: Hunting for Decision Makers at {org}...")
+    enrichment = free_b2b_enrichment(org, ltype)
     
-    project_stage = data.get("project_stage", "Design & Engineering")
-    tech_stack = data.get("tech_stack", prod)
-    tender_id = data.get("tender_id", "N/A")
+    if enrichment["website"] and ("google" in website or "news" in website or "eprocure" in website):
+        website = enrichment["website"]
+        
+    contact = data.get("contact_person", "Not Listed")
+    li_str = ""
+    if enrichment["linkedin_url"]:
+        contact = f"{enrichment['dm_name']} (Via LinkedIn)"
+        li_str = f"🔗 *DM LinkedIn:* [View Profile]({enrichment['linkedin_url']})\n"
+        data["contact_person"] = f"{enrichment['dm_name']} | {enrichment['linkedin_url']}"
+    else:
+        data["contact_person"] = contact
+    # --------------------------
 
-    if any(k in summary.lower() for k in ["urgent", "immediate", "flash", "closing soon"]):
-        priority = "🔥 High Urgency (ACTION REQUIRED)"
+    email, phone = data.get("email", "Not Listed"), data.get("phone", "Not Listed")
+    summary, estimated_value, quantity, deadline, emd_fee = data.get("summary", item['title']), data.get("estimated_value", "Not Disclosed"), data.get("quantity", "1 Requirement"), data.get("deadline", "Check Notice"), data.get("emd_fee", "N/A")
+    priority, project_stage, tech_stack, tender_id = data.get("priority", "⚡ Warm"), data.get("project_stage", "Design & Engineering"), data.get("tech_stack", prod), data.get("tender_id", "N/A")
 
-    pub_date = format_pubdate(item.get("raw_pubdate", ""))
-    app_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    if any(k in summary.lower() for k in ["urgent", "immediate", "flash", "closing soon"]): priority = "🔥 High Urgency (ACTION REQUIRED)"
+
+    pub_date, app_date = format_pubdate(item.get("raw_pubdate", "")), datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     log(f"    >>> [RECORDED]: {org} | {project_stage} | Stack: {tech_stack}")
-
     push_to_google_sheet({
         "appearance_date": app_date, "published_date": pub_date, "deadline": deadline, "priority": priority,
         "product": prod, "type": ltype, "project_stage": project_stage, "tech_stack": tech_stack,
         "tender_id": tender_id, "estimated_value": estimated_value, "quantity": quantity, "emd_fee": emd_fee,
-        "org": org, "address": address, "state": state, "website": website, "contact_person": contact,
+        "org": org, "address": address, "state": state, "website": website, "contact_person": data["contact_person"],
         "email": email, "phone": phone, "eligibility": data.get("eligibility", "N/A"), "summary": summary, "link": real_link
     })
 
     emd_str = f"💳 *EMD / Tender Fee:* {emd_fee}\n" if emd_fee != 'N/A' else ""
     ref_str = f"🆔 *Tender / Ref ID:* `{tender_id}`\n" if tender_id != 'N/A' else ""
-
+    
     msg = (
-        f"🚨 *Intelligence Signal Alert!*\n\n"
-        f"🎯 *Priority:* {priority}\n"
-        f"🏷 *Category:* {ltype}\n"
-        f"🏗 *Project Stage:* {project_stage}\n"
-        f"🛠 *Tech Stack:* `{tech_stack}`\n"
-        f"🏢 *Entity / Buyer:* {org}\n"
-        f"{ref_str}"
-        f"📦 *Product / Scope:* {prod} ({quantity})\n"
-        f"💰 *Budget / Value:* {estimated_value}\n"
-        f"⏳ *Key Deadline:* `{deadline}`\n"
-        f"{emd_str}"
-        f"📍 *Location:* {address}, {state}\n"
-        f"📅 *Published:* {pub_date}\n"
-        f"👤 *Stakeholder:* {contact}\n"
-        f"📧 *Email:* {email}\n"
-        f"📞 *Phone:* {phone}\n"
-        f"📝 *Sales Summary:* {summary}\n"
-        f"🌐 *Portal:* {website}\n\n"
-        f"🔗 [Open Original Document Link]({real_link})"
+        f"🚨 *Intelligence Signal Alert!*\n\n🎯 *Priority:* {priority}\n🏷 *Category:* {ltype}\n🏗 *Project Stage:* {project_stage}\n"
+        f"🛠 *Tech Stack:* `{tech_stack}`\n🏢 *Entity / Buyer:* {org}\n{ref_str}📦 *Product / Scope:* {prod} ({quantity})\n"
+        f"💰 *Budget / Value:* {estimated_value}\n⏳ *Key Deadline:* `{deadline}`\n{emd_str}📍 *Location:* {address}, {state}\n"
+        f"📅 *Published:* {pub_date}\n👤 *Stakeholder:* {contact}\n{li_str}📧 *Email:* {email}\n📞 *Phone:* {phone}\n"
+        f"📝 *Sales Summary:* {summary}\n🌐 *Portal:* {website}\n\n🔗 [Open Original Document Link]({real_link})"
     )
     send_telegram(msg, is_media_source=is_media, target_state=state)
     return True
