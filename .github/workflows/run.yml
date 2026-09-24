@@ -2,7 +2,6 @@ name: Enterprise Radar Pipeline
 
 on:
   schedule:
-    # Runs every hour from 8 AM to 8 PM IST (02:30 UTC to 14:30 UTC)
     - cron: '30 2-14 * * *'
   workflow_dispatch:
 
@@ -18,7 +17,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
+          cache: ''
 
       - name: Install Dependencies
         run: |
@@ -31,9 +30,7 @@ jobs:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Dedicated Media Channel Secret
           TELEGRAM_CHAT_ID_INDUSTRY_MEDIA: ${{ secrets.TELEGRAM_CHAT_ID_INDUSTRY_MEDIA }}
-          # All State-Specific Telegram Secrets
           TELEGRAM_CHAT_ID_DELHI: ${{ secrets.TELEGRAM_CHAT_ID_DELHI }}
           TELEGRAM_CHAT_ID_MAHARASHTRA: ${{ secrets.TELEGRAM_CHAT_ID_MAHARASHTRA }}
           TELEGRAM_CHAT_ID_KARNATAKA: ${{ secrets.TELEGRAM_CHAT_ID_KARNATAKA }}
