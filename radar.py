@@ -21,7 +21,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR 9.22 ACTIVE (DIAGNOSTIC DISPATCH & REDIRECT FIX)")
+log(">>> ENTERPRISE RADAR MASTER ACTIVE (CLEAN REPO DEPLOYMENT)")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -84,7 +84,6 @@ PHONE_REGEX = re.compile(r"(?:\+91[- ]?)?[6789]\d{9}\b")
 VALUE_PATTERNS = re.compile(r"(?:₹|Rs\.?|INR|\$)\s*[\d,]+(?:\.\d+)?\s*(?:Cr(?:ore)?|Lakh|L|K|Million|M|Billion|B)?\b", re.IGNORECASE)
 DEADLINE_PATTERNS = re.compile(r"(?:due|closing|last|end)\s*(?:date|time)?[:\s\-]+(\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})", re.IGNORECASE)
 QUANTITY_PATTERNS = re.compile(r"(\d+)\s*(?:nos|qty|licenses|users|seats|posts|openings|positions|units)\b", re.IGNORECASE)
-EMD_PATTERNS = re.compile(r"(?:emd|earnest money|bid security)[:\s\-]+(?:₹|Rs\.?|INR)?\s*[\d,]+", re.IGNORECASE)
 
 class APIKeyPool:
     def __init__(self):
@@ -198,21 +197,21 @@ def is_item_recent(pubdate_str, max_days):
 
 def push_to_google_sheet(payload):
     if not GOOGLE_SHEET_WEBHOOK:
-        log("    ❌ [Sheet Error]: GOOGLE_SHEET_WEBHOOK environment variable is missing!")
+        log("    ❌ [Sheet Error]: GOOGLE_SHEET_WEBHOOK is missing!")
         return False
     try:
-        # allow_redirects=False ensures Google Apps Script receives the POST body intact
+        # allow_redirects=False prevents Google Apps Script from dropping POST JSON payload
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=15, allow_redirects=False)
-        log(f"    [Sheet Push Response]: Status {res.status_code} | Text: {res.text[:100]}")
+        log(f"    📊 [Sheet Response]: Status {res.status_code} | Text: {res.text[:100]}")
         return True
     except Exception as e:
-        log(f"    ❌ [Sheet Push Exception]: {e}")
+        log(f"    ❌ [Sheet Exception]: {e}")
         return False
 
 def send_telegram(text, is_media_source=False, target_state="Pan-India"):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not bot_token:
-        log("    ❌ [Telegram Error]: TELEGRAM_BOT_TOKEN environment variable is missing!")
+        log("    ❌ [Telegram Error]: TELEGRAM_BOT_TOKEN is missing!")
         return
     
     active_chat_id = None
@@ -229,16 +228,14 @@ def send_telegram(text, is_media_source=False, target_state="Pan-India"):
     if not active_chat_id:
         active_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         
-    if not active_chat_id:
-        log(f"    ❌ [Telegram Error]: No valid Chat ID found for state '{target_state}' or general fallback!")
-        return
+    if not active_chat_id: return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {"chat_id": active_chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": False}
     try:
         res = SESSION.post(url, json=payload, timeout=10)
         if res.status_code == 200:
-            log(f"    [Telegram Sent]: Successfully dispatched to chat {active_chat_id}")
+            log(f"    📱 [Telegram Sent]: Dispatched successfully")
         else:
             log(f"    ❌ [Telegram Failed]: Status {res.status_code} | Response: {res.text}")
     except Exception as e:
@@ -400,10 +397,19 @@ def main():
     log(f"Total filtered commercial candidates to evaluate: {len(candidates)}")
     if not candidates: return
 
-    log(">>> Dispatching candidate batch...")
-    for item in candidates[:5]:
-        res_dict = extract_lead_locally(item, item["real_link"])
-        dispatch_lead(item, res_dict)
+    for i in range(0, len(candidates), 10):
+        batch = candidates[i:i + 10]
+        evaluations = try_gemini_analysis(batch)
+        if evaluations:
+            for res_dict in evaluations:
+                idx = res_dict.get("item_index")
+                if idx is not None and idx < len(batch) and res_dict.get("is_lead") is True:
+                    dispatch_lead(batch[idx], res_dict)
+        else:
+            log("    [Gemini API Failed/Skipped. Using Reliable Local Extraction...]")
+            for item in batch:
+                res_dict = extract_lead_locally(item, item["real_link"])
+                dispatch_lead(item, res_dict)
 
 def dispatch_lead(item, data):
     prod = item["product"]
