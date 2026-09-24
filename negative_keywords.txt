@@ -181,3 +181,6 @@ branch expansion banking
 retail banking operations
 loan management system
 Programmer
+Data Centre
+Data Scientist
+Data Manager
