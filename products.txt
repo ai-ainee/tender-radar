@@ -1,37 +1,14 @@
+Autodesk
 Advance Steel
 Architecture, Engineering & Construction Collection
 AutoCAD
-AutoCAD Architecture
-AutoCAD Electrical
-AutoCAD LT
-AutoCAD Map 3D
-AutoCAD Mechanical
-AutoCAD MEP
-AutoCAD Plant 3D
-AutoCAD Raster Design
-AutoCAD Revit LT Suite
 Civil 3D
-Forma Build
-Autodesk Build
-Forma Building Design
-Forma Construction Connect
-Forma Data Management
-Autodesk Docs
-Forma Design Collaboration
-BIM Collaborate Pro
-Forma for Buildings
-Forma for Construction
+Forma
 Autodesk Construction Cloud
-Forma for Model Management
-Forma for Preconstruction
-Forma Takeoff
 Inventor
-Navisworks Manage
-Navisworks Simulate
+Navisworks
 Product Design & Manufacturing Collection
 Revit
-Revit LT
 Vault Professional
 Fusion 360
 Architectural Consultancy Tender
-Software Government Tender
