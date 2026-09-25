@@ -23,10 +23,15 @@ try:
 except ImportError:
     DDGS = None
 
+try:
+    from googlenewsdecoder import gnewsdecoder
+except ImportError:
+    gnewsdecoder = None
+
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR ACTIVE: HYBRID B2B ENGINE + BUYER INTENT + GUESSER")
+log(">>> ENTERPRISE RADAR ACTIVE: URL DECODER + B2B ENGINE + GUESSER")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -36,7 +41,7 @@ SEEN_FILE = "seen_links.txt"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 })
 
 COMMERCIAL_PATTERNS = re.compile(
@@ -185,19 +190,33 @@ def format_pubdate(pubdate_str):
     except Exception:
         return pubdate_str
 
+# --- NEW: CRACKS GOOGLE NEWS ENCRYPTION ---
+def get_real_url(url):
+    if "news.google.com" in url:
+        try:
+            if gnewsdecoder:
+                dec = gnewsdecoder(url)
+                if dec and dec.get("status"):
+                    return dec.get("decoded_url")
+        except Exception:
+            pass
+    return url
+
 def free_b2b_enrichment(company_name, lead_type):
     data = {"name": "", "title": "", "url": "", "web": ""}
     if not DDGS or not company_name or len(company_name) < 4:
         return data
-    if company_name.lower() in ["commercial buyer", "commercial enterprise"]:
+    if company_name.lower() in ["commercial buyer", "commercial enterprise", "target enterprise", "buyer entity"]:
         return data
         
     try:
+        time.sleep(2) # Prevent GitHub Actions Rate Limit Ban
         ddgs = DDGS()
         web_res = list(ddgs.text(f"{company_name} official website india", max_results=1))
         if web_res:
             data["web"] = web_res[0].get("href", "")
             
+        time.sleep(1) # Prevent GitHub Actions Rate Limit Ban
         role_clause = '"Head of BIM" OR "Design Head" OR "Chief Architect" OR HR' if "hiring" in lead_type.lower() else 'Procurement OR "Purchase Manager" OR Director'
         li_res = list(ddgs.text(f'"{company_name}" ({role_clause}) site:linkedin.com/in/', max_results=1))
         if li_res:
@@ -206,24 +225,23 @@ def free_b2b_enrichment(company_name, lead_type):
             data["name"] = clean_title.split(" - ")[0].split(" | ")[0]
             data["title"] = clean_title
             
-        time.sleep(1)
     except Exception as e:
         log(f"    ⚠️ [Enrichment Warning]: {e}")
     return data
 
 def deep_scrape_content(url):
     try:
-        r = SESSION.get(url, timeout=8, allow_redirects=True)
+        r = SESSION.get(url, timeout=15, allow_redirects=True)
         if r.status_code == 200:
             if "application/pdf" in r.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
                 if not PdfReader:
                     return "[PDF Document]"
                 pdf = PdfReader(io.BytesIO(r.content))
-                return "".join([(p.extract_text() or "") + " " for p in pdf.pages[:3]])[:10000]
+                return "".join([(p.extract_text() or "") + " " for p in pdf.pages[:3]])[:15000]
             soup = BeautifulSoup(r.content, 'html.parser')
             for s in soup(["script", "style", "noscript", "header", "footer"]):
                 s.extract()
-            return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:10000]
+            return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:15000]
     except Exception:
         pass
     return ""
@@ -233,10 +251,8 @@ def push_to_sheet(payload):
         return False
     try:
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=12, allow_redirects=False)
-        log(f"    📊 [Sheet Webhook Response]: Status {res.status_code}")
         return True
     except Exception as e:
-        log(f"    ❌ [Sheet Webhook Error]: {e}")
         return False
 
 def send_telegram(text, is_media=False):
@@ -288,9 +304,16 @@ def try_gemini_analysis(batch):
         return None
     items_block = ""
     for i, x in enumerate(batch):
-        deep = deep_scrape_content(x["link"])
+        # 1. DECODE THE URL
+        real_url = get_real_url(x["link"])
+        x["real_link"] = real_url
+        
+        # 2. SCRAPE THE DECODED REAL SITE
+        deep = deep_scrape_content(real_url)
         body = deep if len(deep) > 250 else x["summary"]
-        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {body[:1500]}\n"
+        
+        # 3. FEED 4000 CHARACTERS TO GEMINI
+        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {real_url}\nData: {body[:4000]}\n"
 
     prompt = (
         "You are an elite B2B Sales AI analyzing CAD/BIM/AEC market signals in India.\n"
@@ -343,18 +366,12 @@ def extract_lead_locally(item, real_url):
     if not (is_govt or is_capex or is_hiring or is_corp or is_seller or is_buyer):
         return {"is_lead": False}
 
-    if is_buyer:
-        ltype = "🛒 Active Private Buyer (RFQ)"
-    elif is_seller:
-        ltype = "🤝 Suppliers"
-    elif is_govt:
-        ltype = "🏛 Govt Tender"
-    elif is_hiring:
-        ltype = "💼 Hiring Mandate"
-    elif is_capex:
-        ltype = "🏗 Capex & Projects"
-    else:
-        ltype = "🏢 Corporate Lead"
+    if is_buyer: ltype = "🛒 Active Private Buyer (RFQ)"
+    elif is_seller: ltype = "🤝 Suppliers"
+    elif is_govt: ltype = "🏛 Govt Tender"
+    elif is_hiring: ltype = "💼 Hiring Mandate"
+    elif is_capex: ltype = "🏗 Capex & Projects"
+    else: ltype = "🏢 Corporate Lead"
 
     p_stage = "Active Procurement" if is_buyer else ("Tender & Bidding" if is_govt else ("Team Expansion" if is_hiring else "Planning / Execution"))
     
@@ -393,14 +410,15 @@ def dispatch_lead(item, d):
     org = d.get("org", "Buyer Entity")
     ltype = d.get("lead_type", "Corporate Lead")
     
-    # Enrich firmographics and LinkedIn contacts via DuckDuckGo
+    # ENSURE WE USE THE DECODED LINK EVERYWHERE
+    real_link = item.get("real_link", item["link"])
+    
     enrich = free_b2b_enrichment(org, ltype)
-    web = enrich["web"] or extract_base_website(item["link"])
+    web = enrich["web"] or extract_base_website(real_link)
     dm_name = enrich["name"] or d.get("dm_name", "Not Listed")
     dm_li = enrich["url"] or d.get("dm_linkedin", "N/A")
     dm_title = d.get("dm_title", "Not Listed")
     
-    # Email Guesser Integration
     email = d.get("email", "N/A")
     if email in ["N/A", "Not Listed", "", None]:
         valid_name = dm_name and dm_name.lower() not in ["not listed", "not found", "found via linkedin search", "key stakeholder"]
@@ -417,7 +435,6 @@ def dispatch_lead(item, d):
     pub_date = format_pubdate(item.get("pubDate", ""))
     app_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     
-    # State mapping fallback
     state = d.get("state", "Pan-India")
     hq = d.get("hq", "India")
     if state in ["Pan-India", "India", ""] and hq.lower() in STATE_MAP:
@@ -440,12 +457,11 @@ def dispatch_lead(item, d):
         "eligibility": d.get("eligibility", "N/A"), "job_title": d.get("job_title", "N/A"),
         "vacancies": d.get("vacancies", "N/A"), "exp_level": d.get("exp_level", "N/A"), "salary": d.get("salary", "N/A"),
         "tech_stack": d.get("tech_stack", prod), "competitor": d.get("competitor", "None"),
-        "summary": d.get("summary", item["title"]), "link": item["link"], "type": ltype
+        "summary": d.get("summary", item["title"]), "link": real_link, "type": ltype
     }
     
     push_to_sheet(payload)
 
-    # Dynamic Telegram Builder (Hides blank fields)
     def f(label, val):
         if val and str(val).lower() not in ["n/a", "not listed", "none", "unknown", "none detected", ""]:
             return f"{label} {val}\n"
@@ -492,11 +508,10 @@ def dispatch_lead(item, d):
     msg += f(f"🏢 *Boardline:*", payload['boardline'])
     msg += f"📍 *Location:* {hq}, {state}\n"
     msg += f"🌐 *Portal:* {web}\n\n"
-    msg += f"🔗 [Open Original Document]({item['link']})"
+    msg += f"🔗 [Open Original Document]({real_link})"
 
     is_media_news = "media" in ltype.lower() or any(dom in web for dom in ["constructionbusinesstoday", "economictimes", "moneycontrol", "constructionweekonline"])
     send_telegram(msg, is_media=is_media_news)
-    log(f"    >>> [RECORDED]: {org} | Type: {ltype} | Intent: {payload['buying_intent']}")
 
 def main():
     products = load_products()
@@ -519,7 +534,6 @@ def main():
         if not candidates:
             continue
             
-        log(f">>> Processing {len(candidates)} items for {p}...")
         for i in range(0, len(candidates), 10):
             batch = candidates[i:i+10]
             evals = try_gemini_analysis(batch)
@@ -531,7 +545,10 @@ def main():
                         dispatch_lead(batch[idx], d)
             else:
                 for item in batch:
-                    d = extract_lead_locally(item, item["link"])
+                    # LOCAL FALLBACK ALSO NEEDS THE DECODED LINK!
+                    real = get_real_url(item["link"])
+                    item["real_link"] = real
+                    d = extract_lead_locally(item, real)
                     if d.get("is_lead"):
                         dispatch_lead(item, d)
 
