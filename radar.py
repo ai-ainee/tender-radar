@@ -31,7 +31,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR ACTIVE: HYBRID B2B + DECODER + ANTI-DUPLICATE SPAM SHIELD")
+log(">>> ENTERPRISE RADAR ACTIVE: HYBRID B2B + HR BYPASS + ANTI-DUPLICATE SHIELD")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -39,9 +39,13 @@ STATES_FILE = "states.txt"
 NEGATIVE_FILE = "negative_keywords.txt"
 SEEN_FILE = "seen_links.txt"
 
+# UPGRADE 1: Anti-Bot Browser Headers (Helps bypass Job Board walls)
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"'
 })
 
 COMMERCIAL_PATTERNS = re.compile(
@@ -191,7 +195,6 @@ def format_pubdate(pubdate_str):
         return pubdate_str
 
 def get_real_url(url):
-    """Cracks Google News encryption to get the true destination URL."""
     if "news.google.com" in url:
         try:
             if gnewsdecoder:
@@ -199,7 +202,7 @@ def get_real_url(url):
                 if dec and dec.get("status"):
                     return dec.get("decoded_url")
         except Exception as e:
-            log(f"    ⚠️ [URL Decoder Error]: {e}")
+            pass
     return url
 
 def free_b2b_enrichment(company_name, lead_type):
@@ -210,13 +213,13 @@ def free_b2b_enrichment(company_name, lead_type):
         return data
         
     try:
-        time.sleep(2) # Prevent GitHub Actions Rate Limit Ban
+        time.sleep(2) 
         ddgs = DDGS()
         web_res = list(ddgs.text(f"{company_name} official website india", max_results=1))
         if web_res:
             data["web"] = web_res[0].get("href", "")
             
-        time.sleep(2) # Prevent GitHub Actions Rate Limit Ban
+        time.sleep(2) 
         role_clause = '"Head of BIM" OR "Design Head" OR "Chief Architect" OR HR' if "hiring" in lead_type.lower() else 'Procurement OR "Purchase Manager" OR Director'
         li_res = list(ddgs.text(f'"{company_name}" ({role_clause}) site:linkedin.com/in/', max_results=1))
         if li_res:
@@ -226,7 +229,7 @@ def free_b2b_enrichment(company_name, lead_type):
             data["title"] = clean_title
             
     except Exception as e:
-        log(f"    ⚠️ [Enrichment Warning (DuckDuckGo)]: {e}")
+        log(f"    ⚠️ [Enrichment Warning]: {e}")
     return data
 
 def deep_scrape_content(url):
@@ -247,11 +250,9 @@ def deep_scrape_content(url):
     return ""
 
 def push_to_sheet(payload):
-    """Pushes to Google Sheets and reads the response to prevent duplicates."""
     if not GOOGLE_SHEET_WEBHOOK:
         return "success"
     try:
-        # allow_redirects=True is required to read the JSON response from Apps Script
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=15, allow_redirects=True)
         try:
             resp_data = res.json()
@@ -261,7 +262,6 @@ def push_to_sheet(payload):
             pass
         return "success"
     except Exception as e:
-        log(f"    ❌ [Sheet Webhook Error]: {e}")
         return "error"
 
 def send_telegram(text, lead_type=""):
@@ -272,7 +272,6 @@ def send_telegram(text, lead_type=""):
     ltype = (lead_type or "").lower()
     chat_id = None
 
-    # Dynamic Telegram Topic / Channel Router
     if "buyer" in ltype or "rfq" in ltype:
         chat_id = os.environ.get("TELEGRAM_CHAT_ID_BUYERS")
     elif "tender" in ltype or "govt" in ltype or "gem" in ltype:
@@ -288,7 +287,6 @@ def send_telegram(text, lead_type=""):
     elif "corporate" in ltype or "enterprise" in ltype:
         chat_id = os.environ.get("TELEGRAM_CHAT_ID_CORP")
 
-    # Safe Fallback to master chat if channel secret isn't provided
     if not chat_id:
         chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -304,8 +302,8 @@ def send_telegram(text, lead_type=""):
     }
     try:
         SESSION.post(url, json=payload, timeout=10)
-    except Exception as e:
-        log(f"    ⚠️ [Telegram Send Error]: {e}")
+    except Exception:
+        pass
 
 def fetch_all_opportunities(product):
     all_items = []
@@ -336,15 +334,13 @@ def try_gemini_analysis(batch):
         return None
     items_block = ""
     for i, x in enumerate(batch):
-        # Decode the URL to bypass Google News Redirect Shield
         real_url = get_real_url(x["link"])
         x["real_link"] = real_url
-        
         deep = deep_scrape_content(real_url)
         body = deep if len(deep) > 250 else x["summary"]
-        
         items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {real_url}\nData: {body[:4000]}\n"
 
+    # UPGRADE 2: Aggressive Prompting for Job Boards
     prompt = (
         "You are an elite B2B Sales AI analyzing CAD/BIM/AEC market signals in India.\n"
         "REJECT (is_lead=False): ONLY non-software Junk (housekeeping, security, catering, stationery, scrap, vehicles).\n"
@@ -356,7 +352,11 @@ def try_gemini_analysis(batch):
         "- If recruiting/job opening -> 'Hiring Mandate'\n"
         "- If factory, capex, EPC project, or construction -> 'Private Capex'\n"
         "- Else -> 'Corporate Lead'\n\n"
-        "Extract all 38 firmographic, project, tender, tech stack, and contact fields. Use 'N/A' or 'Not Listed' if missing.\n"
+        "CRITICAL MISSING DATA RULES:\n"
+        "1. If Lead is 'Hiring Mandate' and DM Name is missing, set DM Title to 'Talent Acquisition / HR Head'.\n"
+        "2. If Salary or Experience is missing, set to 'Undisclosed' instead of 'N/A'.\n"
+        "3. Look extremely closely for ANY software tools mentioned to populate 'Tech Stack'.\n"
+        "Extract all 38 fields. Use 'N/A' or 'Not Listed' for other missing data.\n"
         f"{items_block}"
     )
 
@@ -440,7 +440,6 @@ def dispatch_lead(item, d):
     org = d.get("org", "Buyer Entity")
     ltype = d.get("lead_type", "Corporate Lead")
     
-    # Ensure decoded URL is used
     real_link = item.get("real_link", item["link"])
     
     enrich = free_b2b_enrichment(org, ltype)
@@ -449,26 +448,34 @@ def dispatch_lead(item, d):
     dm_li = enrich["url"] or d.get("dm_linkedin", "N/A")
     dm_title = d.get("dm_title", "Not Listed")
     
-    # --- EMAIL GUESSER MODULE ---
     email = d.get("email", "N/A")
+    
+    # UPGRADE 3: Advanced Email Guesser for Hiring Mandates
     if email in ["N/A", "Not Listed", "", "None", None]:
         valid_name = dm_name and dm_name.lower() not in ["not listed", "not found", "found via linkedin search", "key stakeholder"]
-        valid_web = web and not any(x in web for x in ["google", "news", "eprocure", "Web Portal", "linkedin.com"])
-        if valid_name and valid_web:
-            clean_name = re.sub(r'[^a-zA-Z\s]', '', dm_name.split('-')[0]).strip()
-            parts = clean_name.split()
-            try:
-                domain = urllib.parse.urlparse(web).netloc.replace("www.", "")
-                if len(parts) >= 1 and "." in domain:
+        valid_web = web and not any(x in web for x in ["google", "news", "eprocure", "Web Portal", "linkedin.com", "naukri.com"])
+        
+        try:
+            domain = urllib.parse.urlparse(web).netloc.replace("www.", "")
+            
+            # If we have a name, guess their specific email
+            if valid_name and valid_web and "." in domain:
+                clean_name = re.sub(r'[^a-zA-Z\s]', '', dm_name.split('-')[0]).strip()
+                parts = clean_name.split()
+                if len(parts) >= 1:
                     f_name = parts[0].lower()
                     l_name = parts[-1].lower() if len(parts) > 1 else ""
                     if l_name:
                         email = f"⚠️ GUESSED: {f_name}.{l_name}@{domain} OR {f_name}@{domain}"
                     else:
                         email = f"⚠️ GUESSED: {f_name}@{domain}"
-            except Exception:
-                pass
-    # -----------------------------
+            
+            # If it's a hiring mandate with no name, give the standard HR emails
+            elif "hiring" in ltype.lower() and valid_web and "." in domain:
+                email = f"⚠️ GUESSED: hr@{domain} OR careers@{domain}"
+                
+        except Exception:
+            pass
 
     pub_date = format_pubdate(item.get("pubDate", ""))
     app_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -498,14 +505,11 @@ def dispatch_lead(item, d):
         "summary": d.get("summary", item["title"]), "link": real_link, "type": ltype
     }
     
-    # Check if Google Sheets accepted the lead, or blocked it as a duplicate
     sheet_status = push_to_sheet(payload)
-    
     if sheet_status == "duplicate":
-        log(f"    ⏭️ [DUPLICATE IGNORED]: {org} is already in the Sheet. Skipping Telegram alert.")
-        return  # Abort here so you don't get spammed on Telegram!
+        log(f"    ⏭️ [DUPLICATE IGNORED]: {org} is already in the Sheet.")
+        return  
 
-    # Dynamic Telegram UI Builder (hides empty fields)
     def f(label, val):
         if val and str(val).lower() not in ["n/a", "not listed", "none", "unknown", "none detected", ""]:
             return f"{label} {val}\n"
@@ -536,6 +540,7 @@ def dispatch_lead(item, d):
     msg += f(f"💼 *Hiring:*", payload['job_title'])
     msg += f(f"👥 *Vacancies:*", payload['vacancies'])
     msg += f(f"🎓 *Experience:*", payload['exp_level'])
+    msg += f(f"💸 *Salary:*", payload['salary'])
     
     msg += f"\n🛠 *Tech Stack:* `{payload['tech_stack']}`\n"
     msg += f(f"⚔️ *Competitors:*", payload['competitor'])
@@ -554,7 +559,6 @@ def dispatch_lead(item, d):
     msg += f"🌐 *Portal:* {web}\n\n"
     msg += f"🔗 [Open Original Document]({real_link})"
 
-    # Final Dispatch to the correct Telegram channel
     send_telegram(msg, lead_type=ltype)
     log(f"    >>> [RECORDED]: {org} | Type: {ltype} | Intent: {payload['buying_intent']}")
 
@@ -590,7 +594,6 @@ def main():
                         dispatch_lead(batch[idx], d)
             else:
                 for item in batch:
-                    # LOCAL FALLBACK ALSO NEEDS THE DECODED LINK!
                     real = get_real_url(item["link"])
                     item["real_link"] = real
                     d = extract_lead_locally(item, real)
