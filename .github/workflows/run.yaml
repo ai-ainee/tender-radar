@@ -9,7 +9,6 @@ jobs:
   run-radar:
     runs-on: ubuntu-latest
     
-    # THIS IS THE MAGIC BULLET: Forces GitHub to allow saving the memory file
     permissions:
       contents: write
 
@@ -25,8 +24,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 pydantic pypdf google-genai duckduckgo-search googlenewsdecoder
-
+          pip install requests beautifulsoup4 pydantic pypdf google-genai duckduckgo-search googlenewsdecoder playwright
+          playwright install chromium
+          
       - name: Execute Radar Intelligence Engine
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
@@ -44,7 +44,7 @@ jobs:
           python radar.py
 
       - name: Save memory (Commit seen links)
-        if: always()  # <--- THIS IS THE MAGIC SHIELD
+        if: always()
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
