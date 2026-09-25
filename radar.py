@@ -36,7 +36,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR ACTIVE: REAL CUSTOMER WEBSITE RESOLVER + ANTI-PORTAL SHIELD")
+log(">>> ENTERPRISE RADAR ACTIVE: WIDE DATA PIPE + NETWORK IDLE WAITS")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -190,15 +190,15 @@ def load_seen():
             return set(line.strip() for line in f if line.strip())
     return set()
 
+def save_seen(link):
+    with open(SEEN_FILE, "a", encoding="utf-8") as f:
+        f.write(link + "\n")
+        
 def load_negative_keywords():
     if not os.path.exists(NEGATIVE_FILE):
         return []
     with open(NEGATIVE_FILE, "r", encoding="utf-8") as f:
         return [line.strip().lower() for line in f if line.strip() and not line.startswith("#")]
-
-def save_seen(link):
-    with open(SEEN_FILE, "a", encoding="utf-8") as f:
-        f.write(link + "\n")
 
 def is_portal_url(url):
     if not url:
@@ -285,7 +285,10 @@ def deep_scrape_content(url):
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
-                page.goto(url, timeout=20000, wait_until="domcontentloaded")
+                
+                # UPGRADE 2: NetworkIdle - Waits for JavaScript Frameworks to completely finish loading
+                page.goto(url, timeout=30000, wait_until="networkidle")
+                page.wait_for_timeout(2000) # Hard wait 2 seconds for visual DOM injection
                 
                 try:
                     page.evaluate("""
@@ -406,13 +409,11 @@ def try_gemini_analysis(batch):
         return None
     items_block = ""
     for i, x in enumerate(batch):
-        real_url = get_real_url(x["link"])
-        x["real_link"] = real_url
-        deep = deep_scrape_content(real_url)
-        body = deep if len(deep) > 250 else x["summary"]
-        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {real_url}\nData: {body[:4000]}\n"
+        # UPGRADE 1: Expanded the AI character limit per item from 4,000 to 15,000
+        body = x.get("deep_text", x["summary"])
+        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['real_link']}\nData: {body[:15000]}\n"
 
-   prompt = (
+    prompt = (
         "You are an elite B2B Sales AI analyzing CAD/BIM/AEC market signals in India.\n"
         "REJECT (is_lead=False) IMMEDIATELY IF THE TEXT CONTAINS:\n"
         "1. Non-software Junk (housekeeping, scrap, catering).\n"
@@ -420,8 +421,8 @@ def try_gemini_analysis(batch):
         "3. Market Research Reports (CAGR, global forecast, industry report).\n"
         "4. Stock Market/Financial News (Q3 earnings, share price, dividend, Nifty/Sensex).\n"
         "5. Projects or jobs located OUTSIDE of India (e.g., Dubai, USA, Saudi, UK).\n"
-        "6. Anti-bot/Captcha messages (e.g., 'verify you are human', 'access denied', 'cloudflare').\n\n"
-        "7. Freelance gigs (Upwork, Fiverr), Student/Academic projects, or intern roles with no software buying power.\n\n" # <--- NEW RULE
+        "6. Anti-bot/Captcha messages (e.g., 'verify you are human', 'access denied', 'cloudflare').\n"
+        "7. Freelance gigs (Upwork, Fiverr), Student/Academic projects, or intern roles with no software buying power.\n\n"
         "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, corporate hiring roles, capex projects, AND resellers/dealers/training partners IN INDIA.\n\n"
         "CLASSIFICATION MATRIX for 'lead_type':\n"
         "- If asking for quotes, RFQ, or vendor registration -> 'Active Private Buyer (RFQ)'\n"
@@ -435,7 +436,7 @@ def try_gemini_analysis(batch):
         "2. 'org_website' MUST be the primary corporate domain of that company (e.g. 'https://www.company.com'). NEVER output portal links (linkedin.com, naukri.com). If unknown, use 'Not Listed'.\n"
         "3. If Lead is 'Hiring Mandate' and DM Name is missing, set DM Title to 'Talent Acquisition / HR Head'.\n"
         "4. If Salary or Experience is missing, set to 'Undisclosed' instead of 'N/A'.\n"
-        "Extract all 38 fields. Use 'N/A' or 'Not Listed' for other missing data.\n"
+        "Extract all 38 fields based strictly on the text provided. Use 'N/A' or 'Not Listed' for other missing data.\n"
         f"{items_block}"
     )
 
@@ -460,11 +461,10 @@ def try_gemini_analysis(batch):
         KEY_POOL.rotate()
     return None
 
-def extract_lead_locally(item, real_url):
-    text = f"{item['title']} {item['summary']}".lower()
-    if any(jm in text for jm in JUNK_MARKERS):
-        return {"is_lead": False}
-
+# UPGRADE 3: Local Fallback now uses the Deep Scraped Text
+def extract_lead_locally(item, real_url, deep_text=""):
+    text = f"{item['title']} {item['summary']} {deep_text}".lower()
+    
     is_buyer = any(k in text for k in ["rfq", "request for quotation", "vendor registration", "supplier empanelment", "looking for vendors", "need quotes", "it procurement"])
     is_seller = any(sm in text for sm in SELLER_MARKERS)
     is_govt = any(k in text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum"])
@@ -484,7 +484,7 @@ def extract_lead_locally(item, real_url):
 
     p_stage = "Active Procurement" if is_buyer else ("Tender & Bidding" if is_govt else ("Team Expansion" if is_hiring else "Planning / Execution"))
     
-    raw_text = f"{item['title']} {item['summary']}"
+    raw_text = f"{item['title']} {item['summary']} {deep_text}"
     found_tools = list(set(TECH_STACK_PATTERNS.findall(raw_text)))
     if item['product'] not in found_tools:
         found_tools.insert(0, item['product'])
@@ -520,7 +520,6 @@ def dispatch_lead(item, d):
     prod = item["product"]
     raw_org = d.get("org", "")
     
-    # Strip any residual job board suffix from org
     org = clean_org_name(raw_org) if raw_org else clean_org_name(item["title"])
     if is_portal_url(org):
         org = clean_org_name(item["title"])
@@ -528,7 +527,6 @@ def dispatch_lead(item, d):
     ltype = d.get("lead_type", "Corporate Lead")
     real_link = item.get("real_link", item["link"])
     
-    # 1. Resolve Customer Corporate Website
     gemini_web = d.get("org_website", "")
     enrich = free_b2b_enrichment(org, ltype)
     
@@ -545,7 +543,6 @@ def dispatch_lead(item, d):
     dm_li = enrich["url"] or d.get("dm_linkedin", "N/A")
     dm_title = d.get("dm_title", "Not Listed")
     
-    # 2. Precision Email Guesser (Protected against portal domains)
     email = d.get("email", "N/A")
     if email in ["N/A", "Not Listed", "", "None", None]:
         valid_name = dm_name and dm_name.lower() not in ["not listed", "not found", "found via linkedin search", "key stakeholder"]
@@ -656,7 +653,7 @@ def dispatch_lead(item, d):
 def main():
     products = load_products()
     seen = load_seen()
-    negative_kw = load_negative_keywords() # <--- 1. LOAD THE WORDS
+    negative_kw = load_negative_keywords()
     
     log(f">>> Scanning targets for products: {', '.join(products)}")
     for p in products:
@@ -669,8 +666,6 @@ def main():
             save_seen(item["link"])
             
             combined = f"{item['title']} {item['summary']}".lower()
-            
-            # ---> 2. BLOCK JUNK AND NEGATIVE KEYWORDS HERE <---
             if not any(jm in combined for jm in JUNK_MARKERS) and not any(nk in combined for nk in negative_kw):
                 candidates.append(item)
                 
@@ -679,6 +674,14 @@ def main():
             
         for i in range(0, len(candidates), 10):
             batch = candidates[i:i+10]
+            
+            # --- CACHING THE DEEP SCRAPE SO LOCAL FALLBACK IS NOT BLIND ---
+            for x in batch:
+                real = get_real_url(x["link"])
+                x["real_link"] = real
+                deep = deep_scrape_content(real)
+                x["deep_text"] = deep if len(deep) > 250 else x["summary"]
+
             evals = try_gemini_analysis(batch)
             if evals:
                 for res in evals:
@@ -688,9 +691,7 @@ def main():
                         dispatch_lead(batch[idx], d)
             else:
                 for item in batch:
-                    real = get_real_url(item["link"])
-                    item["real_link"] = real
-                    d = extract_lead_locally(item, real)
+                    d = extract_lead_locally(item, item["real_link"], item.get("deep_text", ""))
                     if d.get("is_lead"):
                         dispatch_lead(item, d)
 
