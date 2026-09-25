@@ -346,7 +346,7 @@ def push_to_sheet(payload):
 def send_telegram(text, lead_type="", lead_id=""):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not bot_token:
-        return
+        return None, None
 
     ltype = (lead_type or "").lower()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -359,9 +359,8 @@ def send_telegram(text, lead_type="", lead_id=""):
     elif "media" in ltype or "news" in ltype: chat_id = os.environ.get("TELEGRAM_CHAT_ID_INDUSTRY_MEDIA") or chat_id
 
     if not chat_id:
-        return
+        return None, None
 
-    # --- THE MAGIC BUTTONS ---
     reply_markup = {
         "inline_keyboard": [
             [
@@ -380,9 +379,15 @@ def send_telegram(text, lead_type="", lead_id=""):
         "reply_markup": reply_markup
     }
     try:
-        SESSION.post(url, json=payload, timeout=10)
+        r = SESSION.post(url, json=payload, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            # Capture the exact Message ID from Telegram
+            return chat_id, data.get("result", {}).get("message_id")
     except Exception as e:
         log(f"    ⚠️ [Telegram Send Error]: {e}")
+    
+    return None, None
 
 def fetch_all_opportunities(product):
     all_items = []
@@ -592,9 +597,12 @@ def dispatch_lead(item, d):
 
     # GENERATE UNIQUE LEAD ID FOR MOBILE CRM
     lead_id = uuid.uuid4().hex[:8]
+    tg_chat_id, tg_msg_id = send_telegram(msg, lead_type=ltype, lead_id=lead_id)
 
     payload = {
         "lead_id": lead_id,
+        "tg_chat_id": tg_chat_id or "",   
+        "tg_msg_id": tg_msg_id or "",
         "appearance_date": app_date, "published_date": pub_date,
         "buying_intent": d.get("buying_intent", "Medium"), "urgency": d.get("urgency", "Warm"),
         "sales_action": d.get("sales_action", "Outreach"), "pitch_angle": d.get("pitch_angle", ""),
@@ -668,7 +676,6 @@ def dispatch_lead(item, d):
     msg += f"🌐 *Corporate Website:* {web}\n\n"
     msg += f"🔗 [Open Original Document]({real_link})"
 
-    send_telegram(msg, lead_type=ltype, lead_id=lead_id)
     log(f"    >>> [RECORDED]: {org} | Web: {web} | Intent: {payload['buying_intent']}")
 
 def main():
