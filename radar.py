@@ -412,11 +412,16 @@ def try_gemini_analysis(batch):
         body = deep if len(deep) > 250 else x["summary"]
         items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {real_url}\nData: {body[:4000]}\n"
 
-    prompt = (
+   prompt = (
         "You are an elite B2B Sales AI analyzing CAD/BIM/AEC market signals in India.\n"
-        "REJECT (is_lead=False): ONLY non-software Junk (housekeeping, scrap), SEO Spam, Coupon Codes, Affiliate links, and Adult/Casino content.\n"
-        "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, hiring roles, capex projects, AND resellers/dealers/training partners.\n\n"
-        # ... (keep the rest of your prompt exactly the same)
+        "REJECT (is_lead=False) IMMEDIATELY IF THE TEXT CONTAINS:\n"
+        "1. Non-software Junk (housekeeping, scrap, catering).\n"
+        "2. SEO Spam, Coupon Codes, Affiliate links, or Adult/Casino content.\n"
+        "3. Market Research Reports (CAGR, global forecast, industry report).\n"
+        "4. Stock Market/Financial News (Q3 earnings, share price, dividend, Nifty/Sensex).\n"
+        "5. Projects or jobs located OUTSIDE of India (e.g., Dubai, USA, Saudi, UK).\n"
+        "6. Anti-bot/Captcha messages (e.g., 'verify you are human', 'access denied', 'cloudflare').\n\n"
+        "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, hiring roles, capex projects, AND resellers/dealers/training partners located IN INDIA.\n\n"
         "CLASSIFICATION MATRIX for 'lead_type':\n"
         "- If asking for quotes, RFQ, or vendor registration -> 'Active Private Buyer (RFQ)'\n"
         "- If a dealer, reseller, channel partner, or CAD institute -> 'Suppliers'\n"
@@ -425,8 +430,8 @@ def try_gemini_analysis(batch):
         "- If factory, capex, EPC project, or construction -> 'Private Capex'\n"
         "- Else -> 'Corporate Lead'\n\n"
         "CRITICAL FIRMOGRAPHIC RULES:\n"
-        "1. 'org' MUST be the actual client or hiring company name (e.g. 'Shapoorji Pallonji', 'Tata Consulting Engineers'). NEVER output job portals like 'Naukri', 'LinkedIn', 'Indeed', or news media names.\n"
-        "2. 'org_website' MUST be the primary corporate domain of that company (e.g. 'https://www.shapoorjipallonji.com'). If not explicitly stated, infer the official corporate website. NEVER output portal links (linkedin.com, naukri.com, google.com). If unknown, use 'Not Listed'.\n"
+        "1. 'org' MUST be the actual client or hiring company name. NEVER output job portals like 'Naukri', 'LinkedIn', 'Indeed', or news media names.\n"
+        "2. 'org_website' MUST be the primary corporate domain of that company (e.g. 'https://www.company.com'). NEVER output portal links (linkedin.com, naukri.com). If unknown, use 'Not Listed'.\n"
         "3. If Lead is 'Hiring Mandate' and DM Name is missing, set DM Title to 'Talent Acquisition / HR Head'.\n"
         "4. If Salary or Experience is missing, set to 'Undisclosed' instead of 'N/A'.\n"
         "Extract all 38 fields. Use 'N/A' or 'Not Listed' for other missing data.\n"
