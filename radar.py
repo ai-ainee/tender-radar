@@ -31,7 +31,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR ACTIVE: FULL HYBRID B2B + DECODER + TELEGRAM ROUTER")
+log(">>> ENTERPRISE RADAR ACTIVE: HYBRID B2B + DECODER + ANTI-DUPLICATE SPAM SHIELD")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -210,14 +210,13 @@ def free_b2b_enrichment(company_name, lead_type):
         return data
         
     try:
-        # Buffer to prevent DuckDuckGo rate limits on GitHub
-        time.sleep(2) 
+        time.sleep(2) # Prevent GitHub Actions Rate Limit Ban
         ddgs = DDGS()
         web_res = list(ddgs.text(f"{company_name} official website india", max_results=1))
         if web_res:
             data["web"] = web_res[0].get("href", "")
             
-        time.sleep(2) 
+        time.sleep(2) # Prevent GitHub Actions Rate Limit Ban
         role_clause = '"Head of BIM" OR "Design Head" OR "Chief Architect" OR HR' if "hiring" in lead_type.lower() else 'Procurement OR "Purchase Manager" OR Director'
         li_res = list(ddgs.text(f'"{company_name}" ({role_clause}) site:linkedin.com/in/', max_results=1))
         if li_res:
@@ -248,14 +247,22 @@ def deep_scrape_content(url):
     return ""
 
 def push_to_sheet(payload):
+    """Pushes to Google Sheets and reads the response to prevent duplicates."""
     if not GOOGLE_SHEET_WEBHOOK:
-        return False
+        return "success"
     try:
-        res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=12, allow_redirects=False)
-        return True
+        # allow_redirects=True is required to read the JSON response from Apps Script
+        res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=15, allow_redirects=True)
+        try:
+            resp_data = res.json()
+            if resp_data.get("result") == "duplicate_ignored":
+                return "duplicate"
+        except Exception:
+            pass
+        return "success"
     except Exception as e:
         log(f"    ❌ [Sheet Webhook Error]: {e}")
-        return False
+        return "error"
 
 def send_telegram(text, lead_type=""):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -491,7 +498,12 @@ def dispatch_lead(item, d):
         "summary": d.get("summary", item["title"]), "link": real_link, "type": ltype
     }
     
-    push_to_sheet(payload)
+    # Check if Google Sheets accepted the lead, or blocked it as a duplicate
+    sheet_status = push_to_sheet(payload)
+    
+    if sheet_status == "duplicate":
+        log(f"    ⏭️ [DUPLICATE IGNORED]: {org} is already in the Sheet. Skipping Telegram alert.")
+        return  # Abort here so you don't get spammed on Telegram!
 
     # Dynamic Telegram UI Builder (hides empty fields)
     def f(label, val):
