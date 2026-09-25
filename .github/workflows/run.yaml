@@ -44,6 +44,7 @@ jobs:
           python radar.py
 
       - name: Save memory (Commit seen links)
+        if: always()  # <--- THIS IS THE MAGIC SHIELD
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
