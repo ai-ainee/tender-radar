@@ -31,7 +31,7 @@ except ImportError:
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR ACTIVE: URL DECODER + B2B ENGINE + GUESSER")
+log(">>> ENTERPRISE RADAR ACTIVE: FULL HYBRID B2B + DECODER + TELEGRAM ROUTER")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -113,7 +113,7 @@ KEY_POOL = APIKeyPool()
 class LeadData(BaseModel):
     item_index: int
     is_lead: bool
-    lead_type: str = Field(description="Govt Tender, Private Capex, Hiring Mandate, Corporate Lead, Suppliers, or Active Private Buyer (RFQ)")
+    lead_type: str = Field(description="Govt Tender, Private Capex, Hiring Mandate, Corporate Lead, Suppliers, Active Private Buyer (RFQ), or Media News")
     org: str
     entity_type: str = Field(description="Govt, PSU, Private, MNC, Startup, Training Institute, Channel Partner")
     industry: str
@@ -190,16 +190,16 @@ def format_pubdate(pubdate_str):
     except Exception:
         return pubdate_str
 
-# --- NEW: CRACKS GOOGLE NEWS ENCRYPTION ---
 def get_real_url(url):
+    """Cracks Google News encryption to get the true destination URL."""
     if "news.google.com" in url:
         try:
             if gnewsdecoder:
                 dec = gnewsdecoder(url)
                 if dec and dec.get("status"):
                     return dec.get("decoded_url")
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"    ⚠️ [URL Decoder Error]: {e}")
     return url
 
 def free_b2b_enrichment(company_name, lead_type):
@@ -210,13 +210,14 @@ def free_b2b_enrichment(company_name, lead_type):
         return data
         
     try:
-        time.sleep(2) # Prevent GitHub Actions Rate Limit Ban
+        # Buffer to prevent DuckDuckGo rate limits on GitHub
+        time.sleep(2) 
         ddgs = DDGS()
         web_res = list(ddgs.text(f"{company_name} official website india", max_results=1))
         if web_res:
             data["web"] = web_res[0].get("href", "")
             
-        time.sleep(1) # Prevent GitHub Actions Rate Limit Ban
+        time.sleep(2) 
         role_clause = '"Head of BIM" OR "Design Head" OR "Chief Architect" OR HR' if "hiring" in lead_type.lower() else 'Procurement OR "Purchase Manager" OR Director'
         li_res = list(ddgs.text(f'"{company_name}" ({role_clause}) site:linkedin.com/in/', max_results=1))
         if li_res:
@@ -226,7 +227,7 @@ def free_b2b_enrichment(company_name, lead_type):
             data["title"] = clean_title
             
     except Exception as e:
-        log(f"    ⚠️ [Enrichment Warning]: {e}")
+        log(f"    ⚠️ [Enrichment Warning (DuckDuckGo)]: {e}")
     return data
 
 def deep_scrape_content(url):
@@ -253,27 +254,51 @@ def push_to_sheet(payload):
         res = SESSION.post(GOOGLE_SHEET_WEBHOOK, json=payload, timeout=12, allow_redirects=False)
         return True
     except Exception as e:
+        log(f"    ❌ [Sheet Webhook Error]: {e}")
         return False
 
-def send_telegram(text, is_media=False):
+def send_telegram(text, lead_type=""):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not bot_token:
         return
-        
+
+    ltype = (lead_type or "").lower()
     chat_id = None
-    if is_media:
+
+    # Dynamic Telegram Topic / Channel Router
+    if "buyer" in ltype or "rfq" in ltype:
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID_BUYERS")
+    elif "tender" in ltype or "govt" in ltype or "gem" in ltype:
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID_TENDERS")
+    elif "hiring" in ltype or "vacancy" in ltype:
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID_HIRING")
+    elif "capex" in ltype or "expansion" in ltype or "project" in ltype:
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID_CAPEX")
+    elif "supplier" in ltype or "reseller" in ltype or "training" in ltype or "partner" in ltype:
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID_SUPPLIERS")
+    elif "media" in ltype or "news" in ltype:
         chat_id = os.environ.get("TELEGRAM_CHAT_ID_INDUSTRY_MEDIA")
+    elif "corporate" in ltype or "enterprise" in ltype:
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID_CORP")
+
+    # Safe Fallback to master chat if channel secret isn't provided
     if not chat_id:
         chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
     if not chat_id:
         return
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": False}
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": False
+    }
     try:
         SESSION.post(url, json=payload, timeout=10)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"    ⚠️ [Telegram Send Error]: {e}")
 
 def fetch_all_opportunities(product):
     all_items = []
@@ -304,15 +329,13 @@ def try_gemini_analysis(batch):
         return None
     items_block = ""
     for i, x in enumerate(batch):
-        # 1. DECODE THE URL
+        # Decode the URL to bypass Google News Redirect Shield
         real_url = get_real_url(x["link"])
         x["real_link"] = real_url
         
-        # 2. SCRAPE THE DECODED REAL SITE
         deep = deep_scrape_content(real_url)
         body = deep if len(deep) > 250 else x["summary"]
         
-        # 3. FEED 4000 CHARACTERS TO GEMINI
         items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {real_url}\nData: {body[:4000]}\n"
 
     prompt = (
@@ -410,7 +433,7 @@ def dispatch_lead(item, d):
     org = d.get("org", "Buyer Entity")
     ltype = d.get("lead_type", "Corporate Lead")
     
-    # ENSURE WE USE THE DECODED LINK EVERYWHERE
+    # Ensure decoded URL is used
     real_link = item.get("real_link", item["link"])
     
     enrich = free_b2b_enrichment(org, ltype)
@@ -419,18 +442,26 @@ def dispatch_lead(item, d):
     dm_li = enrich["url"] or d.get("dm_linkedin", "N/A")
     dm_title = d.get("dm_title", "Not Listed")
     
+    # --- EMAIL GUESSER MODULE ---
     email = d.get("email", "N/A")
-    if email in ["N/A", "Not Listed", "", None]:
+    if email in ["N/A", "Not Listed", "", "None", None]:
         valid_name = dm_name and dm_name.lower() not in ["not listed", "not found", "found via linkedin search", "key stakeholder"]
-        valid_web = web and not any(x in web for x in ["google", "news", "eprocure", "Web Portal"])
+        valid_web = web and not any(x in web for x in ["google", "news", "eprocure", "Web Portal", "linkedin.com"])
         if valid_name and valid_web:
             clean_name = re.sub(r'[^a-zA-Z\s]', '', dm_name.split('-')[0]).strip()
             parts = clean_name.split()
-            domain = web.replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
-            if len(parts) >= 1 and "." in domain:
-                f_name = parts[0].lower()
-                l_name = parts[-1].lower() if len(parts) > 1 else ""
-                email = f"⚠️ GUESSED: {f_name}.{l_name}@{domain} OR {f_name}@{domain}" if l_name else f"⚠️ GUESSED: {f_name}@{domain}"
+            try:
+                domain = urllib.parse.urlparse(web).netloc.replace("www.", "")
+                if len(parts) >= 1 and "." in domain:
+                    f_name = parts[0].lower()
+                    l_name = parts[-1].lower() if len(parts) > 1 else ""
+                    if l_name:
+                        email = f"⚠️ GUESSED: {f_name}.{l_name}@{domain} OR {f_name}@{domain}"
+                    else:
+                        email = f"⚠️ GUESSED: {f_name}@{domain}"
+            except Exception:
+                pass
+    # -----------------------------
 
     pub_date = format_pubdate(item.get("pubDate", ""))
     app_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -462,6 +493,7 @@ def dispatch_lead(item, d):
     
     push_to_sheet(payload)
 
+    # Dynamic Telegram UI Builder (hides empty fields)
     def f(label, val):
         if val and str(val).lower() not in ["n/a", "not listed", "none", "unknown", "none detected", ""]:
             return f"{label} {val}\n"
@@ -510,8 +542,9 @@ def dispatch_lead(item, d):
     msg += f"🌐 *Portal:* {web}\n\n"
     msg += f"🔗 [Open Original Document]({real_link})"
 
-    is_media_news = "media" in ltype.lower() or any(dom in web for dom in ["constructionbusinesstoday", "economictimes", "moneycontrol", "constructionweekonline"])
-    send_telegram(msg, is_media=is_media_news)
+    # Final Dispatch to the correct Telegram channel
+    send_telegram(msg, lead_type=ltype)
+    log(f"    >>> [RECORDED]: {org} | Type: {ltype} | Intent: {payload['buying_intent']}")
 
 def main():
     products = load_products()
