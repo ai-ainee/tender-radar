@@ -595,15 +595,27 @@ def dispatch_lead(item, d):
     if state in ["Pan-India", "India", ""] and hq.lower() in STATE_MAP:
         state = STATE_MAP[hq.lower()]
 
-    # GENERATE UNIQUE LEAD ID FOR MOBILE CRM
+    # 1. GENERATE THE LEAD ID
     lead_id = uuid.uuid4().hex[:8]
+
+    # 2. BUILD THE TELEGRAM MESSAGE (msg)
+    # (Keep your existing formatting here, it probably looks something like this):
+    msg = f"🎯 *New AEC Lead Found*\n"
+    msg += f"🏢 *Org:* {d.get('org', 'N/A')}\n"
+    msg += f"📊 *Intent:* {d.get('buying_intent', 'N/A')}\n"
+    msg += f"🔗 [Source Link]({item['link']})"
+    # ... whatever else you have in your msg block
+
+    # 3. NOW SEND TO TELEGRAM (Because 'msg' finally exists!)
     tg_chat_id, tg_msg_id = send_telegram(msg, lead_type=ltype, lead_id=lead_id)
 
+    # 4. BUILD THE PAYLOAD FOR GOOGLE SHEETS
     payload = {
         "lead_id": lead_id,
-        "tg_chat_id": tg_chat_id or "",   
+        "tg_chat_id": tg_chat_id or "",
         "tg_msg_id": tg_msg_id or "",
-        "appearance_date": app_date, "published_date": pub_date,
+        "appearance_date": app_date, 
+        "published_date": pub_date,
         "buying_intent": d.get("buying_intent", "Medium"), "urgency": d.get("urgency", "Warm"),
         "sales_action": d.get("sales_action", "Outreach"), "pitch_angle": d.get("pitch_angle", ""),
         "org": org, "entity_type": d.get("entity_type", "Commercial"), "industry": d.get("industry", "AEC"),
