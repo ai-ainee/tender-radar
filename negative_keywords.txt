@@ -196,3 +196,15 @@ Programmer
 Data Centre
 Data Scientist
 Data Manager
+market research
+cagr
+forecast 20
+stock price
+dividend
+sensex
+nifty
+buy rating
+access denied
+verify you are human
+cloudflare
+captcha
