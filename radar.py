@@ -189,6 +189,12 @@ def load_seen():
             return set(line.strip() for line in f if line.strip())
     return set()
 
+def load_negative_keywords():
+    if not os.path.exists(NEGATIVE_FILE):
+        return []
+    with open(NEGATIVE_FILE, "r", encoding="utf-8") as f:
+        return [line.strip().lower() for line in f if line.strip() and not line.startswith("#")]
+
 def save_seen(link):
     with open(SEEN_FILE, "a", encoding="utf-8") as f:
         f.write(link + "\n")
@@ -642,6 +648,7 @@ def dispatch_lead(item, d):
 def main():
     products = load_products()
     seen = load_seen()
+    negative_kw = load_negative_keywords() # <--- 1. LOAD THE WORDS
     
     log(f">>> Scanning targets for products: {', '.join(products)}")
     for p in products:
@@ -654,7 +661,9 @@ def main():
             save_seen(item["link"])
             
             combined = f"{item['title']} {item['summary']}".lower()
-            if not any(jm in combined for jm in JUNK_MARKERS):
+            
+            # ---> 2. BLOCK JUNK AND NEGATIVE KEYWORDS HERE <---
+            if not any(jm in combined for jm in JUNK_MARKERS) and not any(nk in combined for nk in negative_kw):
                 candidates.append(item)
                 
         if not candidates:
