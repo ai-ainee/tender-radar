@@ -81,7 +81,8 @@ SELLER_MARKERS = [
 
 JUNK_MARKERS = [
     "housekeeping", "security guard", "catering", "canteen", "stationery", "taxi",
-    "scrap", "medicines", "medical equipment", "sweeping", "printer cartridge", "photocopier"
+    "scrap", "medicines", "medical equipment", "sweeping", "printer cartridge", "photocopier",
+    "coupon", "promo code", "shein", "porn", "casino", "betting", "retailmenot"
 ]
 
 PORTAL_DOMAINS = [
@@ -413,8 +414,9 @@ def try_gemini_analysis(batch):
 
     prompt = (
         "You are an elite B2B Sales AI analyzing CAD/BIM/AEC market signals in India.\n"
-        "REJECT (is_lead=False): ONLY non-software Junk (housekeeping, security, catering, stationery, scrap, vehicles).\n"
+        "REJECT (is_lead=False): ONLY non-software Junk (housekeeping, scrap), SEO Spam, Coupon Codes, Affiliate links, and Adult/Casino content.\n"
         "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, hiring roles, capex projects, AND resellers/dealers/training partners.\n\n"
+        # ... (keep the rest of your prompt exactly the same)
         "CLASSIFICATION MATRIX for 'lead_type':\n"
         "- If asking for quotes, RFQ, or vendor registration -> 'Active Private Buyer (RFQ)'\n"
         "- If a dealer, reseller, channel partner, or CAD institute -> 'Suppliers'\n"
