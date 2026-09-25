@@ -421,7 +421,8 @@ def try_gemini_analysis(batch):
         "4. Stock Market/Financial News (Q3 earnings, share price, dividend, Nifty/Sensex).\n"
         "5. Projects or jobs located OUTSIDE of India (e.g., Dubai, USA, Saudi, UK).\n"
         "6. Anti-bot/Captcha messages (e.g., 'verify you are human', 'access denied', 'cloudflare').\n\n"
-        "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, hiring roles, capex projects, AND resellers/dealers/training partners located IN INDIA.\n\n"
+        "7. Freelance gigs (Upwork, Fiverr), Student/Academic projects, or intern roles with no software buying power.\n\n" # <--- NEW RULE
+        "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, corporate hiring roles, capex projects, AND resellers/dealers/training partners IN INDIA.\n\n"
         "CLASSIFICATION MATRIX for 'lead_type':\n"
         "- If asking for quotes, RFQ, or vendor registration -> 'Active Private Buyer (RFQ)'\n"
         "- If a dealer, reseller, channel partner, or CAD institute -> 'Suppliers'\n"
