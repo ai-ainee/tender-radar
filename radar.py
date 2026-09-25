@@ -28,10 +28,15 @@ try:
 except ImportError:
     gnewsdecoder = None
 
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None
+
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR ACTIVE: HYBRID B2B + HR BYPASS + ANTI-DUPLICATE SHIELD")
+log(">>> ENTERPRISE RADAR ACTIVE: REAL CUSTOMER WEBSITE RESOLVER + ANTI-PORTAL SHIELD")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -39,7 +44,6 @@ STATES_FILE = "states.txt"
 NEGATIVE_FILE = "negative_keywords.txt"
 SEEN_FILE = "seen_links.txt"
 
-# UPGRADE 1: Anti-Bot Browser Headers (Helps bypass Job Board walls)
 SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -80,6 +84,18 @@ JUNK_MARKERS = [
     "scrap", "medicines", "medical equipment", "sweeping", "printer cartridge", "photocopier"
 ]
 
+PORTAL_DOMAINS = [
+    "google.com", "news.google.com", "linkedin.com", "naukri.com", "indeed.com",
+    "foundit.in", "shine.com", "monsterindia.com", "economictimes.indiatimes.com",
+    "moneycontrol.com", "business-standard.com", "livemint.com", "eprocure.gov.in",
+    "gem.gov.in", "ireps.gov.in", "facebook.com", "twitter.com", "x.com"
+]
+
+PORTAL_SUFFIX_REGEX = re.compile(
+    r"\s*-\s*(Naukri\.com|LinkedIn|Indeed|Foundit|TimesJobs|Shine\.com|The Economic Times|Moneycontrol|Google News|Business Standard|Livemint)\s*$",
+    re.IGNORECASE
+)
+
 STATE_MAP = {
     'ncr': 'Delhi/NCR', 'delhi': 'Delhi', 'new delhi': 'Delhi',
     'noida': 'Uttar Pradesh', 'greater noida': 'Uttar Pradesh', 'ghaziabad': 'Uttar Pradesh',
@@ -118,7 +134,8 @@ class LeadData(BaseModel):
     item_index: int
     is_lead: bool
     lead_type: str = Field(description="Govt Tender, Private Capex, Hiring Mandate, Corporate Lead, Suppliers, Active Private Buyer (RFQ), or Media News")
-    org: str
+    org: str = Field(description="The actual hiring or buying corporate entity name. NOT a portal name like Naukri, LinkedIn, or Google.")
+    org_website: str = Field(description="Official corporate website homepage of the company (e.g., https://www.larsentoubro.com). NEVER a job portal or news URL. If unknown, output 'Not Listed'.")
     entity_type: str = Field(description="Govt, PSU, Private, MNC, Startup, Training Institute, Channel Partner")
     industry: str
     hq: str
@@ -176,12 +193,21 @@ def save_seen(link):
     with open(SEEN_FILE, "a", encoding="utf-8") as f:
         f.write(link + "\n")
 
-def extract_base_website(url):
-    try:
-        parsed = urllib.parse.urlparse(url)
-        return f"{parsed.scheme}://{parsed.netloc}"
-    except Exception:
-        return "Web Portal"
+def is_portal_url(url):
+    if not url:
+        return True
+    url_lower = url.lower()
+    return any(p in url_lower for p in PORTAL_DOMAINS) or "news.google" in url_lower
+
+def clean_org_name(title):
+    cleaned = PORTAL_SUFFIX_REGEX.sub("", title).strip()
+    if "-" in cleaned:
+        parts = [p.strip() for p in cleaned.split("-") if p.strip()]
+        for p in reversed(parts):
+            if not is_portal_url(p) and len(p) > 2 and not any(kw in p.lower() for kw in ["hiring", "urgent", "opening", "job", "vacancy"]):
+                return p
+        return parts[-1]
+    return cleaned
 
 def format_pubdate(pubdate_str):
     if not pubdate_str:
@@ -201,25 +227,30 @@ def get_real_url(url):
                 dec = gnewsdecoder(url)
                 if dec and dec.get("status"):
                     return dec.get("decoded_url")
-        except Exception as e:
+        except Exception:
             pass
     return url
 
 def free_b2b_enrichment(company_name, lead_type):
     data = {"name": "", "title": "", "url": "", "web": ""}
-    if not DDGS or not company_name or len(company_name) < 4:
+    if not DDGS or not company_name or len(company_name) < 3:
         return data
-    if company_name.lower() in ["commercial buyer", "commercial enterprise", "target enterprise", "buyer entity"]:
+    if is_portal_url(company_name) or company_name.lower() in ["commercial buyer", "commercial enterprise", "target enterprise", "buyer entity"]:
         return data
         
     try:
-        time.sleep(2) 
+        time.sleep(2)
         ddgs = DDGS()
-        web_res = list(ddgs.text(f"{company_name} official website india", max_results=1))
+        web_res = list(ddgs.text(f'"{company_name}" official company website india', max_results=3))
         if web_res:
-            data["web"] = web_res[0].get("href", "")
+            for res in web_res:
+                candidate_url = res.get("href", "")
+                if not is_portal_url(candidate_url):
+                    parsed = urllib.parse.urlparse(candidate_url)
+                    data["web"] = f"{parsed.scheme}://{parsed.netloc}"
+                    break
             
-        time.sleep(2) 
+        time.sleep(2)
         role_clause = '"Head of BIM" OR "Design Head" OR "Chief Architect" OR HR' if "hiring" in lead_type.lower() else 'Procurement OR "Purchase Manager" OR Director'
         li_res = list(ddgs.text(f'"{company_name}" ({role_clause}) site:linkedin.com/in/', max_results=1))
         if li_res:
@@ -228,25 +259,59 @@ def free_b2b_enrichment(company_name, lead_type):
             data["name"] = clean_title.split(" - ")[0].split(" | ")[0]
             data["title"] = clean_title
             
-    except Exception as e:
-        log(f"    ⚠️ [Enrichment Warning]: {e}")
+    except Exception:
+        pass
     return data
 
 def deep_scrape_content(url):
+    if url.lower().endswith(".pdf"):
+        try:
+            r = SESSION.get(url, timeout=15, allow_redirects=True)
+            if r.status_code == 200 and PdfReader:
+                pdf = PdfReader(io.BytesIO(r.content))
+                return "".join([(p.extract_text() or "") + " " for p in pdf.pages[:3]])[:15000]
+        except Exception:
+            return "[PDF Document]"
+            
+    if sync_playwright:
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+                page.goto(url, timeout=20000, wait_until="domcontentloaded")
+                
+                try:
+                    page.evaluate("""
+                        document.querySelectorAll('button').forEach(b => {
+                            let txt = b.innerText.toLowerCase();
+                            if(txt.includes('see more') || txt.includes('show more')) {
+                                b.click();
+                            }
+                        });
+                    """)
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+                
+                content = page.content()
+                browser.close()
+                soup = BeautifulSoup(content, 'html.parser')
+                for s in soup(["script", "style", "noscript", "header", "footer"]):
+                    s.extract()
+                return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:15000]
+        except Exception as e:
+            log(f"    ⚠️ [Playwright Fallback]: {e}")
+
     try:
         r = SESSION.get(url, timeout=15, allow_redirects=True)
         if r.status_code == 200:
-            if "application/pdf" in r.headers.get("Content-Type", "") or url.lower().endswith(".pdf"):
-                if not PdfReader:
-                    return "[PDF Document]"
-                pdf = PdfReader(io.BytesIO(r.content))
-                return "".join([(p.extract_text() or "") + " " for p in pdf.pages[:3]])[:15000]
             soup = BeautifulSoup(r.content, 'html.parser')
             for s in soup(["script", "style", "noscript", "header", "footer"]):
                 s.extract()
             return re.sub(r'\s+', ' ', soup.get_text(separator=' ', strip=True))[:15000]
     except Exception:
         pass
+        
     return ""
 
 def push_to_sheet(payload):
@@ -261,7 +326,7 @@ def push_to_sheet(payload):
         except Exception:
             pass
         return "success"
-    except Exception as e:
+    except Exception:
         return "error"
 
 def send_telegram(text, lead_type=""):
@@ -302,8 +367,8 @@ def send_telegram(text, lead_type=""):
     }
     try:
         SESSION.post(url, json=payload, timeout=10)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"    ⚠️ [Telegram Send Error]: {e}")
 
 def fetch_all_opportunities(product):
     all_items = []
@@ -340,7 +405,6 @@ def try_gemini_analysis(batch):
         body = deep if len(deep) > 250 else x["summary"]
         items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {real_url}\nData: {body[:4000]}\n"
 
-    # UPGRADE 2: Aggressive Prompting for Job Boards
     prompt = (
         "You are an elite B2B Sales AI analyzing CAD/BIM/AEC market signals in India.\n"
         "REJECT (is_lead=False): ONLY non-software Junk (housekeeping, security, catering, stationery, scrap, vehicles).\n"
@@ -352,10 +416,11 @@ def try_gemini_analysis(batch):
         "- If recruiting/job opening -> 'Hiring Mandate'\n"
         "- If factory, capex, EPC project, or construction -> 'Private Capex'\n"
         "- Else -> 'Corporate Lead'\n\n"
-        "CRITICAL MISSING DATA RULES:\n"
-        "1. If Lead is 'Hiring Mandate' and DM Name is missing, set DM Title to 'Talent Acquisition / HR Head'.\n"
-        "2. If Salary or Experience is missing, set to 'Undisclosed' instead of 'N/A'.\n"
-        "3. Look extremely closely for ANY software tools mentioned to populate 'Tech Stack'.\n"
+        "CRITICAL FIRMOGRAPHIC RULES:\n"
+        "1. 'org' MUST be the actual client or hiring company name (e.g. 'Shapoorji Pallonji', 'Tata Consulting Engineers'). NEVER output job portals like 'Naukri', 'LinkedIn', 'Indeed', or news media names.\n"
+        "2. 'org_website' MUST be the primary corporate domain of that company (e.g. 'https://www.shapoorjipallonji.com'). If not explicitly stated, infer the official corporate website. NEVER output portal links (linkedin.com, naukri.com, google.com). If unknown, use 'Not Listed'.\n"
+        "3. If Lead is 'Hiring Mandate' and DM Name is missing, set DM Title to 'Talent Acquisition / HR Head'.\n"
+        "4. If Salary or Experience is missing, set to 'Undisclosed' instead of 'N/A'.\n"
         "Extract all 38 fields. Use 'N/A' or 'Not Listed' for other missing data.\n"
         f"{items_block}"
     )
@@ -418,17 +483,19 @@ def extract_lead_locally(item, real_url):
     phones = re.findall(r"(?:\+91[- ]?)?[6789]\d{9}\b", raw_text)
     intent = "High" if (is_govt or is_hiring or is_buyer) else "Medium"
 
+    detected_org = clean_org_name(item["title"])
+
     return {
         "item_index": 0, "is_lead": True, "lead_type": ltype,
-        "org": item["title"].split("-")[-1].strip() if "-" in item["title"] else "Target Enterprise",
+        "org": detected_org, "org_website": "Not Listed",
         "entity_type": "Partner/Supplier" if is_seller else "Commercial", "industry": "AEC / Infrastructure",
-        "hq": address, "est_size": "Unknown", "dm_name": "Not Listed", "dm_title": "Not Listed",
+        "hq": address, "est_size": "Unknown", "dm_name": "Not Listed", "dm_title": "Talent Acquisition / HR Head" if is_hiring else "Not Listed",
         "email": emails[0] if emails else "N/A", "phone": phones[0] if phones else "N/A",
         "secondary_contact": "N/A", "boardline": "N/A", "project_name": "N/A", "project_stage": p_stage,
         "project_scale": "N/A", "total_investment": "N/A", "epc": "N/A", "pmc": "N/A", "completion_date": "N/A",
         "tender_id": "N/A", "tender_value": "N/A", "emd": "N/A", "tender_fee": "N/A", "pre_bid": "N/A",
         "deadline": "N/A", "bid_opening": "N/A", "contract_duration": "N/A", "eligibility": "N/A",
-        "job_title": "N/A", "vacancies": "N/A", "exp_level": "N/A", "salary": "N/A",
+        "job_title": "N/A", "vacancies": "N/A", "exp_level": "Undisclosed", "salary": "Undisclosed",
         "tech_stack": ", ".join(found_tools), "competitor": "None", "buying_intent": intent, "urgency": "Warm",
         "sales_action": "Reach out with pricing immediately" if is_buyer else "Standard Sales Follow-Up",
         "pitch_angle": "N/A", "summary": re.sub(r"<[^>]+>", " ", item['summary']).strip()[:180],
@@ -437,28 +504,41 @@ def extract_lead_locally(item, real_url):
 
 def dispatch_lead(item, d):
     prod = item["product"]
-    org = d.get("org", "Buyer Entity")
-    ltype = d.get("lead_type", "Corporate Lead")
+    raw_org = d.get("org", "")
     
+    # Strip any residual job board suffix from org
+    org = clean_org_name(raw_org) if raw_org else clean_org_name(item["title"])
+    if is_portal_url(org):
+        org = clean_org_name(item["title"])
+        
+    ltype = d.get("lead_type", "Corporate Lead")
     real_link = item.get("real_link", item["link"])
     
+    # 1. Resolve Customer Corporate Website
+    gemini_web = d.get("org_website", "")
     enrich = free_b2b_enrichment(org, ltype)
-    web = enrich["web"] or extract_base_website(real_link)
+    
+    web = "Not Listed"
+    if gemini_web and not is_portal_url(gemini_web) and gemini_web.lower() not in ["not listed", "n/a", "none"]:
+        web = gemini_web
+    elif enrich.get("web") and not is_portal_url(enrich["web"]):
+        web = enrich["web"]
+    elif not is_portal_url(real_link):
+        parsed = urllib.parse.urlparse(real_link)
+        web = f"{parsed.scheme}://{parsed.netloc}"
+
     dm_name = enrich["name"] or d.get("dm_name", "Not Listed")
     dm_li = enrich["url"] or d.get("dm_linkedin", "N/A")
     dm_title = d.get("dm_title", "Not Listed")
     
+    # 2. Precision Email Guesser (Protected against portal domains)
     email = d.get("email", "N/A")
-    
-    # UPGRADE 3: Advanced Email Guesser for Hiring Mandates
     if email in ["N/A", "Not Listed", "", "None", None]:
         valid_name = dm_name and dm_name.lower() not in ["not listed", "not found", "found via linkedin search", "key stakeholder"]
-        valid_web = web and not any(x in web for x in ["google", "news", "eprocure", "Web Portal", "linkedin.com", "naukri.com"])
+        valid_web = web and not is_portal_url(web) and web not in ["Not Listed", "N/A"]
         
         try:
             domain = urllib.parse.urlparse(web).netloc.replace("www.", "")
-            
-            # If we have a name, guess their specific email
             if valid_name and valid_web and "." in domain:
                 clean_name = re.sub(r'[^a-zA-Z\s]', '', dm_name.split('-')[0]).strip()
                 parts = clean_name.split()
@@ -469,11 +549,8 @@ def dispatch_lead(item, d):
                         email = f"⚠️ GUESSED: {f_name}.{l_name}@{domain} OR {f_name}@{domain}"
                     else:
                         email = f"⚠️ GUESSED: {f_name}@{domain}"
-            
-            # If it's a hiring mandate with no name, give the standard HR emails
             elif "hiring" in ltype.lower() and valid_web and "." in domain:
                 email = f"⚠️ GUESSED: hr@{domain} OR careers@{domain}"
-                
         except Exception:
             pass
 
@@ -556,11 +633,11 @@ def dispatch_lead(item, d):
     msg += f(f"📞 *Phone:*", payload['phone'])
     msg += f(f"🏢 *Boardline:*", payload['boardline'])
     msg += f"📍 *Location:* {hq}, {state}\n"
-    msg += f"🌐 *Portal:* {web}\n\n"
+    msg += f"🌐 *Corporate Website:* {web}\n\n"
     msg += f"🔗 [Open Original Document]({real_link})"
 
     send_telegram(msg, lead_type=ltype)
-    log(f"    >>> [RECORDED]: {org} | Type: {ltype} | Intent: {payload['buying_intent']}")
+    log(f"    >>> [RECORDED]: {org} | Web: {web} | Intent: {payload['buying_intent']}")
 
 def main():
     products = load_products()
