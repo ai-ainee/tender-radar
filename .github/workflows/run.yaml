@@ -8,6 +8,10 @@ on:
 jobs:
   run-radar:
     runs-on: ubuntu-latest
+    
+    # THIS IS THE MAGIC BULLET: Forces GitHub to allow saving the memory file
+    permissions:
+      contents: write
 
     steps:
       - name: Check out repository
