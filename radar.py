@@ -383,13 +383,25 @@ def send_telegram(text, lead_type=""):
 def fetch_all_opportunities(product):
     all_items = []
     seen = set()
+    
+    # NEW EXPANDED RADAR QUERIES (REMOVED LINKEDIN RESTRICTIONS)
     queries = [
-        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in) India when:7d',
+        # 1. Govt Tenders: Broadened to catch State portals and direct notices
+        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR tender OR "e-tender" OR NIT) India when:7d',
+        
+        # 2. Private RFQs: Scans all corporate domains for vendor requests
         f'"{product}" ("request for quotation" OR RFQ OR "vendor registration" OR "supplier empanelment" OR "IT procurement") India when:7d',
-        f'"{product}" (site:linkedin.com/posts OR site:linkedin.com/pulse) ("looking for vendors" OR "need quotes" OR "software procurement" OR "authorized partner") India when:7d',
-        f'"{product}" (capex OR awarded OR expansion OR "Global Capability Center" OR GCC OR "Design Center" OR IPO OR reseller OR partner) India when:7d',
-        f'"{product}" (hiring OR vacancy) (site:linkedin.com/jobs OR site:naukri.com) India when:7d'
+        
+        # 3. Capex & Projects: Targets PR Newswire, Industry Magazines, and Corporate Announcements
+        f'"{product}" (capex OR "project awarded" OR expansion OR "new facility" OR "manufacturing plant" OR "upcoming project" OR GCC) India when:7d',
+        
+        # 4. Suppliers & Partnerships: Targets company partner directories
+        f'"{product}" ("authorized partner" OR dealer OR reseller OR distributor OR "training partner") India when:7d',
+        
+        # 5. Hiring: Scans ALL career pages (Workday, Greenhouse, direct sites) instead of just LinkedIn
+        f'"{product}" (hiring OR vacancy OR "job opening" OR "careers") India when:7d'
     ]
+    
     for q in queries:
         try:
             r = SESSION.get(f"https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=en-IN&gl=IN&ceid=IN:en", timeout=8)
