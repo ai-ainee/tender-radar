@@ -427,7 +427,8 @@ def try_gemini_analysis(batch):
         "CLASSIFICATION MATRIX for 'lead_type':\n"
         "- If asking for quotes, RFQ, or vendor registration -> 'Active Private Buyer (RFQ)'\n"
         "- If a dealer, reseller, channel partner, or CAD institute -> 'Suppliers'\n"
-        "- If govt portal, GeM, or tender -> 'Govt Tender'\n"
+        "- If published on a Government portal (GeM, eProcure) OR explicitly a State/Central Govt Tender -> 'Govt Tender'\n"
+        "- If the source is LinkedIn, it is NEVER a Govt Tender (classify as Hiring Mandate, Private Capex, or Corporate Lead instead).\n"
         "- If recruiting/job opening -> 'Hiring Mandate'\n"
         "- If factory, capex, EPC project, or construction -> 'Private Capex'\n"
         "- Else -> 'Corporate Lead'\n\n"
@@ -467,7 +468,7 @@ def extract_lead_locally(item, real_url, deep_text=""):
     
     is_buyer = any(k in text for k in ["rfq", "request for quotation", "vendor registration", "supplier empanelment", "looking for vendors", "need quotes", "it procurement"])
     is_seller = any(sm in text for sm in SELLER_MARKERS)
-    is_govt = any(k in text for k in ["gem.gov", "eprocure", "ireps", "tender", "nit", "bid", "corrigendum"])
+    is_govt = any(k in text for k in ["gem.gov", "eprocure", "ireps"]) or (any(k in text for k in ["tender", "nit", "corrigendum"]) and "linkedin.com" not in item["link"])
     is_capex = any(k in text for k in ["capex", "project win", "awarded", "expansion", "empanelment"])
     is_hiring = any(k in text for k in ["hiring", "vacancy", "jobs", "opening"])
     is_corp = any(k in text for k in ["series a", "series b", "raises funding", "acquired", "acquisition", "merger", "ipo", "software", "license", "subscription", "gcc", "capability center"])
