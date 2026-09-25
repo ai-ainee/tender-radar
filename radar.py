@@ -3,6 +3,7 @@ import sys
 import json
 import re
 import time
+import uuid
 import urllib.parse
 import io
 from datetime import datetime, timezone, timedelta
@@ -342,41 +343,41 @@ def push_to_sheet(payload):
     except Exception:
         return "error"
 
-def send_telegram(text, lead_type=""):
+def send_telegram(text, lead_type="", lead_id=""):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not bot_token:
         return
 
     ltype = (lead_type or "").lower()
-    chat_id = None
-
-    if "buyer" in ltype or "rfq" in ltype:
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID_BUYERS")
-    elif "tender" in ltype or "govt" in ltype or "gem" in ltype:
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID_TENDERS")
-    elif "hiring" in ltype or "vacancy" in ltype:
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID_HIRING")
-    elif "capex" in ltype or "expansion" in ltype or "project" in ltype:
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID_CAPEX")
-    elif "supplier" in ltype or "reseller" in ltype or "training" in ltype or "partner" in ltype:
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID_SUPPLIERS")
-    elif "media" in ltype or "news" in ltype:
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID_INDUSTRY_MEDIA")
-    elif "corporate" in ltype or "enterprise" in ltype:
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID_CORP")
-
-    if not chat_id:
-        chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    if "buyer" in ltype or "rfq" in ltype: chat_id = os.environ.get("TELEGRAM_CHAT_ID_BUYERS") or chat_id
+    elif "tender" in ltype or "govt" in ltype or "gem" in ltype: chat_id = os.environ.get("TELEGRAM_CHAT_ID_TENDERS") or chat_id
+    elif "hiring" in ltype or "vacancy" in ltype: chat_id = os.environ.get("TELEGRAM_CHAT_ID_HIRING") or chat_id
+    elif "capex" in ltype or "expansion" in ltype or "project" in ltype: chat_id = os.environ.get("TELEGRAM_CHAT_ID_CAPEX") or chat_id
+    elif "supplier" in ltype or "reseller" in ltype or "partner" in ltype: chat_id = os.environ.get("TELEGRAM_CHAT_ID_SUPPLIERS") or chat_id
+    elif "media" in ltype or "news" in ltype: chat_id = os.environ.get("TELEGRAM_CHAT_ID_INDUSTRY_MEDIA") or chat_id
 
     if not chat_id:
         return
+
+    # --- THE MAGIC BUTTONS ---
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Qualify", "callback_data": f"Q|{lead_id}"},
+                {"text": "❌ Reject", "callback_data": f"R|{lead_id}"}
+            ]
+        ]
+    }
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": False
+        "disable_web_page_preview": False,
+        "reply_markup": reply_markup
     }
     try:
         SESSION.post(url, json=payload, timeout=10)
@@ -589,7 +590,11 @@ def dispatch_lead(item, d):
     if state in ["Pan-India", "India", ""] and hq.lower() in STATE_MAP:
         state = STATE_MAP[hq.lower()]
 
+    # GENERATE UNIQUE LEAD ID FOR MOBILE CRM
+    lead_id = uuid.uuid4().hex[:8]
+
     payload = {
+        "lead_id": lead_id,
         "appearance_date": app_date, "published_date": pub_date,
         "buying_intent": d.get("buying_intent", "Medium"), "urgency": d.get("urgency", "Warm"),
         "sales_action": d.get("sales_action", "Outreach"), "pitch_angle": d.get("pitch_angle", ""),
@@ -663,7 +668,7 @@ def dispatch_lead(item, d):
     msg += f"🌐 *Corporate Website:* {web}\n\n"
     msg += f"🔗 [Open Original Document]({real_link})"
 
-    send_telegram(msg, lead_type=ltype)
+    send_telegram(msg, lead_type=ltype, lead_id=lead_id)
     log(f"    >>> [RECORDED]: {org} | Web: {web} | Intent: {payload['buying_intent']}")
 
 def main():
