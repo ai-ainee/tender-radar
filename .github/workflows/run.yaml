@@ -1,53 +1,60 @@
-name: Run B2B Radar
+name: Radar Auto-Scanner
 
 on:
   schedule:
-    - cron: '30 2-14/2 * * *'
-  workflow_dispatch:
+    - cron: '0 */4 * * *' # Runs exactly every 4 hours automatically
+  workflow_dispatch:      # Creates a "Run workflow" button for manual testing on GitHub
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
-    
     permissions:
-      contents: write
+      contents: write # Crucial for saving the seen_links.txt back to git to prevent duplicate leads
 
     steps:
-      - name: Check out repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 pydantic pypdf google-genai ddgs googlenewsdecoder playwright
-          playwright install chromium
-          
-      - name: Execute Radar Intelligence Engine
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Run Enterprise Radar (Phase 1: Scout)
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHAT_ID_BUYERS: ${{ secrets.TELEGRAM_CHAT_ID_BUYERS }}
-          TELEGRAM_CHAT_ID_TENDERS: ${{ secrets.TELEGRAM_CHAT_ID_TENDERS }}
-          TELEGRAM_CHAT_ID_HIRING: ${{ secrets.TELEGRAM_CHAT_ID_HIRING }}
-          TELEGRAM_CHAT_ID_CAPEX: ${{ secrets.TELEGRAM_CHAT_ID_CAPEX }}
-          TELEGRAM_CHAT_ID_CORP: ${{ secrets.TELEGRAM_CHAT_ID_CORP }}
-          TELEGRAM_CHAT_ID_SUPPLIERS: ${{ secrets.TELEGRAM_CHAT_ID_SUPPLIERS }}
-          TELEGRAM_CHAT_ID_INDUSTRY_MEDIA: ${{ secrets.TELEGRAM_CHAT_ID_INDUSTRY_MEDIA }}
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          # Uncomment the lines below if you added the specific Chat IDs for different channels to your GitHub Secrets:
+          # TELEGRAM_CHAT_ID_BUYERS: ${{ secrets.TELEGRAM_CHAT_ID_BUYERS }}
+          # TELEGRAM_CHAT_ID_TENDERS: ${{ secrets.TELEGRAM_CHAT_ID_TENDERS }}
+          # TELEGRAM_CHAT_ID_HIRING: ${{ secrets.TELEGRAM_CHAT_ID_HIRING }}
+          # TELEGRAM_CHAT_ID_CAPEX: ${{ secrets.TELEGRAM_CHAT_ID_CAPEX }}
+          # TELEGRAM_CHAT_ID_SUPPLIERS: ${{ secrets.TELEGRAM_CHAT_ID_SUPPLIERS }}
+          # TELEGRAM_CHAT_ID_INDUSTRY_MEDIA: ${{ secrets.TELEGRAM_CHAT_ID_INDUSTRY_MEDIA }}
         run: |
           python radar.py
 
-      - name: Save memory (Commit seen links)
-        if: always()
+      - name: Run Deep Hunter (Phase 2: Enrichment)
+        env:
+          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
+          QUALIFIED_CSV_URL: ${{ secrets.QUALIFIED_CSV_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # The '|| true' ensures that even if deep_hunter crashes, GitHub will still move to the next step and save your seen_links.txt
+          python deep_hunter.py || true
+
+      - name: Save Memory (seen_links.txt)
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add seen_links.txt
-          git commit -m "Update scraped memory [skip ci]" || echo "No new links to commit"
-          git push
+          # The line below checks if seen_links changed. If yes, it commits and pushes automatically.
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update seen links cache" && git push)
