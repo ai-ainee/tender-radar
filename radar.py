@@ -291,7 +291,7 @@ def deep_scrape_content(url):
                 page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
                 
                 # NetworkIdle - Waits for JavaScript Frameworks to completely finish loading
-                page.goto(url, timeout=30000, wait_until="networkidle")
+                page.goto(url, timeout=30000, wait_until="domcontentloaded")
                 page.wait_for_timeout(2000) 
                 
                 try:
