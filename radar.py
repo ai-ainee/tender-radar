@@ -412,7 +412,7 @@ def fetch_all_opportunities(product):
         except Exception:
             pass
 
-    # 2. DuckDuckGo Web Search: MANDATORY for Tenders, RFQs, and Corporate Sites
+   # 2. DuckDuckGo Web Search: MANDATORY for Tenders, RFQs, and Corporate Sites
     if DDGS:
         web_queries = [
             f'"{product}" (tender OR e-tender OR NIT OR RFP) site:gov.in',
@@ -422,17 +422,22 @@ def fetch_all_opportunities(product):
         try:
             ddgs = DDGS()
             for wq in web_queries:
-                time.sleep(3) # Anti-ban delay
-                res = list(ddgs.text(wq, max_results=15)) 
-                for item in res:
-                    l = item.get("href", "")
-                    t = item.get("title", "")
-                    d = item.get("body", "")
-                    if l and l not in seen:
-                        seen.add(l)
-                        all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": "Recent"})
-        except Exception as e:
-            log(f"    ⚠️ [DDGS Search Error]: {e}")
+                time.sleep(5)  # Increased from 3s to 5s to mimic human behavior
+                try:
+                    res = list(ddgs.text(wq, max_results=10)) 
+                    for item in res:
+                        l = item.get("href", "")
+                        t = item.get("title", "")
+                        d = item.get("body", "")
+                        if l and l not in seen:
+                            seen.add(l)
+                            all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": "Recent"})
+                except Exception as e:
+                    # If DuckDuckGo throws a rate limit error, break the loop to let the IP cool down
+                    log(f"    ⚠️ [Search Cooldown]: DuckDuckGo rate limit hit. Pausing web search for '{product}'.")
+                    break 
+        except Exception:
+            pass
             
     return all_items
 
