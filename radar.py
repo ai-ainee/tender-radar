@@ -290,9 +290,9 @@ def deep_scrape_content(url):
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
                 
-                # UPGRADE 2: NetworkIdle - Waits for JavaScript Frameworks to completely finish loading
+                # NetworkIdle - Waits for JavaScript Frameworks to completely finish loading
                 page.goto(url, timeout=30000, wait_until="networkidle")
-                page.wait_for_timeout(2000) # Hard wait 2 seconds for visual DOM injection
+                page.wait_for_timeout(2000) 
                 
                 try:
                     page.evaluate("""
@@ -393,27 +393,15 @@ def fetch_all_opportunities(product):
     all_items = []
     seen = set()
     
-    # NEW EXPANDED RADAR QUERIES (REMOVED LINKEDIN RESTRICTIONS)
-    queries = [
-        # 1. Govt Tenders: Broadened to catch State portals and direct notices
-        f'"{product}" (site:gem.gov.in OR site:eprocure.gov.in OR site:ireps.gov.in OR tender OR "e-tender" OR NIT) India when:7d',
-        
-        # 2. Private RFQs: Scans all corporate domains for vendor requests
-        f'"{product}" ("request for quotation" OR RFQ OR "vendor registration" OR "supplier empanelment" OR "IT procurement") India when:7d',
-        
-        # 3. Capex & Projects: Targets PR Newswire, Industry Magazines, and Corporate Announcements
-        f'"{product}" (capex OR "project awarded" OR expansion OR "new facility" OR "manufacturing plant" OR "upcoming project" OR GCC) India when:7d',
-        
-        # 4. Suppliers & Partnerships: Targets company partner directories
-        f'"{product}" ("authorized partner" OR dealer OR reseller OR distributor OR "training partner") India when:7d',
-        
-        # 5. Hiring: Scans ALL career pages (Workday, Greenhouse, direct sites) instead of just LinkedIn
-        f'"{product}" (hiring OR vacancy OR "job opening" OR "careers") India when:7d'
+    # 1. Google News: Good for Capex, Funding, and PR Announcements
+    news_queries = [
+        f'"{product}" (capex OR expansion OR project OR "new facility" OR GCC) India',
+        f'"{product}" (hiring OR vacancy OR "job opening") India'
     ]
     
-    for q in queries:
+    for q in news_queries:
         try:
-            r = SESSION.get(f"https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=en-IN&gl=IN&ceid=IN:en", timeout=8)
+            r = SESSION.get(f"https://news.google.com/rss/search?q={urllib.parse.quote(q + ' when:14d')}&hl=en-IN&gl=IN&ceid=IN:en", timeout=8)
             if r.status_code == 200 and r.content:
                 root = ET.fromstring(r.content)
                 for item in root.findall(".//item"):
@@ -423,6 +411,29 @@ def fetch_all_opportunities(product):
                         all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": pub})
         except Exception:
             pass
+
+    # 2. DuckDuckGo Web Search: MANDATORY for Tenders, RFQs, and Corporate Sites
+    if DDGS:
+        web_queries = [
+            f'"{product}" (tender OR e-tender OR NIT OR RFP) site:gov.in',
+            f'"{product}" ("request for quotation" OR "supplier empanelment" OR "vendor registration") India',
+            f'"{product}" (dealer OR reseller OR "training partner") India'
+        ]
+        try:
+            ddgs = DDGS()
+            for wq in web_queries:
+                time.sleep(3) # Anti-ban delay
+                res = list(ddgs.text(wq, max_results=15)) 
+                for item in res:
+                    l = item.get("href", "")
+                    t = item.get("title", "")
+                    d = item.get("body", "")
+                    if l and l not in seen:
+                        seen.add(l)
+                        all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": "Recent"})
+        except Exception as e:
+            log(f"    ⚠️ [DDGS Search Error]: {e}")
+            
     return all_items
 
 def try_gemini_analysis(batch):
@@ -430,12 +441,12 @@ def try_gemini_analysis(batch):
         return None
     items_block = ""
     for i, x in enumerate(batch):
-        # UPGRADE 1: Expanded the AI character limit per item from 4,000 to 15,000
         body = x.get("deep_text", x["summary"])
         items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['real_link']}\nData: {body[:15000]}\n"
 
     prompt = (
-        "You are an elite B2B Sales AI analyzing CAD/BIM/AEC market signals in India.\n"
+        "You are an elite B2B Sales AI analyzing a BATCH of multiple CAD/BIM/AEC market signals in India.\n"
+        "CRITICAL: You MUST evaluate EVERY SINGLE ITEM in the batch. Do not stop at the first one.\n"
         "REJECT (is_lead=False) IMMEDIATELY IF THE TEXT CONTAINS:\n"
         "1. Non-software Junk (housekeeping, scrap, catering).\n"
         "2. SEO Spam, Coupon Codes, Affiliate links, or Adult/Casino content.\n"
@@ -458,7 +469,7 @@ def try_gemini_analysis(batch):
         "2. 'org_website' MUST be the primary corporate domain of that company (e.g. 'https://www.company.com'). NEVER output portal links (linkedin.com, naukri.com). If unknown, use 'Not Listed'.\n"
         "3. If Lead is 'Hiring Mandate' and DM Name is missing, set DM Title to 'Talent Acquisition / HR Head'.\n"
         "4. If Salary or Experience is missing, set to 'Undisclosed' instead of 'N/A'.\n"
-        "Extract all 38 fields based strictly on the text provided. Use 'N/A' or 'Not Listed' for other missing data.\n"
+        "Extract all 38 fields for EACH valid item. You MUST return a JSON list containing an object for EVERY valid lead, and strictly ensure the 'item_index' matches the item number from the text below.\n"
         f"{items_block}"
     )
 
@@ -483,7 +494,6 @@ def try_gemini_analysis(batch):
         KEY_POOL.rotate()
     return None
 
-# UPGRADE 3: Local Fallback now uses the Deep Scraped Text
 def extract_lead_locally(item, real_url, deep_text=""):
     text = f"{item['title']} {item['summary']} {deep_text}".lower()
     
@@ -595,21 +605,64 @@ def dispatch_lead(item, d):
     if state in ["Pan-India", "India", ""] and hq.lower() in STATE_MAP:
         state = STATE_MAP[hq.lower()]
 
-    # 1. GENERATE THE LEAD ID
+    # 1. GENERATE THE UNIQUE LEAD ID
     lead_id = uuid.uuid4().hex[:8]
+    
+    # 2. BUILD THE COMPREHENSIVE TELEGRAM MESSAGE
+    def f(label, val):
+        if val and str(val).lower() not in ["n/a", "not listed", "none", "unknown", "none detected", ""]:
+            return f"{label} {val}\n"
+        return ""
 
-    # 2. BUILD THE TELEGRAM MESSAGE (msg)
-    # (Keep your existing formatting here, it probably looks something like this):
-    msg = f"🎯 *New AEC Lead Found*\n"
-    msg += f"🏢 *Org:* {d.get('org', 'N/A')}\n"
-    msg += f"📊 *Intent:* {d.get('buying_intent', 'N/A')}\n"
-    msg += f"🔗 [Source Link]({item['link']})"
-    # ... whatever else you have in your msg block
+    msg = f"🚨 *Intelligence Signal Alert!*\n\n"
+    msg += f"🎯 *Intent:* {d.get('buying_intent', 'Medium')} | {d.get('urgency', 'Warm')}\n"
+    msg += f"💡 *AI Advice:* _{d.get('sales_action', 'Outreach')}_\n"
+    msg += f"🗣️ *Pitch:* _{d.get('pitch_angle', 'N/A')}_\n\n"
+    
+    msg += f"🏢 *Entity:* {org} ({d.get('entity_type', 'Commercial')})\n"
+    msg += f"🏷 *Category:* {ltype}\n"
+    msg += f(f"🏭 *Industry:*", d.get('industry', 'AEC'))
+    
+    msg += f(f"🏗 *Project:*", d.get('project_name', 'N/A'))
+    msg += f(f"📈 *Stage:*", d.get('project_stage', 'N/A'))
+    msg += f(f"📐 *Scale:*", d.get('project_scale', 'N/A'))
+    msg += f(f"💰 *Investment:*", d.get('total_investment', 'N/A'))
+    msg += f(f"👷 *EPC/Builder:*", d.get('epc', 'N/A'))
+    msg += f(f"🤝 *PMC:*", d.get('pmc', 'N/A'))
+    
+    tender_id = d.get('tender_id', 'N/A')
+    if tender_id != 'N/A':
+        msg += f"🆔 *Tender ID:* `{tender_id}`\n"
+    msg += f(f"📅 *Pre-Bid Meeting:* 🚨", d.get('pre_bid', 'N/A'))
+    msg += f(f"⏳ *Deadline:*", d.get('deadline', 'N/A'))
+    msg += f(f"💵 *Value:*", d.get('tender_value', 'N/A'))
+    
+    msg += f(f"💼 *Hiring:*", d.get('job_title', 'N/A'))
+    msg += f(f"👥 *Vacancies:*", d.get('vacancies', 'N/A'))
+    msg += f(f"🎓 *Experience:*", d.get('exp_level', 'N/A'))
+    msg += f(f"💸 *Salary:*", d.get('salary', 'N/A'))
+    
+    msg += f"\n🛠 *Tech Stack:* `{d.get('tech_stack', prod)}`\n"
+    msg += f(f"⚔️ *Competitors:*", d.get('competitor', 'N/A'))
+    
+    msg += f"\n👤 *DM:* {dm_name}"
+    if dm_title not in ["Not Listed", ""]:
+        msg += f" - {dm_title}"
+    msg += "\n"
+    if dm_li != "N/A":
+        msg += f"🔗 *LinkedIn:* [View Profile]({dm_li})\n"
+    
+    msg += f(f"📧 *Email:*", email)
+    msg += f(f"📞 *Phone:*", d.get('phone', 'N/A'))
+    msg += f(f"🏢 *Boardline:*", d.get('boardline', 'N/A'))
+    msg += f"📍 *Location:* {hq}, {state}\n"
+    msg += f"🌐 *Corporate Website:* {web}\n\n"
+    msg += f"🔗 [Open Original Document]({real_link})"
 
-    # 3. NOW SEND TO TELEGRAM (Because 'msg' finally exists!)
+    # 3. SEND TO TELEGRAM FIRST TO ACQUIRE THE MESSAGE IDS
     tg_chat_id, tg_msg_id = send_telegram(msg, lead_type=ltype, lead_id=lead_id)
 
-    # 4. BUILD THE PAYLOAD FOR GOOGLE SHEETS
+    # 4. BUILD THE GOOGLE SHEETS PAYLOAD WITH TELEGRAM IDS INCLUDED
     payload = {
         "lead_id": lead_id,
         "tg_chat_id": tg_chat_id or "",
@@ -634,59 +687,11 @@ def dispatch_lead(item, d):
         "summary": d.get("summary", item["title"]), "link": real_link, "type": ltype
     }
     
+    # 5. PUSH TO GOOGLE SHEETS
     sheet_status = push_to_sheet(payload)
     if sheet_status == "duplicate":
         log(f"    ⏭️ [DUPLICATE IGNORED]: {org} is already in the Sheet.")
         return  
-
-    def f(label, val):
-        if val and str(val).lower() not in ["n/a", "not listed", "none", "unknown", "none detected", ""]:
-            return f"{label} {val}\n"
-        return ""
-
-    msg = f"🚨 *Intelligence Signal Alert!*\n\n"
-    msg += f"🎯 *Intent:* {payload['buying_intent']} | {payload['urgency']}\n"
-    msg += f"💡 *AI Advice:* _{payload['sales_action']}_\n"
-    msg += f"🗣️ *Pitch:* _{payload['pitch_angle']}_\n\n"
-    
-    msg += f"🏢 *Entity:* {org} ({payload['entity_type']})\n"
-    msg += f"🏷 *Category:* {ltype}\n"
-    msg += f(f"🏭 *Industry:*", payload['industry'])
-    
-    msg += f(f"🏗 *Project:*", payload['project_name'])
-    msg += f(f"📈 *Stage:*", payload['project_stage'])
-    msg += f(f"📐 *Scale:*", payload['project_scale'])
-    msg += f(f"💰 *Investment:*", payload['total_investment'])
-    msg += f(f"👷 *EPC/Builder:*", payload['epc'])
-    msg += f(f"🤝 *PMC:*", payload['pmc'])
-    
-    if payload['tender_id'] != 'N/A':
-        msg += f"🆔 *Tender ID:* `{payload['tender_id']}`\n"
-    msg += f(f"📅 *Pre-Bid Meeting:* 🚨", payload['pre_bid'])
-    msg += f(f"⏳ *Deadline:*", payload['deadline'])
-    msg += f(f"💵 *Value:*", payload['tender_value'])
-    
-    msg += f(f"💼 *Hiring:*", payload['job_title'])
-    msg += f(f"👥 *Vacancies:*", payload['vacancies'])
-    msg += f(f"🎓 *Experience:*", payload['exp_level'])
-    msg += f(f"💸 *Salary:*", payload['salary'])
-    
-    msg += f"\n🛠 *Tech Stack:* `{payload['tech_stack']}`\n"
-    msg += f(f"⚔️ *Competitors:*", payload['competitor'])
-    
-    msg += f"\n👤 *DM:* {dm_name}"
-    if dm_title not in ["Not Listed", ""]:
-        msg += f" - {dm_title}"
-    msg += "\n"
-    if dm_li != "N/A":
-        msg += f"🔗 *LinkedIn:* [View Profile]({dm_li})\n"
-    
-    msg += f(f"📧 *Email:*", payload['email'])
-    msg += f(f"📞 *Phone:*", payload['phone'])
-    msg += f(f"🏢 *Boardline:*", payload['boardline'])
-    msg += f"📍 *Location:* {hq}, {state}\n"
-    msg += f"🌐 *Corporate Website:* {web}\n\n"
-    msg += f"🔗 [Open Original Document]({real_link})"
 
     log(f"    >>> [RECORDED]: {org} | Web: {web} | Intent: {payload['buying_intent']}")
 
@@ -715,7 +720,6 @@ def main():
         for i in range(0, len(candidates), 10):
             batch = candidates[i:i+10]
             
-            # --- CACHING THE DEEP SCRAPE SO LOCAL FALLBACK IS NOT BLIND ---
             for x in batch:
                 real = get_real_url(x["link"])
                 x["real_link"] = real
