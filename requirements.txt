@@ -1,0 +1,9 @@
+requests
+beautifulsoup4
+pydantic
+duckduckgo-search
+google-genai
+playwright
+googlesearch-python
+pypdf
+googlenewsdecoder
