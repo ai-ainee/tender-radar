@@ -93,7 +93,8 @@ PORTAL_DOMAINS = [
     "google.com", "news.google.com", "linkedin.com", "naukri.com", "indeed.com",
     "foundit.in", "shine.com", "monsterindia.com", "economictimes.indiatimes.com",
     "moneycontrol.com", "business-standard.com", "livemint.com", "eprocure.gov.in",
-    "gem.gov.in", "ireps.gov.in", "facebook.com", "twitter.com", "x.com"
+    "gem.gov.in", "ireps.gov.in", "facebook.com", "twitter.com", "x.com",
+    "adecco.com", "glassdoor.co.in", "ambitionbox.com", "justdial.com", "sulekha.com"
 ]
 
 PORTAL_SUFFIX_REGEX = re.compile(
