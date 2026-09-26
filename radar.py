@@ -47,6 +47,7 @@ PRODUCTS_FILE = "products.txt"
 STATES_FILE = "states.txt"
 NEGATIVE_FILE = "negative_keywords.txt"
 SEEN_FILE = "seen_links.txt"
+BLOCKED_SOURCES_FILE = "blocked_sources.txt"
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -203,6 +204,12 @@ def load_negative_keywords():
     if not os.path.exists(NEGATIVE_FILE):
         return []
     with open(NEGATIVE_FILE, "r", encoding="utf-8") as f:
+        return [line.strip().lower() for line in f if line.strip() and not line.startswith("#")]
+
+def load_blocked_sources():
+    if not os.path.exists(BLOCKED_SOURCES_FILE):
+        return []
+    with open(BLOCKED_SOURCES_FILE, "r", encoding="utf-8") as f:
         return [line.strip().lower() for line in f if line.strip() and not line.startswith("#")]
 
 def is_portal_url(url):
@@ -460,7 +467,9 @@ def try_gemini_analysis(batch):
         "4. Stock Market/Financial News (Q3 earnings, share price, dividend, Nifty/Sensex).\n"
         "5. Projects or jobs located OUTSIDE of India (e.g., Dubai, USA, Saudi, UK).\n"
         "6. Anti-bot/Captcha messages (e.g., 'verify you are human', 'access denied', 'cloudflare').\n"
-        "7. Freelance gigs (Upwork, Fiverr), Student/Academic projects, or intern roles with no software buying power.\n\n"
+        "7. Freelance gigs (Upwork, Fiverr), Student/Academic projects, or intern roles with no software buying power.\n"
+        "8. STRICT DATE CHECK: If the article, tender, or job posting explicitly shows a year from 2025 or older, or a deadline that has already passed, REJECT IT IMMEDIATELY.\n\n"
+        "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, corporate hiring roles, capex projects, AND resellers/dealers/training partners IN INDIA.\n\n"
         "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, corporate hiring roles, capex projects, AND resellers/dealers/training partners IN INDIA.\n\n"
         "CLASSIFICATION MATRIX for 'lead_type':\n"
         "- If asking for quotes, RFQ, or vendor registration -> 'Active Private Buyer (RFQ)'\n"
@@ -705,12 +714,17 @@ def main():
     products = load_products()
     seen = load_seen()
     negative_kw = load_negative_keywords()
+    blocked_domains = load_blocked_sources() # <--- LOAD THE BLOCKLIST
     
     log(f">>> Scanning targets for products: {', '.join(products)}")
     for p in products:
         raw_items = fetch_all_opportunities(p)
         candidates = []
         for item in raw_items:
+            # --- NEW: DOMAIN BLOCKER SHIELD ---
+            if any(domain in item["link"].lower() for domain in blocked_domains):
+                continue
+                
             if item["link"] in seen:
                 continue
             seen.add(item["link"])
