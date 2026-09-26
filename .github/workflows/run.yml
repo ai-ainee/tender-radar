@@ -1,0 +1,61 @@
+name: Radar Auto-Scanner
+
+on:
+  schedule:
+    # 2:30, 4:30, 6:30, 8:30, 10:30, 12:30, 14:30 UTC = 8am to 8pm IST every 2 hours
+    - cron: '30 2,4,6,8,10,12,14 * * *' 
+  workflow_dispatch:
+  
+jobs:
+  run-radar:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Crucial for saving the seen_links.txt back to git to prevent duplicate leads
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Run Enterprise Radar (Phase 1: Scout)
+        env:
+          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Uncomment the lines below if you added the specific Chat IDs for different channels to your GitHub Secrets:
+          # TELEGRAM_CHAT_ID_BUYERS: ${{ secrets.TELEGRAM_CHAT_ID_BUYERS }}
+          # TELEGRAM_CHAT_ID_TENDERS: ${{ secrets.TELEGRAM_CHAT_ID_TENDERS }}
+          # TELEGRAM_CHAT_ID_HIRING: ${{ secrets.TELEGRAM_CHAT_ID_HIRING }}
+          # TELEGRAM_CHAT_ID_CAPEX: ${{ secrets.TELEGRAM_CHAT_ID_CAPEX }}
+          # TELEGRAM_CHAT_ID_SUPPLIERS: ${{ secrets.TELEGRAM_CHAT_ID_SUPPLIERS }}
+          # TELEGRAM_CHAT_ID_INDUSTRY_MEDIA: ${{ secrets.TELEGRAM_CHAT_ID_INDUSTRY_MEDIA }}
+        run: |
+          python radar.py
+
+      - name: Run Deep Hunter (Phase 2: Enrichment)
+        env:
+          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
+          QUALIFIED_CSV_URL: ${{ secrets.QUALIFIED_CSV_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          # The '|| true' ensures that even if deep_hunter crashes, GitHub will still move to the next step and save your seen_links.txt
+          python deep_hunter.py || true
+
+      - name: Save Memory (seen_links.txt)
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_links.txt
+          # The line below checks if seen_links changed. If yes, it commits and pushes automatically.
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update seen links cache" && git push)
