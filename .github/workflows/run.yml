@@ -1,6 +1,10 @@
 name: Radar Auto-Scanner
 
 on:
+  push:
+    branches:
+      - main
+      - master
   schedule:
     # 2:30, 4:30, 6:30, 8:30, 10:30, 12:30, 14:30 UTC = 8am to 8pm IST every 2 hours
     - cron: '30 2,4,6,8,10,12,14 * * *' 
@@ -56,6 +60,6 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen_links.txt
+          git add seen_links.txt || true
           # The line below checks if seen_links changed. If yes, it commits and pushes automatically.
           git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update seen links cache" && git push)
