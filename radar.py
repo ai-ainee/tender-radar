@@ -90,12 +90,14 @@ JUNK_MARKERS = [
     "coupon", "promo code", "shein", "porn", "casino", "betting", "retailmenot"
 ]
 
+# Note: Added staffing/directory sites as portals so Gemini knows to dig past them if they aren't blocked
 PORTAL_DOMAINS = [
     "google.com", "news.google.com", "linkedin.com", "naukri.com", "indeed.com",
     "foundit.in", "shine.com", "monsterindia.com", "economictimes.indiatimes.com",
     "moneycontrol.com", "business-standard.com", "livemint.com", "eprocure.gov.in",
     "gem.gov.in", "ireps.gov.in", "facebook.com", "twitter.com", "x.com",
-    "adecco.com", "glassdoor.co.in", "ambitionbox.com", "justdial.com", "sulekha.com"
+    "adecco.com", "glassdoor.co.in", "ambitionbox.com", "justdial.com", "sulekha.com",
+    "mycorporateinfo.com", "zaubacorp.com"
 ]
 
 PORTAL_SUFFIX_REGEX = re.compile(
@@ -298,7 +300,7 @@ def deep_scrape_content(url):
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
                 
-                # NetworkIdle - Waits for JavaScript Frameworks to completely finish loading
+                # FIXED: wait_until="domcontentloaded" prevents timeouts on ad-heavy sites
                 page.goto(url, timeout=30000, wait_until="domcontentloaded")
                 page.wait_for_timeout(2000) 
                 
@@ -401,7 +403,7 @@ def fetch_all_opportunities(product):
     all_items = []
     seen = set()
     
-    # 1. Google News: Good for Capex, Funding, and PR Announcements
+    # 1. Google News
     news_queries = [
         f'"{product}" (capex OR expansion OR project OR "new facility" OR GCC) India',
         f'"{product}" (hiring OR vacancy OR "job opening") India'
@@ -420,7 +422,7 @@ def fetch_all_opportunities(product):
         except Exception:
             pass
 
-   # 2. DuckDuckGo Web Search: MANDATORY for Tenders, RFQs, and Corporate Sites
+    # 2. DuckDuckGo Web Search with Double-Layer Failover
     if DDGS:
         web_queries = [
             f'"{product}" (tender OR e-tender OR NIT OR RFP) site:gov.in',
@@ -430,20 +432,27 @@ def fetch_all_opportunities(product):
         try:
             ddgs = DDGS()
             for wq in web_queries:
-                time.sleep(5)  # Increased from 3s to 5s to mimic human behavior
+                time.sleep(5) 
                 try:
+                    # Attempt 1: Standard Search API
                     res = list(ddgs.text(wq, max_results=10)) 
-                    for item in res:
-                        l = item.get("href", "")
-                        t = item.get("title", "")
-                        d = item.get("body", "")
-                        if l and l not in seen:
-                            seen.add(l)
-                            all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": "Recent"})
-                except Exception as e:
-                    # If DuckDuckGo throws a rate limit error, break the loop to let the IP cool down
-                    log(f"    ⚠️ [Search Cooldown]: DuckDuckGo rate limit hit. Pausing web search for '{product}'.")
-                    break 
+                except Exception:
+                    try:
+                        # Attempt 2: If rate-limited, failover to the "Lite" HTML backend
+                        time.sleep(3)
+                        res = list(ddgs.text(wq, max_results=10, backend="lite"))
+                    except Exception:
+                        log(f"    ⚠️ [Search Cooldown]: DuckDuckGo rate limit hit. Pausing web search for '{product}'.")
+                        break 
+                
+                # Process the results if either attempt succeeded
+                for item in res:
+                    l = item.get("href", "")
+                    t = item.get("title", "")
+                    d = item.get("body", "")
+                    if l and l not in seen:
+                        seen.add(l)
+                        all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": "Recent"})
         except Exception:
             pass
             
@@ -469,7 +478,6 @@ def try_gemini_analysis(batch):
         "6. Anti-bot/Captcha messages (e.g., 'verify you are human', 'access denied', 'cloudflare').\n"
         "7. Freelance gigs (Upwork, Fiverr), Student/Academic projects, or intern roles with no software buying power.\n"
         "8. STRICT DATE CHECK: If the article, tender, or job posting explicitly shows a year from 2025 or older, or a deadline that has already passed, REJECT IT IMMEDIATELY.\n\n"
-        "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, corporate hiring roles, capex projects, AND resellers/dealers/training partners IN INDIA.\n\n"
         "ACCEPT (is_lead=True): Genuine CAD/BIM buyers, active RFQs, corporate hiring roles, capex projects, AND resellers/dealers/training partners IN INDIA.\n\n"
         "CLASSIFICATION MATRIX for 'lead_type':\n"
         "- If asking for quotes, RFQ, or vendor registration -> 'Active Private Buyer (RFQ)'\n"
@@ -714,14 +722,15 @@ def main():
     products = load_products()
     seen = load_seen()
     negative_kw = load_negative_keywords()
-    blocked_domains = load_blocked_sources() # <--- LOAD THE BLOCKLIST
+    blocked_domains = load_blocked_sources()
     
     log(f">>> Scanning targets for products: {', '.join(products)}")
     for p in products:
         raw_items = fetch_all_opportunities(p)
         candidates = []
         for item in raw_items:
-            # --- NEW: DOMAIN BLOCKER SHIELD ---
+            
+            # --- THE NEW DOMAIN BLOCKER SHIELD ---
             if any(domain in item["link"].lower() for domain in blocked_domains):
                 continue
                 
