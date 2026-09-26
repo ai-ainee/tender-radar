@@ -2,8 +2,9 @@ name: Radar Auto-Scanner
 
 on:
   schedule:
-    - cron: '0 */4 * * *' # Runs exactly every 4 hours automatically
-  workflow_dispatch:      # Creates a "Run workflow" button for manual testing on GitHub
+    # 2:30, 4:30, 6:30, 8:30, 10:30, 12:30, 14:30 UTC = 8am to 8pm IST every 2 hours
+    - cron: '30 2,4,6,8,10,12,14 * * *' 
+  workflow_dispatch:
 
 jobs:
   run-radar:
