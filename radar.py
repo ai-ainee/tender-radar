@@ -213,10 +213,25 @@ def load_negative_keywords():
         return [line.strip().lower() for line in f if line.strip() and not line.startswith("#")]
 
 def load_blocked_sources():
-    if not os.path.exists(BLOCKED_SOURCES_FILE):
-        return []
-    with open(BLOCKED_SOURCES_FILE, "r", encoding="utf-8") as f:
-        return [line.strip().lower() for line in f if line.strip() and not line.startswith("#")]
+    blocked = []
+    if os.path.exists(BLOCKED_SOURCES_FILE):
+        with open(BLOCKED_SOURCES_FILE, "r", encoding="utf-8") as f:
+            blocked.extend([line.strip().lower() for line in f if line.strip() and not line.startswith("#")])
+            
+    # Dynamically pull the Live Blocklist from Google Sheets
+    blocklist_csv = os.environ.get("BLOCKLIST_CSV_URL")
+    if blocklist_csv:
+        try:
+            r = SESSION.get(blocklist_csv, timeout=10)
+            if r.status_code == 200:
+                lines = r.text.splitlines()
+                for line in lines[1:]: # Skip the header
+                    if line.strip():
+                        blocked.append(line.strip().lower())
+        except Exception as e:
+            log(f"    ⚠️ [Blocklist Sync Error]: {e}")
+            
+    return list(set(blocked))
 
 def is_portal_url(url):
     if not url:
