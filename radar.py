@@ -37,10 +37,15 @@ try:
 except ImportError:
     sync_playwright = None
 
+try:
+    from googlesearch import search as google_organic_search
+except ImportError:
+    google_organic_search = None
+
 def log(msg):
     print(msg, flush=True)
 
-log(">>> ENTERPRISE RADAR ACTIVE: WIDE DATA PIPE + NETWORK IDLE WAITS")
+log(">>> ENTERPRISE RADAR ACTIVE: 4-PIPE ENGINE + WIDE DATA NET")
 
 GOOGLE_SHEET_WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 PRODUCTS_FILE = "products.txt"
@@ -90,7 +95,6 @@ JUNK_MARKERS = [
     "coupon", "promo code", "shein", "porn", "casino", "betting", "retailmenot"
 ]
 
-# Note: Added staffing/directory sites as portals so Gemini knows to dig past them if they aren't blocked
 PORTAL_DOMAINS = [
     "google.com", "news.google.com", "linkedin.com", "naukri.com", "indeed.com",
     "foundit.in", "shine.com", "monsterindia.com", "economictimes.indiatimes.com",
@@ -143,8 +147,8 @@ class LeadData(BaseModel):
     item_index: int
     is_lead: bool
     lead_type: str = Field(description="Govt Tender, Private Capex, Hiring Mandate, Corporate Lead, Suppliers, Active Private Buyer (RFQ), or Media News")
-    org: str = Field(description="The actual hiring or buying corporate entity name. NOT a portal name like Naukri, LinkedIn, or Google.")
-    org_website: str = Field(description="Official corporate website homepage of the company (e.g., https://www.larsentoubro.com). NEVER a job portal or news URL. If unknown, output 'Not Listed'.")
+    org: str = Field(description="The actual hiring or buying corporate entity name. NOT a portal name.")
+    org_website: str = Field(description="Official corporate website homepage of the company. NEVER a job portal or news URL.")
     entity_type: str = Field(description="Govt, PSU, Private, MNC, Startup, Training Institute, Channel Partner")
     industry: str
     hq: str
@@ -284,6 +288,20 @@ def free_b2b_enrichment(company_name, lead_type):
         pass
     return data
 
+def extract_metadata_fast(url):
+    """Fast extraction of Title and Description for Google Organic Links"""
+    try:
+        r = SESSION.get(url, timeout=5, allow_redirects=True)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.content, 'html.parser')
+            title = soup.title.string if soup.title else url
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            desc = meta_desc['content'] if meta_desc else ""
+            return title.strip(), desc.strip()
+    except Exception:
+        pass
+    return "Target Website", ""
+
 def deep_scrape_content(url):
     if url.lower().endswith(".pdf"):
         try:
@@ -392,7 +410,6 @@ def send_telegram(text, lead_type="", lead_id=""):
         r = SESSION.post(url, json=payload, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            # Capture the exact Message ID from Telegram
             return chat_id, data.get("result", {}).get("message_id")
     except Exception as e:
         log(f"    ⚠️ [Telegram Send Error]: {e}")
@@ -403,16 +420,33 @@ def fetch_all_opportunities(product):
     all_items = []
     seen = set()
     
-    # 1. Google News
+    # --- PIPE 1: CUSTOM RSS FEEDS (Google Alerts) ---
+    CUSTOM_RSS_FEEDS = [
+        # https://www.google.com/alerts/feeds/17849060262234467766/15851068127971070186
+    ]
+    for rss_url in CUSTOM_RSS_FEEDS:
+        try:
+            r = SESSION.get(rss_url, timeout=8)
+            if r.status_code == 200:
+                root = ET.fromstring(r.content)
+                for item in root.findall(".//entry") or root.findall(".//item"):
+                    l = item.findtext("{http://www.w3.org/2005/Atom}link", "") or item.findtext("link", "")
+                    t = item.findtext("{http://www.w3.org/2005/Atom}title", "") or item.findtext("title", "")
+                    if l and l not in seen:
+                        seen.add(l)
+                        all_items.append({"title": re.sub(r"<[^>]+>", "", t), "link": l, "summary": "Via Custom RSS", "product": product, "pubDate": "Recent"})
+        except Exception:
+            pass
+
+    # --- PIPE 2: GOOGLE NEWS RSS ---
     news_queries = [
         f'"{product}" (capex OR expansion OR project OR "new facility" OR GCC) India',
         f'"{product}" (hiring OR vacancy OR "job opening") India'
     ]
-    
     for q in news_queries:
         try:
             r = SESSION.get(f"https://news.google.com/rss/search?q={urllib.parse.quote(q + ' when:14d')}&hl=en-IN&gl=IN&ceid=IN:en", timeout=8)
-            if r.status_code == 200 and r.content:
+            if r.status_code == 200:
                 root = ET.fromstring(r.content)
                 for item in root.findall(".//item"):
                     l, t, d, pub = [item.findtext(k, "") for k in ["link", "title", "description", "pubDate"]]
@@ -422,39 +456,64 @@ def fetch_all_opportunities(product):
         except Exception:
             pass
 
-    # 2. DuckDuckGo Web Search with Double-Layer Failover
-    if DDGS:
-        web_queries = [
-            f'"{product}" (tender OR e-tender OR NIT OR RFP) site:gov.in',
-            f'"{product}" ("request for quotation" OR "supplier empanelment" OR "vendor registration") India',
-            f'"{product}" (dealer OR reseller OR "training partner") India'
-        ]
-        try:
-            ddgs = DDGS()
-            for wq in web_queries:
-                time.sleep(5) 
-                try:
-                    # Attempt 1: Standard Search API
-                    res = list(ddgs.text(wq, max_results=10)) 
-                except Exception:
-                    try:
-                        # Attempt 2: If rate-limited, failover to the "Lite" HTML backend
-                        time.sleep(3)
-                        res = list(ddgs.text(wq, max_results=10, backend="lite"))
-                    except Exception:
-                        log(f"    ⚠️ [Search Cooldown]: DuckDuckGo rate limit hit. Pausing web search for '{product}'.")
-                        break 
-                
-                # Process the results if either attempt succeeded
+    # --- PIPE 3: THE KEYWORD MULTIPLIER ---
+    search_keywords = [
+        product,
+        f"{product} drafting services",
+        "BIM implementation tender",
+        "MEP design consultancy",
+        "structural detailing RFQ"
+    ]
+    
+    web_queries = []
+    for kw in search_keywords:
+        web_queries.extend([
+            f'"{kw}" (tender OR NIT OR RFP) site:gov.in',
+            f'"{kw}" ("request for quotation" OR "supplier empanelment") India',
+            f'"{kw}" ("authorized partner" OR dealer OR reseller) India'
+        ])
+
+    # --- PIPE 4: DDG WITH GOOGLE ORGANIC FAILOVER ---
+    for wq in web_queries:
+        success = False
+        
+        # ATTEMPT A & B: DuckDuckGo Main API -> Lite API
+        if DDGS:
+            time.sleep(4) 
+            try:
+                res = list(DDGS().text(wq, max_results=5)) 
                 for item in res:
-                    l = item.get("href", "")
-                    t = item.get("title", "")
-                    d = item.get("body", "")
+                    l, t, d = item.get("href", ""), item.get("title", ""), item.get("body", "")
                     if l and l not in seen:
                         seen.add(l)
                         all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": "Recent"})
-        except Exception:
-            pass
+                success = True
+            except Exception:
+                try:
+                    time.sleep(3)
+                    res = list(DDGS().text(wq, max_results=5, backend="lite"))
+                    for item in res:
+                        l, t, d = item.get("href", ""), item.get("title", ""), item.get("body", "")
+                        if l and l not in seen:
+                            seen.add(l)
+                            all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": "Recent"})
+                    success = True
+                except Exception:
+                    log(f"    ⚠️ [DDG Blocked] for query: {wq[:30]}...")
+
+        # ATTEMPT C: Google Organic HTML Scraper (Failover)
+        if not success and google_organic_search:
+            log(f"    🔄 [Failover Active]: Routing through Google Organic Search...")
+            try:
+                time.sleep(5) 
+                urls = list(google_organic_search(wq, num=5, stop=5, pause=3))
+                for l in urls:
+                    if l and l not in seen:
+                        seen.add(l)
+                        t, d = extract_metadata_fast(l)
+                        all_items.append({"title": t, "link": l, "summary": d, "product": product, "pubDate": "Recent"})
+            except Exception as e:
+                pass
             
     return all_items
 
@@ -628,10 +687,8 @@ def dispatch_lead(item, d):
     if state in ["Pan-India", "India", ""] and hq.lower() in STATE_MAP:
         state = STATE_MAP[hq.lower()]
 
-    # 1. GENERATE THE UNIQUE LEAD ID
     lead_id = uuid.uuid4().hex[:8]
     
-    # 2. BUILD THE COMPREHENSIVE TELEGRAM MESSAGE
     def f(label, val):
         if val and str(val).lower() not in ["n/a", "not listed", "none", "unknown", "none detected", ""]:
             return f"{label} {val}\n"
@@ -682,10 +739,8 @@ def dispatch_lead(item, d):
     msg += f"🌐 *Corporate Website:* {web}\n\n"
     msg += f"🔗 [Open Original Document]({real_link})"
 
-    # 3. SEND TO TELEGRAM FIRST TO ACQUIRE THE MESSAGE IDS
     tg_chat_id, tg_msg_id = send_telegram(msg, lead_type=ltype, lead_id=lead_id)
 
-    # 4. BUILD THE GOOGLE SHEETS PAYLOAD WITH TELEGRAM IDS INCLUDED
     payload = {
         "lead_id": lead_id,
         "tg_chat_id": tg_chat_id or "",
@@ -710,7 +765,6 @@ def dispatch_lead(item, d):
         "summary": d.get("summary", item["title"]), "link": real_link, "type": ltype
     }
     
-    # 5. PUSH TO GOOGLE SHEETS
     sheet_status = push_to_sheet(payload)
     if sheet_status == "duplicate":
         log(f"    ⏭️ [DUPLICATE IGNORED]: {org} is already in the Sheet.")
