@@ -4,3 +4,4 @@ google-genai
 dnspython
 aiohttp
 tenacity
+duckduckgo_search
