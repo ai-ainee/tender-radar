@@ -10,10 +10,14 @@ from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
+# --- UPGRADED DDGS IMPORT ---
 try:
-    from duckduckgo_search import AsyncDDGS
+    from ddgs import AsyncDDGS
 except ImportError:
-    AsyncDDGS = None
+    try:
+        from duckduckgo_search import AsyncDDGS
+    except ImportError:
+        AsyncDDGS = None
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -32,21 +36,30 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
+# --- UPGRADED MODEL SELECTOR (Strict Version Parsing) ---
 BEST_MODEL_CACHE = None
 
 def get_best_gemini_model(client):
     global BEST_MODEL_CACHE
     if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
     try:
-        models = [m.name for m in client.models.list() if 'flash' in m.name.lower()]
-        if models:
-            models.sort(reverse=True)
-            BEST_MODEL_CACHE = models[0]
+        valid_models = []
+        for m in client.models.list():
+            name = m.name.lower()
+            if re.match(r'^models/gemini-\d+\.\d+-flash$', name):
+                valid_models.append(name)
+                
+        if valid_models:
+            valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
+            BEST_MODEL_CACHE = valid_models[0]
             return BEST_MODEL_CACHE
     except Exception:
         pass
-    BEST_MODEL_CACHE = "gemini-2.0-flash"
+        
+    BEST_MODEL_CACHE = "gemini-2.5-flash"
     return BEST_MODEL_CACHE
+
+async def is_b2b_email(email):
 
 async def is_b2b_email(email):
     if not email: return False
