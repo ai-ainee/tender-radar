@@ -60,9 +60,7 @@ def get_best_gemini_model(client):
         
     BEST_MODEL_CACHE = "gemini-2.5-flash" # Immortal fallback
     return BEST_MODEL_CACHE
-
-def is_duplicate(link):
-
+    
 def is_duplicate(link):
     if not WEBHOOK or not SECRET: return False
     try:
