@@ -532,6 +532,18 @@ def fetch_all_opportunities(product):
             
     return all_items
 
+def get_best_gemini_model(client):
+    try:
+        # Ask Google for all active models
+        models = [m.name for m in client.models.list() if 'flash' in m.name and 'generateContent' in m.supported_generation_methods]
+        if models:
+            models.sort(reverse=True) # Put the newest one at the top
+            return models[0]
+    except Exception:
+        pass
+    # Fallback to the one Google specifically recommended in the logs
+    return 'models/gemini-3.8-flash'
+
 def try_gemini_analysis(batch):
     if not batch:
         return None
@@ -575,8 +587,11 @@ def try_gemini_analysis(batch):
         return None
     try:
         from google.genai import types
+        # Get the newest model dynamically
+        best_model = get_best_gemini_model(client)
+        
         res = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=best_model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
