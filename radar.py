@@ -9,17 +9,14 @@ from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
-# Fallback imports
 try:
     from duckduckgo_search import DDGS
 except ImportError:
     DDGS = None
 
-# --- ENVIRONMENT VARIABLES & KEY POOL ---
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
 SERPER_KEY = os.environ.get("SERPER_API_KEY")
-
 raw_keys = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
 current_key_index = 0
@@ -31,25 +28,39 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-# --- 1. WEBHOOK DEDUPLICATION ---
+# --- DYNAMIC MODEL SELECTOR (Cached for Speed) ---
+BEST_MODEL_CACHE = None
+
+def get_best_gemini_model(client):
+    global BEST_MODEL_CACHE
+    if BEST_MODEL_CACHE: return BEST_MODEL_CACHE # Return instantly if already known
+    try:
+        # Fetches all models, filters for 'flash', and sorts to get the highest version automatically
+        models = [m.name for m in client.models.list() if 'flash' in m.name.lower()]
+        if models:
+            models.sort(reverse=True)
+            BEST_MODEL_CACHE = models[0]
+            print(f"    🧠 Auto-Detected Latest AI Model: {BEST_MODEL_CACHE}")
+            return BEST_MODEL_CACHE
+    except Exception:
+        pass
+    BEST_MODEL_CACHE = "gemini-2.0-flash" # Immortal stable fallback
+    return BEST_MODEL_CACHE
+
 def is_duplicate(link):
     if not WEBHOOK or not SECRET: return False
     try:
         payload = {"secret": SECRET, "action": "check_duplicate", "link": link}
         res = requests.post(WEBHOOK, json=payload, timeout=10).json()
         return res.get("duplicate", False)
-    except Exception as e:
-        print(f"    ⚠️ Webhook error: {e}")
+    except Exception:
         return False
 
-# --- 2. MULTI-ENGINE SEARCH ---
 def get_search_results(query):
     results = []
-    
-    # Engine 1: Serper API (Bulletproof)
     if SERPER_KEY:
         try:
-            url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
+            url = "https://google.serper.dev/search"
             payload = json.dumps({"q": query, "gl": "in", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             response = requests.post(url, headers=headers, data=payload, timeout=15)
@@ -60,7 +71,6 @@ def get_search_results(query):
         except Exception:
             pass
 
-    # Engine 2: DuckDuckGo (Free Fallback)
     if DDGS:
         try:
             print("    🔄 Using DuckDuckGo Fallback...")
@@ -68,41 +78,32 @@ def get_search_results(query):
             res = list(ddgs.text(query, max_results=10, backend="lite"))
             for r in res:
                 results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", "")})
-        except Exception as e:
-            print(f"    ⚠️ DDG Fallback Failed: {e}")
-            
+        except Exception:
+            pass
     return results
 
-# --- 3. DEEP TEXT FETCHING (MEMORY SAFE) ---
 def fetch_deep_text(url):
-    """Safely fetches website text. Rejects massive files like PDFs or ZIPs to prevent RAM crashes."""
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         with requests.get(url, headers=headers, timeout=8, stream=True) as r:
             if r.status_code == 200:
                 content_type = r.headers.get('Content-Type', '').lower()
-                if 'text/html' not in content_type:
-                    return "" # Skip PDFs/Videos
-                
-                # Only read the first 50KB to protect server memory
+                if 'text/html' not in content_type: return ""
                 html_content = r.raw.read(50000, decode_content=True)
                 soup = BeautifulSoup(html_content, "html.parser")
-                for tag in soup(["script", "style", "nav", "footer"]):
-                    tag.decompose()
-                text = soup.get_text(separator=" ", strip=True)
-                return text
+                for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
+                return soup.get_text(separator=" ", strip=True)
     except Exception:
         pass
     return ""
 
-# --- 4. AI BATCH ANALYSIS ---
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def ai_analyze_batch(batch):
     client = get_next_gemini_client()
-    if not client:
-        print("❌ GEMINI_API_KEY is missing.")
-        return []
-        
+    if not client: return []
+    
+    best_model = get_best_gemini_model(client) # Will use cache instantly
+    
     items_block = ""
     for i, x in enumerate(batch):
         body = x.get("deep_text") or x.get("summary") or ""
@@ -137,52 +138,34 @@ RULES:
 DATA BATCH:
 {items_block}
 """
-    
-    lead_schema = {
+    schema = {
         "type": "ARRAY",
         "items": {
             "type": "OBJECT",
             "properties": {
-                "item_index": {"type": "INTEGER"},
-                "is_lead": {"type": "BOOLEAN"},
-                "org": {"type": "STRING"},
-                "lead_type": {"type": "STRING"},
+                "item_index": {"type": "INTEGER"}, "is_lead": {"type": "BOOLEAN"},
+                "org": {"type": "STRING"}, "lead_type": {"type": "STRING"},
                 "website": {"type": "STRING", "nullable": True},
-                "dm_name": {"type": "STRING", "nullable": True},
-                "dm_title": {"type": "STRING", "nullable": True}
-            },
-            "required": ["item_index", "is_lead", "org", "lead_type"]
+                "dm_name": {"type": "STRING", "nullable": True}, "dm_title": {"type": "STRING", "nullable": True}
+            }, "required": ["item_index", "is_lead", "org", "lead_type"]
         }
     }
 
     try:
         res = client.models.generate_content(
-            model='gemini-2.5-flash', contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json", response_schema=lead_schema, temperature=0.0
-            )
+            model=best_model, contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
         )
-        
-        # DEFENSE: Aggressively strip markdown if Gemini hallucinates formatting
         raw_text = res.text.strip()
-        if raw_text.startswith("```"):
-            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-            
+        if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```", "").strip()
         return json.loads(raw_text)
     except Exception as e:
-        print(f"    ⚠️ Gemini Error. Retrying with next key... ({e})")
+        print(f"    ⚠️ Gemini Error. Retrying... ({e})")
         raise e 
 
-# --- 5. MAIN SCOUT ORCHESTRATOR ---
 def run():
     print(">>> 📡 RADAR SCOUT V2 ACTIVE (Production Ready)")
-    
-    keywords = [
-        "Autodesk drafting services requirement India",
-        "BIM implementation tender India",
-        "MEP design consultancy request for proposal",
-        "structural detailing RFQ India"
-    ]
+    keywords = ["Autodesk drafting services requirement India", "BIM implementation tender India", "MEP design consultancy request for proposal", "structural detailing RFQ India"]
     
     for kw in keywords:
         print(f"\n[*] Scouting keyword: {kw}")
@@ -210,7 +193,6 @@ def run():
             if lead.get("is_lead") and lead.get("org") and lead.get("org").lower() not in ["linkedin", "naukri", "indeed"]:
                 idx = lead.get("item_index")
                 if idx is None or idx >= len(fresh_leads) or idx < 0: continue
-                target = fresh_leads[idx]
                 
                 payload = {
                     "secret": SECRET, "action": "add_lead", "lead_id": str(uuid.uuid4())[:8],
@@ -218,16 +200,14 @@ def run():
                     "org": lead.get("org", "Unknown"), "industry": "AEC", 
                     "intent": lead.get("lead_type", "Corporate Lead"),
                     "dm_name": lead.get("dm_name") or "N/A", "dm_title": lead.get("dm_title") or "N/A", 
-                    "link": target['link'], "email": "N/A", "phone": "N/A", 
+                    "link": fresh_leads[idx]['link'], "email": "N/A", "phone": "N/A", 
                     "website": lead.get("website") or "N/A"
                 }
-                
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=10)
                     print(f"    ✅ Verified & Pushed: {lead['org']}")
                 except Exception as e:
                     print(f"    ❌ Failed to push to CRM: {e}")
-                    
         time.sleep(2)
 
 if __name__ == "__main__":
