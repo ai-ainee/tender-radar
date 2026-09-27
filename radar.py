@@ -10,10 +10,14 @@ from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
+# --- UPGRADED DDGS IMPORT ---
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 except ImportError:
-    DDGS = None
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        DDGS = None
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -30,22 +34,34 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
+# --- UPGRADED MODEL SELECTOR (Strict Version Parsing) ---
 BEST_MODEL_CACHE = None
 
 def get_best_gemini_model(client):
     global BEST_MODEL_CACHE
     if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
     try:
-        models = [m.name for m in client.models.list() if 'flash' in m.name.lower()]
-        if models:
-            models.sort(reverse=True)
-            BEST_MODEL_CACHE = models[0]
-            print(f"    🧠 Auto-Detected Latest AI Model: {BEST_MODEL_CACHE}")
+        valid_models = []
+        for m in client.models.list():
+            name = m.name.lower()
+            # STRICT REGEX: Only allow standard versions like 'models/gemini-2.5-flash'
+            # Instantly rejects 'preview', 'omni', 'lite', or 'experimental'
+            if re.match(r'^models/gemini-\d+\.\d+-flash$', name):
+                valid_models.append(name)
+                
+        if valid_models:
+            # Sort mathematically by the version number (e.g., 3.5 is greater than 2.5)
+            valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
+            BEST_MODEL_CACHE = valid_models[0]
+            print(f"    🧠 Auto-Detected Latest Stable AI Model: {BEST_MODEL_CACHE}")
             return BEST_MODEL_CACHE
     except Exception:
         pass
-    BEST_MODEL_CACHE = "gemini-2.0-flash"
+        
+    BEST_MODEL_CACHE = "gemini-2.5-flash" # Immortal fallback
     return BEST_MODEL_CACHE
+
+def is_duplicate(link):
 
 def is_duplicate(link):
     if not WEBHOOK or not SECRET: return False
