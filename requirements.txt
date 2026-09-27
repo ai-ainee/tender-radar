@@ -1,9 +1,6 @@
 requests
 beautifulsoup4
-pydantic
-ddgs
 google-genai
-playwright
-googlesearch-python
-pypdf
-googlenewsdecoder
+dnspython
+aiohttp
+tenacity
