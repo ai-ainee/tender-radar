@@ -10,13 +10,11 @@ from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
-# Fallback imports
 try:
     from duckduckgo_search import AsyncDDGS
 except ImportError:
     AsyncDDGS = None
 
-# --- ENVIRONMENT VARIABLES ---
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -34,32 +32,42 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-# --- 1. DPDP COMPLIANCE & EMAIL VALIDATION ---
+# --- DYNAMIC MODEL SELECTOR (Cached for Speed) ---
+BEST_MODEL_CACHE = None
+
+def get_best_gemini_model(client):
+    global BEST_MODEL_CACHE
+    if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
+    try:
+        models = [m.name for m in client.models.list() if 'flash' in m.name.lower()]
+        if models:
+            models.sort(reverse=True)
+            BEST_MODEL_CACHE = models[0]
+            return BEST_MODEL_CACHE
+    except Exception:
+        pass
+    BEST_MODEL_CACHE = "gemini-2.0-flash"
+    return BEST_MODEL_CACHE
+
 async def is_b2b_email(email):
     if not email: return False
     personal_domains = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "rediffmail.com"}
     try:
         domain = email.split('@')[-1].lower()
-        if domain in personal_domains:
-            return False
-        
-        # Async DNS MX Check (Pushes blocking network call to a background thread)
+        if domain in personal_domains: return False
         def check_mx():
             dns.resolver.resolve(domain, 'MX')
             return True
-            
         await asyncio.to_thread(check_mx)
         return True
     except Exception:
         return False
 
-# --- 2. ASYNC SEARCH ENGINE ---
 async def async_get_search_results(session, query, num=5):
     results = []
-    
     if SERPER_KEY:
         try:
-            url = "https://google.serper.dev/search"
+            url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
             payload = json.dumps({"q": query, "gl": "in", "num": num})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             async with session.post(url, headers=headers, data=payload, timeout=10) as response:
@@ -79,14 +87,13 @@ async def async_get_search_results(session, query, num=5):
                 results.append({"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")})
         except Exception:
             pass
-            
     return results
 
-# --- 3. AI ENTITY RESOLUTION (Synchronous, but Thread-Safe) ---
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def ai_verify_entity_sync(org_name, web_results, li_results):
     client = get_next_gemini_client()
     if not client: return None
+    best_model = get_best_gemini_model(client) # Uses cached version
     
     prompt = f"""
 You are an elite B2B Data Analyst. Target Organization: "{org_name}"
@@ -97,7 +104,7 @@ Task 1: Identify the OFFICIAL corporate website from 'Web Results'.
 - If none exist, return null.
 
 Task 2: Identify the DECISION MAKER from 'LinkedIn Results'.
-- MUST be a human profile (linkedin.com/in/), NOT a company page.
+- MUST be a human profile ([linkedin.com/in/](https://linkedin.com/in/)), NOT a company page.
 - Look for: Director, Founder, CEO, Head of BIM, Procurement.
 - Extract Name and Title. If uncertain, return null.
 
@@ -112,25 +119,18 @@ LinkedIn Results: {json.dumps(li_results)}
             "dm_title": {"type": "STRING", "nullable": True}
         }
     }
-
     try:
         res = client.models.generate_content(
-            model='gemini-2.5-flash', contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json", response_schema=schema, temperature=0.0
-            )
+            model=best_model, contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
         )
-        
         raw_text = res.text.strip()
-        if raw_text.startswith("```"):
-            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-            
+        if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```", "").strip()
         return json.loads(raw_text)
     except Exception as e:
         print(f"    ⚠️ AI Resolution Error: {e}")
         raise e
 
-# --- 4. ASYNC WEBSITE CRAWLER ---
 async def async_crawl_contacts(session, url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -138,13 +138,10 @@ async def async_crawl_contacts(session, url):
             if response.status == 200:
                 content_type = response.headers.get('Content-Type', '').lower()
                 if 'text/html' not in content_type: return [], []
-                
                 html = await response.read()
                 text = html.decode('utf-8', errors='ignore')
-                
                 emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
                 phones = re.findall(r"(?:\+91[- ]?|0)?[6-9]\d{9}\b", text)
-                
                 clean_emails = [e for e in set(emails) if not e.lower().endswith((".png", ".jpg", ".css", ".js", ".svg"))]
                 clean_phones = [p for p in set(phones) if len(p.replace("+91", "").replace("-", "").replace(" ", "").strip()) >= 10]
                 return clean_emails, clean_phones
@@ -152,51 +149,24 @@ async def async_crawl_contacts(session, url):
         pass
     return [], []
 
-# --- 5. PURE ASYNC TELEGRAM DELIVERY ---
 async def async_send_telegram(session, lead):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
-    
-    msg = f"🚀 **NEW QUALIFIED LEAD**\n\n" \
-          f"🏢 **Company:** {lead.get('org', 'Unknown')}\n" \
-          f"🎯 **Intent:** {lead.get('intent', 'Corporate Lead')}\n" \
-          f"👤 **DM:** {lead.get('dm_name', 'N/A')} ({lead.get('dm_title', 'N/A')})\n" \
-          f"✉️ **Email:** {lead.get('email', 'N/A')}\n" \
-          f"📞 **Phone:** {lead.get('phone', 'N/A')}\n" \
-          f"🌐 **Web:** {lead.get('website', 'N/A')}\n" \
-          f"🔗 **Source:** {lead.get('link', 'N/A')}"
-          
-    reply_markup = {
-        "inline_keyboard": [[
-            {"text": "✅ Qualify", "callback_data": f"qualify_{lead['lead_id']}"},
-            {"text": "❌ Reject", "callback_data": f"reject_{lead['lead_id']}"}
-        ]]
-    }
-    
-    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": msg,
-        "parse_mode": "Markdown",
-        "reply_markup": reply_markup,
-        "disable_web_page_preview": True
-    }
-    
+    msg = f"🚀 **NEW QUALIFIED LEAD**\n\n🏢 **Company:** {lead.get('org', 'Unknown')}\n🎯 **Intent:** {lead.get('intent', 'Corporate Lead')}\n👤 **DM:** {lead.get('dm_name', 'N/A')} ({lead.get('dm_title', 'N/A')})\n✉️ **Email:** {lead.get('email', 'N/A')}\n📞 **Phone:** {lead.get('phone', 'N/A')}\n🌐 **Web:** {lead.get('website', 'N/A')}\n🔗 **Source:** {lead.get('link', 'N/A')}"
+    reply_markup = {"inline_keyboard": [[{"text": "✅ Qualify", "callback_data": f"qualify_{lead['lead_id']}"}, {"text": "❌ Reject", "callback_data": f"reject_{lead['lead_id']}"}]]}
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown", "reply_markup": reply_markup, "disable_web_page_preview": True}
     try:
         async with session.post(url, json=payload, timeout=10) as response:
             await response.read()
-    except Exception as e:
-        print(f"    ⚠️ Telegram delivery failed: {e}")
+    except Exception:
+        pass
 
-# --- 6. ASYNC ORCHESTRATOR ---
 async def process_lead(session, lead):
     print(f"\n[*] Enriching Target: {lead['org']}")
-    
-    # Run contextual searches simultaneously
     web_task = async_get_search_results(session, f'"{lead["org"]}" official website india')
-    li_task = async_get_search_results(session, f'"{lead["org"]}" (Director OR CEO OR Procurement) site:[linkedin.com/in/](https://linkedin.com/in/)')
+    li_task = async_get_search_results(session, f'"{lead["org"]}" (Director OR CEO OR Procurement) site:linkedin.com/in/')
     web_res, li_res = await asyncio.gather(web_task, li_task)
     
-    # AI Verify (Pushed to background thread so it doesn't freeze the async loop)
     if web_res or li_res:
         ai_data = await asyncio.to_thread(ai_verify_entity_sync, lead['org'], web_res, li_res)
         if ai_data:
@@ -206,7 +176,6 @@ async def process_lead(session, lead):
                 lead["dm_title"] = ai_data.get("dm_title", "Decision Maker")
                 print(f"    ✅ AI Found DM: {lead['dm_name']}")
                 
-    # Direct Crawl
     if lead["website"] and lead["website"] != "N/A":
         emails, phones = await async_crawl_contacts(session, lead["website"])
         for e in emails:
@@ -214,10 +183,8 @@ async def process_lead(session, lead):
                 lead["email"] = e
                 print(f"    ✅ B2B Email Verified: {e}")
                 break
-        if phones and lead["phone"] == "N/A":
-            lead["phone"] = phones[0]
+        if phones and lead["phone"] == "N/A": lead["phone"] = phones[0]
 
-    # Save to Google Sheets (Pure Async)
     payload = {"secret": SECRET, "action": "update_lead", "row_index": lead['row_index'], **lead}
     try:
         async with session.post(WEBHOOK, json=payload, timeout=10) as response:
@@ -226,23 +193,15 @@ async def process_lead(session, lead):
     except Exception as e:
         print(f"    ❌ CRM Update Failed: {e}")
         
-    # Send Telegram (Pure Async)
     await async_send_telegram(session, lead)
-
 
 async def hunt_async():
     print(">>> 🕵️‍♂️ DEEP HUNTER V2 ACTIVE (Full Async Engine)")
-    
-    if not WEBHOOK or not SECRET:
-        print("❌ WEBHOOK or SECRET missing.")
-        return
-
-    # Initial fetch is synchronous because we must wait for the data before starting the loop
+    if not WEBHOOK or not SECRET: return
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=15)
         pending = res.json().get("pending_leads", [])
-    except Exception as e:
-        print(f"❌ Failed to fetch pending leads: {e}")
+    except Exception:
         return
         
     if not pending:
@@ -250,8 +209,6 @@ async def hunt_async():
         return
         
     print(f"    -> Found {len(pending)} leads needing enrichment.")
-
-    # Limit to 5 concurrent connections to protect from API rate-limits
     connector = aiohttp.TCPConnector(limit=5)
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [process_lead(session, lead) for lead in pending]
