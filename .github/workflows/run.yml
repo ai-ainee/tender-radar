@@ -31,7 +31,7 @@ jobs:
           pip install -r requirements.txt
           playwright install chromium --with-deps
 
-      - name: Run Enterprise Radar (Phase 1: Scout)
+      - name: Run Enterprise Radar (Phase 1- Scout)
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -41,7 +41,7 @@ jobs:
         run: |
           python radar.py
 
-      - name: Run Deep Hunter (Phase 2: Enrichment)
+      - name: Run Deep Hunter (Phase 2- Enrichment)
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           QUALIFIED_CSV_URL: ${{ secrets.QUALIFIED_CSV_URL }}
