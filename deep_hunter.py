@@ -60,8 +60,6 @@ def get_best_gemini_model(client):
     return BEST_MODEL_CACHE
 
 async def is_b2b_email(email):
-
-async def is_b2b_email(email):
     if not email: return False
     personal_domains = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "rediffmail.com"}
     try:
