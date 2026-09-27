@@ -41,15 +41,15 @@ jobs:
         run: |
           python radar.py
 
-      - name: Run Deep Hunter (Phase 2- Enrichment)
+      - name: Run Deep Hunter (Phase 2 - Enrichment)
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           QUALIFIED_CSV_URL: ${{ secrets.QUALIFIED_CSV_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # The '|| true' ensures that even if deep_hunter crashes, GitHub will still move to the next step and save your seen_links.txt
           python deep_hunter.py || true
-
+          
       - name: Save Memory (seen_links.txt)
         run: |
           git config --global user.name "github-actions[bot]"
