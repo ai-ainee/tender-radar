@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import uuid
@@ -17,6 +18,7 @@ except ImportError:
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
 SERPER_KEY = os.environ.get("SERPER_API_KEY")
+
 raw_keys = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
 current_key_index = 0
@@ -28,14 +30,12 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-# --- DYNAMIC MODEL SELECTOR (Cached for Speed) ---
 BEST_MODEL_CACHE = None
 
 def get_best_gemini_model(client):
     global BEST_MODEL_CACHE
-    if BEST_MODEL_CACHE: return BEST_MODEL_CACHE # Return instantly if already known
+    if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
     try:
-        # Fetches all models, filters for 'flash', and sorts to get the highest version automatically
         models = [m.name for m in client.models.list() if 'flash' in m.name.lower()]
         if models:
             models.sort(reverse=True)
@@ -44,7 +44,7 @@ def get_best_gemini_model(client):
             return BEST_MODEL_CACHE
     except Exception:
         pass
-    BEST_MODEL_CACHE = "gemini-2.0-flash" # Immortal stable fallback
+    BEST_MODEL_CACHE = "gemini-2.0-flash"
     return BEST_MODEL_CACHE
 
 def is_duplicate(link):
@@ -60,7 +60,7 @@ def get_search_results(query):
     results = []
     if SERPER_KEY:
         try:
-            url = "https://google.serper.dev/search"
+            url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
             payload = json.dumps({"q": query, "gl": "in", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             response = requests.post(url, headers=headers, data=payload, timeout=15)
@@ -102,7 +102,7 @@ def ai_analyze_batch(batch):
     client = get_next_gemini_client()
     if not client: return []
     
-    best_model = get_best_gemini_model(client) # Will use cache instantly
+    best_model = get_best_gemini_model(client)
     
     items_block = ""
     for i, x in enumerate(batch):
@@ -157,7 +157,9 @@ DATA BATCH:
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
         )
         raw_text = res.text.strip()
-        if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+        # SAFE JSON EXTRACTION
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
         return json.loads(raw_text)
     except Exception as e:
         print(f"    ⚠️ Gemini Error. Retrying... ({e})")
@@ -174,19 +176,16 @@ def run():
         fresh_leads = []
         for r in results:
             if not is_duplicate(r['link']):
-                print(f"    -> Deep fetching text for: {r['link'][:50]}...")
                 r['deep_text'] = fetch_deep_text(r['link'])
                 fresh_leads.append(r)
                 
         if not fresh_leads:
-            print("    -> No fresh leads found. Skipping.")
             continue
             
         print(f"    -> Analyzing {len(fresh_leads)} items with AI...")
         try:
             ai_data = ai_analyze_batch(fresh_leads)
         except Exception:
-            print("    ❌ Failed to analyze batch after retries. Skipping.")
             continue
             
         for lead in ai_data:
@@ -206,8 +205,8 @@ def run():
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=10)
                     print(f"    ✅ Verified & Pushed: {lead['org']}")
-                except Exception as e:
-                    print(f"    ❌ Failed to push to CRM: {e}")
+                except Exception:
+                    pass
         time.sleep(2)
 
 if __name__ == "__main__":
