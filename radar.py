@@ -180,9 +180,30 @@ DATA BATCH:
         raise e 
 
 def run():
-    print(">>> 📡 RADAR SCOUT V2 ACTIVE (Production Ready)")
-    keywords = ["Autodesk drafting services requirement India", "BIM implementation tender India", "MEP design consultancy request for proposal", "structural detailing RFQ India"]
+    print(">>> 📡 RADAR SCOUT V2 ACTIVE (Dynamic Cloud Targets)")
     
+    # 1. FETCH TARGETS DYNAMICALLY FROM GOOGLE SHEETS
+    if not WEBHOOK or not SECRET: return
+    try:
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=15)
+        cloud_targets = res.json().get("targets", [])
+    except Exception as e:
+        print(f"❌ Failed to fetch targets from Google Sheets: {e}")
+        return
+        
+    if not cloud_targets:
+        print("    -> No targets found. Please add items to the '🎯 Targets' tab in your Google Sheet.")
+        return
+
+    # 2. WRAP TARGETS IN HIGH-INTENT SEARCH OPERATORS
+    keywords = []
+    for target in cloud_targets:
+        # This dynamically creates a strict procurement search for whatever you typed in the sheet
+        query = f'"{target}" AND ("Request for Quotation" OR "tender" OR "vendor empanelment") India'
+        keywords.append(query)
+        print(f"    Loaded Target: {target}")
+
+    # 3. EXECUTE THE HUNT
     for kw in keywords:
         print(f"\n[*] Scouting keyword: {kw}")
         results = get_search_results(kw)
@@ -210,15 +231,16 @@ def run():
                 payload = {
                     "secret": SECRET, "action": "add_lead", "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "source": "Web",
-                    "org": lead.get("org", "Unknown"), "industry": "AEC", 
-                    "intent": lead.get("lead_type", "Corporate Lead"),
+                    "org": lead.get("org", "Unknown"), 
+                    "industry": lead.get("industry", "General Products"), 
+                    "intent": lead.get("lead_type", "Corporate Sourcing"),
                     "dm_name": lead.get("dm_name") or "N/A", "dm_title": lead.get("dm_title") or "N/A", 
                     "link": fresh_leads[idx]['link'], "email": "N/A", "phone": "N/A", 
                     "website": lead.get("website") or "N/A"
                 }
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=10)
-                    print(f"    ✅ Verified & Pushed: {lead['org']}")
+                    print(f"    ✅ Verified & Pushed: {lead['org']} ({payload['industry']})")
                 except Exception:
                     pass
         time.sleep(2)
