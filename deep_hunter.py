@@ -1,10 +1,12 @@
 import os
+import re
 import json
 import logging
 import warnings
 import asyncio
 import aiohttp
 import requests
+import time
 import dns.resolver
 from bs4 import BeautifulSoup
 from google import genai
@@ -36,18 +38,28 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
+# --- STRICT MODEL FILTER ---
 BEST_MODEL_STACK = []
 def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = [m.name for m in client.models.list() if "flash" in m.name.lower()]
+        valid_models = []
+        for m in client.models.list():
+            name = m.name.lower()
+            banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking"]
+            if "flash" in name and not any(bad in name for bad in banned_keywords):
+                valid_models.append(name)
+        
         if valid_models:
             valid_models.sort(reverse=True)
+            for preferred in ["models/gemini-3.5-flash", "models/gemini-3.5-flash-lite"]:
+                if preferred in valid_models:
+                    valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    BEST_MODEL_STACK = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
     return BEST_MODEL_STACK
 
 def generate_email_permutations(name, domain):
@@ -127,10 +139,12 @@ Gov: {json.dumps(gov_results)}
                 config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
             )
             raw_text = res.text.strip()
+            # SAFE JSON STRIPPER
             if raw_text.startswith("```"):
                 raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
         except Exception as e:
+            # Bulletproof cascade logic
             print(f"    ⚠️ Model {model_name} failed: {e}. Cascading...", flush=True)
             continue
             
@@ -178,11 +192,15 @@ async def process_lead(session, lead, sem):
                     break
             if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
 
-        try:
-            async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead", "lead_id": lead['lead_id'], **lead}, timeout=60) as response: 
-                await response.read()
-                print(f"    ✅ Enriched: {lead['org']}", flush=True)
-        except Exception: pass
+        # 3-ATTEMPT PUSH RETRY LOOP
+        for attempt in range(3):
+            try:
+                async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead", "lead_id": lead['lead_id'], **lead}, timeout=60) as response: 
+                    await response.read()
+                    print(f"    ✅ Enriched: {lead['org']}", flush=True)
+                    break
+            except Exception:
+                await asyncio.sleep(3)
         
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
             msg = f"🌟 <b>ENRICHED QUALIFIED LEAD</b>\n\n🏢 <b>Company:</b> {lead.get('org', 'Unknown')}\n👤 <b>DM:</b> {lead.get('dm_name', 'N/A')} ({lead.get('dm_title', 'N/A')})\n✉️ <b>Email:</b> {lead.get('email', 'N/A')}\n📞 <b>Phone:</b> {lead.get('phone', 'N/A')}\n🌐 <b>Web:</b> {lead.get('website', 'N/A')}"
@@ -195,6 +213,7 @@ async def hunt_async():
     print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (Crash-Proof Cascade Version)", flush=True)
     if not WEBHOOK or not SECRET: return
     
+    # GOOGLE SHEETS 3-ATTEMPT PULL RETRY LOOP
     pending = []
     for attempt in range(3):
         try:
