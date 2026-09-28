@@ -10,7 +10,6 @@ from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
-# --- UPGRADED DDGS IMPORT ---
 try:
     from ddgs import AsyncDDGS
 except ImportError:
@@ -36,32 +35,23 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-# --- UPGRADED MODEL SELECTOR (Strict Version Parsing) ---
 BEST_MODEL_CACHE = None
-
 def get_best_gemini_model(client):
     global BEST_MODEL_CACHE
     if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
     try:
-        valid_models = []
-        for m in client.models.list():
-            name = m.name.lower()
-            if re.match(r'^models/gemini-\d+\.\d+-flash$', name):
-                valid_models.append(name)
-                
+        valid_models = [m.name.lower() for m in client.models.list() if re.match(r'^models/gemini-\d+\.\d+-flash$', m.name.lower())]
         if valid_models:
             valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
             BEST_MODEL_CACHE = valid_models[0]
             return BEST_MODEL_CACHE
-    except Exception:
-        pass
-        
+    except Exception: pass
     BEST_MODEL_CACHE = "gemini-2.5-flash"
     return BEST_MODEL_CACHE
 
 async def is_b2b_email(email):
     if not email: return False
-    personal_domains = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "rediffmail.com"}
+    personal_domains = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com"}
     try:
         domain = email.split('@')[-1].lower()
         if domain in personal_domains: return False
@@ -70,14 +60,13 @@ async def is_b2b_email(email):
             return True
         await asyncio.to_thread(check_mx)
         return True
-    except Exception:
-        return False
+    except Exception: return False
 
 async def async_get_search_results(session, query, num=5):
     results = []
     if SERPER_KEY:
         try:
-            url = "https://google.serper.dev/search"
+            url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
             payload = json.dumps({"q": query, "gl": "in", "num": num})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             async with session.post(url, headers=headers, data=payload, timeout=10) as response:
@@ -86,8 +75,7 @@ async def async_get_search_results(session, query, num=5):
                     for r in data.get("organic", []):
                         results.append({"title": r.get("title", ""), "link": r.get("link", ""), "snippet": r.get("snippet", "")})
                     if results: return results
-        except Exception:
-            pass
+        except Exception: pass
 
     if AsyncDDGS:
         try:
@@ -95,27 +83,24 @@ async def async_get_search_results(session, query, num=5):
             res = await ddgs.text(query, max_results=num, backend="lite")
             for r in res:
                 results.append({"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")})
-        except Exception:
-            pass
+        except Exception: pass
     return results
 
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def ai_verify_entity_sync(org_name, web_results, li_results):
     client = get_next_gemini_client()
     if not client: return None
-    best_model = get_best_gemini_model(client)
     
     prompt = f"""
 You are an elite B2B Data Analyst. Target Organization: "{org_name}"
 
 Task 1: Identify the OFFICIAL corporate website from 'Web Results'.
-- REJECT directories (IndiaMart, JustDial, ZaubaCorp, Tofler).
-- REJECT forums/social (GameFAQs, Reddit, Facebook, YouTube).
+- REJECT directories (IndiaMart, JustDial, ZaubaCorp).
 - If none exist, return null.
 
 Task 2: Identify the DECISION MAKER from 'LinkedIn Results'.
-- MUST be a human profile (linkedin.com/in/), NOT a company page.
-- Look for: Director, Founder, CEO, Head of BIM, Procurement.
+- MUST be a human profile ([linkedin.com/in/](https://linkedin.com/in/)).
+- Look for: Head of Procurement, Purchase Manager, Sourcing Lead, Supply Chain Director, CEO, Founder.
 - Extract Name and Title. If uncertain, return null.
 
 Web Results: {json.dumps(web_results)}
@@ -131,23 +116,19 @@ LinkedIn Results: {json.dumps(li_results)}
     }
     try:
         res = client.models.generate_content(
-            model=best_model, contents=prompt,
+            model=get_best_gemini_model(client), contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
         )
         raw_text = res.text.strip()
-        if raw_text.startswith("```"):
-            raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
+        if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
         return json.loads(raw_text)
-    except Exception as e:
-        raise e
+    except Exception as e: raise e
 
 async def async_crawl_contacts(session, url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         async with session.get(url, headers=headers, timeout=10) as response:
             if response.status == 200:
-                content_type = response.headers.get('Content-Type', '').lower()
-                if 'text/html' not in content_type: return [], []
                 html = await response.read()
                 text = html.decode('utf-8', errors='ignore')
                 emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
@@ -155,36 +136,34 @@ async def async_crawl_contacts(session, url):
                 clean_emails = [e for e in set(emails) if not e.lower().endswith((".png", ".jpg", ".css", ".js", ".svg"))]
                 clean_phones = [p for p in set(phones) if len(p.replace("+91", "").replace("-", "").replace(" ", "").strip()) >= 10]
                 return clean_emails, clean_phones
-    except Exception:
-        pass
+    except Exception: pass
     return [], []
 
 async def async_send_telegram(session, lead):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     
-    # HTML Parsing is 100x safer against random character crashes like underscores in emails
-    msg = f"🚀 <b>NEW QUALIFIED LEAD</b>\n\n" \
+    msg = f"🌟 <b>ENRICHED QUALIFIED LEAD</b>\n\n" \
           f"🏢 <b>Company:</b> {lead.get('org', 'Unknown')}\n" \
-          f"🎯 <b>Intent:</b> {lead.get('intent', 'Corporate Lead')}\n" \
           f"👤 <b>DM:</b> {lead.get('dm_name', 'N/A')} ({lead.get('dm_title', 'N/A')})\n" \
           f"✉️ <b>Email:</b> {lead.get('email', 'N/A')}\n" \
           f"📞 <b>Phone:</b> {lead.get('phone', 'N/A')}\n" \
-          f"🌐 <b>Web:</b> {lead.get('website', 'N/A')}\n" \
-          f"🔗 <b>Source:</b> <a href='{lead.get('link', '')}'>View Link</a>"
+          f"🌐 <b>Web:</b> {lead.get('website', 'N/A')}"
           
-    reply_markup = {"inline_keyboard": [[{"text": "✅ Qualify", "callback_data": f"qualify_{lead['lead_id']}"}, {"text": "❌ Reject", "callback_data": f"reject_{lead['lead_id']}"}]]}
-    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
+    reply_markup = {"inline_keyboard": [
+        [{"text": "🎯 Make it Lead", "callback_data": f"makelead_{lead['lead_id']}"}],
+        [{"text": "🗑️ Drop", "callback_data": f"dropqual_{lead['lead_id']}"}]
+    ]}
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "reply_markup": reply_markup, "disable_web_page_preview": True}
     try:
-        async with session.post(url, json=payload, timeout=10) as response:
-            await response.read()
-    except Exception:
-        pass
+        async with session.post(url, json=payload, timeout=10) as response: await response.read()
+    except Exception: pass
 
 async def process_lead(session, lead):
     print(f"\n[*] Enriching Target: {lead['org']}")
     web_task = async_get_search_results(session, f'"{lead["org"]}" official website india')
-    li_task = async_get_search_results(session, f'"{lead["org"]}" (Director OR CEO OR Procurement) site:[linkedin.com/in/](https://linkedin.com/in/)')
+    li_task = async_get_search_results(session, f'"{lead["org"]}" (Procurement OR Purchase OR Sourcing OR CEO) site:linkedin.com/in/')
     web_res, li_res = await asyncio.gather(web_task, li_task)
     
     if web_res or li_res:
@@ -203,32 +182,22 @@ async def process_lead(session, lead):
                 break
         if phones and lead["phone"] == "N/A": lead["phone"] = phones[0]
 
-    payload = {"secret": SECRET, "action": "update_lead", "row_index": lead['row_index'], "sheet_name": lead.get('sheet_name', '📥 Inbox'), **lead}
+    payload = {"secret": SECRET, "action": "update_lead", "lead_id": lead['lead_id'], **lead}
     try:
-        async with session.post(WEBHOOK, json=payload, timeout=10) as response:
-            await response.read()
-    except Exception:
-        pass
+        async with session.post(WEBHOOK, json=payload, timeout=10) as response: await response.read()
+    except Exception: pass
         
     await async_send_telegram(session, lead)
 
 async def hunt_async():
-    print(">>> 🕵️‍♂️ DEEP HUNTER V2 ACTIVE (Full Async Engine)")
+    print(">>> 🕵️‍♂️ DEEP HUNTER V3 ACTIVE")
     if not WEBHOOK or not SECRET: return
-    
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=15)
         pending = res.json().get("pending_leads", [])
-    except Exception:
-        return
+    except Exception: return
+    if not pending: return
         
-    if not pending:
-        print("    -> No pending leads found. Sleeping.")
-        return
-        
-    print(f"    -> Found {len(pending)} leads needing enrichment.")
-    
-    # THREAD SAFETY FIX: Pre-fetch the best AI model synchronously BEFORE launching threads
     client = get_next_gemini_client()
     if client: get_best_gemini_model(client)
 
