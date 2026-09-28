@@ -54,7 +54,6 @@ def get_flash_model_stack(client):
     BEST_MODEL_STACK = ["gemini-2.5-flash", "gemini-2.0-flash"]
     return BEST_MODEL_STACK
 
-# 1. THE APOLLO HACK (Email Permutator & MX Validator)
 def generate_email_permutations(name, domain):
     if not name or name == "N/A" or not domain or domain == "N/A": return []
     parts = name.lower().replace(".", "").split()
@@ -84,7 +83,7 @@ async def async_get_search_results(session, query, num=5):
     results = []
     if SERPER_KEY:
         try:
-            url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
+            url = "https://google.serper.dev/search"
             async with session.post(url, headers={'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}, data=json.dumps({"q": query, "gl": "in", "num": num}), timeout=20) as response:
                 if response.status == 200:
                     for r in (await response.json()).get("organic", []):
@@ -100,97 +99,42 @@ async def async_get_search_results(session, query, num=5):
     return results
 
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
-def ai_verify_entity_sync(org_name, web_results, li_results):
+def ai_verify_entity_sync(org_name, web_results, li_results, legal_results, b2b_results, gov_results):
     client = get_next_gemini_client()
     if not client: return None
     model_stack = get_flash_model_stack(client)
-    prompt = f"Target: '{org_name}'. Task 1: Identify OFFICIAL corporate website domain. Reject IndiaMart/directories. Task 2: Identify DECISION MAKER (Procurement, CEO, Founder) from LinkedIn. Web: {json.dumps(web_results)}. LinkedIn: {json.dumps(li_results)}"
-    schema = {"type": "OBJECT", "properties": {"verified_website": {"type": "STRING", "nullable": True}, "dm_name": {"type": "STRING", "nullable": True}, "dm_title": {"type": "STRING", "nullable": True}}}
+    
+    prompt = f"""
+You are an elite B2B Data Analyst triangulating 5 directory sources for: "{org_name}"
+
+Task 1: Identify the OFFICIAL corporate website domain from 'Web Results'.
+Task 2: Identify the best DECISION MAKER. Priority order:
+  A. Procurement/Purchasing Lead (from LinkedIn or Gov Directories)
+  B. Founder/CEO (from LinkedIn)
+  C. Official Director (from ZaubaCorp / TheCompanyCheck Legal Directories)
+  D. Tender Inviting Authority (from Gov Directories)
+Task 3: Extract explicitly listed B2B mobile numbers or emails from IndiaMART/TradeIndia/JustDial/Sulekha snippets.
+
+Data Sources:
+Web Results: {json.dumps(web_results)}
+LinkedIn: {json.dumps(li_results)}
+Legal Directories (ZaubaCorp): {json.dumps(legal_results)}
+B2B Directories (IndiaMART/JustDial): {json.dumps(b2b_results)}
+Gov Directories (GeM/CPPP): {json.dumps(gov_results)}
+"""
+    schema = {
+        "type": "OBJECT",
+        "properties": {
+            "verified_website": {"type": "STRING", "nullable": True},
+            "dm_name": {"type": "STRING", "nullable": True},
+            "dm_title": {"type": "STRING", "nullable": True},
+            "directory_phone": {"type": "STRING", "nullable": True},
+            "directory_email": {"type": "STRING", "nullable": True}
+        }
+    }
     
     for model_name in model_stack:
         try:
             res = client.models.generate_content(model=model_name, contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0))
             raw_text = res.text.strip()
-            if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
-            return json.loads(raw_text)
-        except Exception as e:
-            if "503" in str(e) or "500" in str(e) or "limit: 0" in str(e): continue
-            raise e
-    raise Exception("Models unavailable.")
-
-async def async_crawl_contacts(session, url):
-    try:
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=aiohttp.ClientTimeout(sock_connect=5, sock_read=10)) as response:
-            if response.status == 200:
-                text = (await response.read()).decode('utf-8', errors='ignore')
-                emails = [e for e in set(re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)) if not e.lower().endswith((".png", ".jpg", ".css", ".js"))]
-                phones = [p for p in set(re.findall(r"(?:\+91[- ]?|0)?[6-9]\d{9}\b", text)) if len(p.replace("+91", "").replace("-", "").replace(" ", "").strip()) >= 10]
-                return emails, phones
-    except Exception: pass
-    return [], []
-
-async def async_send_telegram(session, lead):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
-    msg = f"🌟 <b>ENRICHED QUALIFIED LEAD</b>\n\n🏢 <b>Company:</b> {lead.get('org', 'Unknown')}\n👤 <b>DM:</b> {lead.get('dm_name', 'N/A')} ({lead.get('dm_title', 'N/A')})\n✉️ <b>Email:</b> {lead.get('email', 'N/A')}\n📞 <b>Phone:</b> {lead.get('phone', 'N/A')}\n🌐 <b>Web:</b> {lead.get('website', 'N/A')}"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": {"inline_keyboard": [[{"text": "🚀 Move to Pipeline", "callback_data": f"pipeline_{lead['lead_id']}"}], [{"text": "🗑️ Drop", "callback_data": f"dropqual_{lead['lead_id']}"}]]}}
-    try:
-        async with session.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=30) as response: await response.read()
-    except Exception: pass
-
-async def process_lead(session, lead, sem):
-    async with sem:
-        print(f"[*] Enriching Target: {lead['org']}", flush=True)
-        web_res, li_res = await asyncio.gather(
-            async_get_search_results(session, f'"{lead["org"]}" official website india'), 
-            async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Purchase" OR "CEO") "{lead["org"]}"')
-        )
-        if web_res or li_res:
-            ai_data = await asyncio.to_thread(ai_verify_entity_sync, lead['org'], web_res, li_res)
-            if ai_data:
-                if ai_data.get("verified_website"): lead["website"] = ai_data["verified_website"]
-                if ai_data.get("dm_name"): lead["dm_name"], lead["dm_title"] = ai_data["dm_name"], ai_data.get("dm_title", "Decision Maker")
-                    
-        # 2. THE ROCKETREACH HACK (Resume Dorking for Phones)
-        if lead["dm_name"] != "N/A":
-            resume_res = await async_get_search_results(session, f'"{lead["dm_name"]}" "{lead["org"]}" (resume OR CV OR "mobile") filetype:pdf')
-            for r in resume_res:
-                phones = re.findall(r"(?:\+91[- ]?|0)?[6-9]\d{9}\b", r["snippet"])
-                if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
-
-        if lead["website"] and lead["website"] != "N/A":
-            emails, phones = await async_crawl_contacts(session, lead["website"])
-            
-            # The Apollo Hack Execution
-            if not emails and lead["dm_name"] != "N/A":
-                perms = generate_email_permutations(lead["dm_name"], lead["website"])
-                if perms: emails = perms # We ping these below
-
-            for e in emails:
-                if await is_b2b_email(e):
-                    lead["email"] = e
-                    break
-            if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
-
-        try:
-            async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead", "lead_id": lead['lead_id'], **lead}, timeout=30) as response: 
-                await response.read()
-                print(f"    ✅ Updated: {lead['org']}", flush=True)
-        except Exception: pass
-        await async_send_telegram(session, lead)
-
-async def hunt_async():
-    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (OSINT Verifier)", flush=True)
-    if not WEBHOOK or not SECRET: return
-    try: pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30).json().get("pending_leads", [])
-    except Exception as e: return print(f"❌ Failed to fetch pending leads: {e}", flush=True)
-    if not pending: return print("    -> No pending leads found.", flush=True)
-        
-    client = get_next_gemini_client()
-    if client: get_flash_model_stack(client)
-
-    sem = asyncio.Semaphore(2)
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=5)) as session:
-        await asyncio.gather(*[process_lead(session, lead, sem) for lead in pending])
-
-if __name__ == "__main__":
-    asyncio.run(hunt_async())
+            if raw_text.startswith("```"): raw_text = re.sub(r'^
