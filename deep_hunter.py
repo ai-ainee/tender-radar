@@ -203,7 +203,7 @@ async def process_lead(session, lead):
                 break
         if phones and lead["phone"] == "N/A": lead["phone"] = phones[0]
 
-    payload = {"secret": SECRET, "action": "update_lead", "row_index": lead['row_index'], **lead}
+    payload = {"secret": SECRET, "action": "update_lead", "row_index": lead['row_index'], "sheet_name": lead.get('sheet_name', '📥 Inbox'), **lead}
     try:
         async with session.post(WEBHOOK, json=payload, timeout=10) as response:
             await response.read()
