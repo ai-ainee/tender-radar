@@ -1,11 +1,11 @@
 import os
-import re
 import json
 import logging
 import warnings
 import asyncio
 import aiohttp
 import requests
+import time
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -35,9 +35,9 @@ def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = [m.name.lower() for m in client.models.list() if re.match(r'^models/gemini-\d+\.\d+-flash$', m.name.lower())]
+        valid_models = [m.name.lower() for m in client.models.list() if "flash" in m.name.lower()]
         if valid_models:
-            valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
+            valid_models.sort(reverse=True)
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
@@ -47,7 +47,7 @@ def get_flash_model_stack(client):
 async def async_serper_search(session, query, num=3):
     if not SERPER_KEY: return []
     try:
-        async with session.post("https://google.serper.dev/search", headers={'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}, data=json.dumps({"q": query, "gl": "in", "num": num}), timeout=20) as response:
+        async with session.post("https://google.serper.dev/search", headers={'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}, data=json.dumps({"q": query, "gl": "in", "num": num}), timeout=30) as response:
             if response.status == 200: return [r.get("snippet", "") for r in (await response.json()).get("organic", [])]
     except Exception: pass
     return []
@@ -65,23 +65,14 @@ def generate_deal_dossier(lead, context_data):
         try:
             res = client.models.generate_content(model=model_name, contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2))
             raw_text = res.text.strip()
-            if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
+            # SAFE JSON STRIPPER
+            if raw_text.startswith("```"):
+                raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text).get("dossier", "No intel generated.")
         except Exception as e:
             if "503" in str(e) or "500" in str(e) or "limit: 0" in str(e): continue
             raise e
     raise Exception("Models unavailable.")
-
-async def async_send_dossier(session, lead, dossier_text):
-    # SAFE TRUNCATION BEFORE HTML FORMATTING
-    if len(dossier_text) > 3000:
-        dossier_text = dossier_text[:3000] + "\n\n... [Truncated due to Telegram limits]"
-        
-    msg = f"📊 <b>DEAL STRATEGY BRIEF</b>\n\n🏢 <b>Target:</b> {lead['org']}\n👤 <b>DM:</b> {lead['dm_name']} ({lead.get('dm_title', 'Decision Maker')})\n📞 <b>Contact:</b> {lead.get('phone', 'N/A')} | {lead.get('email', 'N/A')}\n\n<b>--- DOSSIER ---</b>\n{dossier_text}"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": {"inline_keyboard": [[{"text": "🏆 WIN DEAL (Close)", "callback_data": f"windeal_{lead['lead_id']}"}], [{"text": "🗑️ Drop Lead", "callback_data": f"dropdeal_{lead['lead_id']}"}]]}}
-    try:
-        async with session.post(f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=30) as response: await response.read()
-    except Exception: pass
 
 async def process_lead_intel(session, lead, sem):
     async with sem:
@@ -90,17 +81,33 @@ async def process_lead_intel(session, lead, sem):
         dossier = await asyncio.to_thread(generate_deal_dossier, lead, {"profile": results[0], "news": results[1], "dm_info": results[2]})
         
         try:
-            async with session.post(WEBHOOK, json={"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}, timeout=30) as response: 
+            async with session.post(WEBHOOK, json={"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}, timeout=60) as response: 
                 await response.read()
                 print(f"    ✅ Dossier Created: {lead['org']}", flush=True)
         except Exception: pass
-        await async_send_dossier(session, lead, dossier)
+        
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            d_text = dossier[:3000] + "\n\n... [Truncated]" if len(dossier) > 3000 else dossier
+            msg = f"📊 <b>DEAL STRATEGY BRIEF</b>\n\n🏢 <b>Target:</b> {lead['org']}\n👤 <b>DM:</b> {lead['dm_name']}\n📞 <b>Contact:</b> {lead.get('phone', 'N/A')} | {lead.get('email', 'N/A')}\n\n<b>--- DOSSIER ---</b>\n{d_text}"
+            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": {"inline_keyboard": [[{"text": "🏆 WIN DEAL", "callback_data": f"windeal_{lead['lead_id']}"}], [{"text": "🗑️ Drop Lead", "callback_data": f"dropdeal_{lead['lead_id']}"}]]}}
+            try:
+                async with session.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=30) as response: await response.read()
+            except Exception: pass
 
 async def run_intel():
-    print(">>> 🧠 DEAL ANALYST ACTIVE (Production)", flush=True)
+    print(">>> 🧠 DEAL ANALYST ACTIVE (Safe Regex & Retry Version)", flush=True)
     if not WEBHOOK or not SECRET: return
-    try: pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=30).json().get("pending_leads", [])
-    except Exception as e: return print(f"❌ Failed to fetch pending leads: {e}", flush=True)
+    
+    pending = []
+    for attempt in range(3):
+        try:
+            pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=60).json().get("pending_leads", [])
+            break
+        except Exception as e:
+            print(f"    ⚠️ Sheets API timeout. Retrying {attempt+1}/3...", flush=True)
+            time.sleep(5)
+            if attempt == 2: return print("❌ Failed to fetch pending leads.", flush=True)
+            
     if not pending: return print("    -> No Leads require Intel.", flush=True)
         
     client = get_next_gemini_client()
