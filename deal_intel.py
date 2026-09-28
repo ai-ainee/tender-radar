@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+import warnings
 import asyncio
 import aiohttp
 import requests
@@ -9,7 +10,10 @@ from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
+# Silence all annoying warnings
+warnings.filterwarnings("ignore")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+logging.getLogger("google.genai.discovery").setLevel(logging.ERROR)
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -29,7 +33,6 @@ def get_next_gemini_client():
     return genai.Client(api_key=key)
 
 BEST_MODEL_STACK = []
-
 def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
@@ -49,7 +52,7 @@ def get_flash_model_stack(client):
 
 async def async_serper_search(session, query, num=3):
     if not SERPER_KEY: return []
-    url = "https://google.serper.dev/search"
+    url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
     payload = json.dumps({"q": query, "gl": "in", "num": num})
     headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
     try:
@@ -116,7 +119,7 @@ async def async_send_dossier(session, lead, dossier_text):
         [{"text": "🗑️ Drop Lead", "callback_data": f"dropdeal_{lead['lead_id']}"}]
     ]}
     
-    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", 
         "reply_markup": reply_markup, "disable_web_page_preview": True
@@ -128,7 +131,7 @@ async def async_send_dossier(session, lead, dossier_text):
 
 async def process_lead_intel(session, lead, sem):
     async with sem:
-        print(f"[*] Gathering OSINT Intel for Lead: {lead['org']}")
+        print(f"[*] Gathering OSINT Intel for Lead: {lead['org']}", flush=True)
         
         q1 = async_serper_search(session, f'"{lead["org"]}" company profile India')
         q2 = async_serper_search(session, f'"{lead["org"]}" recent news OR projects OR financials')
@@ -143,25 +146,31 @@ async def process_lead_intel(session, lead, sem):
         try:
             async with session.post(WEBHOOK, json=payload, timeout=30) as response: 
                 await response.read()
+                print(f"    ✅ Dossier Created: {lead['org']}", flush=True)
         except Exception: pass
             
         await async_send_dossier(session, lead, dossier)
 
 async def run_intel():
-    print(">>> 🧠 DEAL ANALYST ACTIVE")
+    print(">>> 🧠 DEAL ANALYST ACTIVE (Anti-Hang Version)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=30)
         pending = res.json().get("pending_leads", [])
-    except Exception: return
-    if not pending: return
+    except Exception as e: 
+        print(f"❌ Failed to fetch pending leads: {e}", flush=True)
+        return
+        
+    if not pending: 
+        print("    -> No Leads require Intel.", flush=True)
+        return
         
     client = get_next_gemini_client()
     if client: get_flash_model_stack(client)
     
     sem = asyncio.Semaphore(2)
     connector = aiohttp.TCPConnector(limit=5)
-    timeout = aiohttp.ClientTimeout(total=60)
+    timeout = aiohttp.ClientTimeout(total=90)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         tasks = [process_lead_intel(session, lead, sem) for lead in pending]
         await asyncio.gather(*tasks)
