@@ -80,35 +80,24 @@ Output a JSON object with a single key "dossier". The value must be an actionabl
         raw_text = res.text.strip()
         if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
         return json.loads(raw_text).get("dossier", "No intel generated.")
-    except Exception as e:
-        print(f"⚠️ AI Error: {e}")
-        return "Failed to generate intel."
+    except Exception as e: return "Failed to generate intel."
 
 async def async_send_dossier(session, lead, dossier_text):
-    msg = f"📊 <b>DEAL STRATEGY BRIEF</b>\n\n" \
-          f"🏢 <b>Target:</b> {lead['org']}\n" \
-          f"👤 <b>DM:</b> {lead['dm_name']} ({lead['dm_title']})\n" \
-          f"📞 <b>Contact:</b> {lead['phone']} | {lead['email']}\n\n" \
-          f"<b>--- DOSSIER ---</b>\n{dossier_text}"
-          
-    # Truncate string if it exceeds Telegram's 4096 character limit
+    msg = f"📊 <b>DEAL STRATEGY BRIEF</b>\n\n🏢 <b>Target:</b> {lead['org']}\n👤 <b>DM:</b> {lead['dm_name']} ({lead['dm_title']})\n📞 <b>Contact:</b> {lead['phone']} | {lead['email']}\n\n<b>--- DOSSIER ---</b>\n{dossier_text}"
     if len(msg) > 4000: msg = msg[:3990] + "...\n(Truncated)"
           
     reply_markup = {"inline_keyboard": [
-        [{"text": "🏆 WIN DEAL", "callback_data": f"windeal_{lead['lead_id']}"}],
+        [{"text": "🏆 WIN DEAL (Close)", "callback_data": f"windeal_{lead['lead_id']}"}],
         [{"text": "🗑️ Drop Lead", "callback_data": f"dropdeal_{lead['lead_id']}"}]
     ]}
     
     url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "reply_markup": reply_markup, "disable_web_page_preview": True}
     try:
-        async with session.post(url, json=payload, timeout=10) as response:
-            await response.read()
+        async with session.post(url, json=payload, timeout=10) as response: await response.read()
     except Exception: pass
 
 async def process_lead_intel(session, lead):
-    print(f"[*] Gathering OSINT Intel for Lead: {lead['org']}")
-    
     q1 = async_serper_search(session, f'"{lead["org"]}" company profile India')
     q2 = async_serper_search(session, f'"{lead["org"]}" recent news OR projects OR financials')
     q3 = async_serper_search(session, f'"{lead["dm_name"]}" "{lead["org"]}" LinkedIn')
@@ -118,11 +107,9 @@ async def process_lead_intel(session, lead):
     
     dossier = await asyncio.to_thread(generate_deal_dossier, lead, context_data)
     
-    # Push the Dossier to the Sheets API. The Google Script will automatically move it to DEALS.
     payload = {"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}
     try:
-        async with session.post(WEBHOOK, json=payload, timeout=10) as response:
-            await response.read()
+        async with session.post(WEBHOOK, json=payload, timeout=10) as response: await response.read()
     except Exception: pass
         
     await async_send_dossier(session, lead, dossier)
@@ -134,12 +121,8 @@ async def run_intel():
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=15)
         pending = res.json().get("pending_leads", [])
     except Exception: return
+    if not pending: return
         
-    if not pending:
-        print("    -> No Leads require Intel. Sleeping.")
-        return
-        
-    print(f"    -> Running OSINT for {len(pending)} active Leads.")
     client = get_next_gemini_client()
     if client: get_best_gemini_model(client)
     
