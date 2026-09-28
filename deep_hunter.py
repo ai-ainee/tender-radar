@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import logging
 import asyncio
 import aiohttp
 import requests
@@ -9,6 +10,8 @@ from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
+
+logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 
 try:
     from ddgs import AsyncDDGS
@@ -35,19 +38,24 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-BEST_MODEL_CACHE = None
-def get_best_gemini_model(client):
-    global BEST_MODEL_CACHE
-    if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
+BEST_MODEL_STACK = []
+
+def get_flash_model_stack(client):
+    global BEST_MODEL_STACK
+    if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = [m.name.lower() for m in client.models.list() if re.match(r'^models/gemini-\d+\.\d+-flash$', m.name.lower())]
+        valid_models = []
+        for m in client.models.list():
+            name = m.name.lower()
+            if re.match(r'^models/gemini-\d+\.\d+-flash$', name):
+                valid_models.append(name)
         if valid_models:
             valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
-            BEST_MODEL_CACHE = valid_models[0]
-            return BEST_MODEL_CACHE
+            BEST_MODEL_STACK = valid_models
+            return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_CACHE = "gemini-2.5-flash"
-    return BEST_MODEL_CACHE
+    BEST_MODEL_STACK = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    return BEST_MODEL_STACK
 
 async def is_b2b_email(email):
     if not email: return False
@@ -69,7 +77,7 @@ async def async_get_search_results(session, query, num=5):
             url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
             payload = json.dumps({"q": query, "gl": "in", "num": num})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
-            async with session.post(url, headers=headers, data=payload, timeout=30) as response:
+            async with session.post(url, headers=headers, data=payload, timeout=20) as response:
                 if response.status == 200:
                     data = await response.json()
                     for r in data.get("organic", []):
@@ -90,6 +98,8 @@ async def async_get_search_results(session, query, num=5):
 def ai_verify_entity_sync(org_name, web_results, li_results):
     client = get_next_gemini_client()
     if not client: return None
+    
+    model_stack = get_flash_model_stack(client)
     
     prompt = f"""
 You are an elite B2B Data Analyst. Target Organization: "{org_name}"
@@ -114,20 +124,29 @@ LinkedIn Results: {json.dumps(li_results)}
             "dm_title": {"type": "STRING", "nullable": True}
         }
     }
-    try:
-        res = client.models.generate_content(
-            model=get_best_gemini_model(client), contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
-        )
-        raw_text = res.text.strip()
-        if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
-        return json.loads(raw_text)
-    except Exception as e: raise e
+    
+    for model_name in model_stack:
+        try:
+            res = client.models.generate_content(
+                model=model_name, contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
+            )
+            raw_text = res.text.strip()
+            if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
+            return json.loads(raw_text)
+        except Exception as e:
+            err_str = str(e)
+            if "503" in err_str or "500" in err_str or "limit: 0" in err_str:
+                continue
+            else:
+                raise e
+
+    raise Exception("All Gemini models in the stack are currently unavailable.")
 
 async def async_crawl_contacts(session, url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        async with session.get(url, headers=headers, timeout=30) as response:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        async with session.get(url, headers=headers, timeout=15) as response:
             if response.status == 200:
                 html = await response.read()
                 text = html.decode('utf-8', errors='ignore')
@@ -150,19 +169,22 @@ async def async_send_telegram(session, lead):
           f"🌐 <b>Web:</b> {lead.get('website', 'N/A')}"
           
     reply_markup = {"inline_keyboard": [
-        [{"text": "🎯 Make it Lead", "callback_data": f"makelead_{lead['lead_id']}"}],
+        [{"text": "🚀 Move to Pipeline", "callback_data": f"pipeline_{lead['lead_id']}"}],
         [{"text": "🗑️ Drop", "callback_data": f"dropqual_{lead['lead_id']}"}]
     ]}
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "reply_markup": reply_markup, "disable_web_page_preview": True}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", 
+        "reply_markup": reply_markup, "disable_web_page_preview": True
+    }
     try:
-        async with session.post(url, json=payload, timeout=30) as response: await response.read()
+        async with session.post(url, json=payload, timeout=30) as response: 
+            await response.read()
     except Exception: pass
 
-# Pass the Semaphore (sem) into the function
 async def process_lead(session, lead, sem):
-    async with sem: # THIS IS THE TRAFFIC LIGHT
+    async with sem:
         print(f"\n[*] Enriching Target: {lead['org']}")
         web_task = async_get_search_results(session, f'"{lead["org"]}" official website india')
         li_task = async_get_search_results(session, f'"{lead["org"]}" (Procurement OR Purchase OR Sourcing OR CEO) site:linkedin.com/in/')
@@ -182,29 +204,29 @@ async def process_lead(session, lead, sem):
                 if await is_b2b_email(e):
                     lead["email"] = e
                     break
-            if phones and lead["phone"] == "N/A": lead["phone"] = phones[0]
+            if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
 
         payload = {"secret": SECRET, "action": "update_lead", "lead_id": lead['lead_id'], **lead}
         try:
-            async with session.post(WEBHOOK, json=payload, timeout=10) as response: await response.read()
+            async with session.post(WEBHOOK, json=payload, timeout=30) as response: 
+                await response.read()
         except Exception: pass
             
         await async_send_telegram(session, lead)
 
 async def hunt_async():
-    print(">>> 🕵️‍♂️ DEEP HUNTER V3 ACTIVE")
+    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE")
     if not WEBHOOK or not SECRET: return
     try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=15)
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30)
         pending = res.json().get("pending_leads", [])
     except Exception: return
     if not pending: return
         
     client = get_next_gemini_client()
-    if client: get_best_gemini_model(client)
+    if client: get_flash_model_stack(client)
 
-    # SET TRAFFIC LIGHT TO 2 CONCURRENT LEADS TO PROTECT GEMINI QUOTA
-    sem = asyncio.Semaphore(2) 
+    sem = asyncio.Semaphore(2)
     connector = aiohttp.TCPConnector(limit=5)
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [process_lead(session, lead, sem) for lead in pending]
