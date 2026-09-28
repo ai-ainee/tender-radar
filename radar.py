@@ -27,6 +27,7 @@ except ImportError:
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
 SERPER_KEY = os.environ.get("SERPER_API_KEY")
+
 raw_keys = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
 current_key_index = 0
@@ -117,7 +118,7 @@ You are an elite B2B Sales AI. Goal: Capture organizations actively procuring PH
 
 REJECT (is_lead=False) ONLY IF:
 1. Market Research/News/B2C/Outside India.
-2. EXPIRED: The current year is {current_year}. If the document explicitly shows a tender deadline or publication date from {cutoff_year} or older (e.g. {cutoff_year}, {cutoff_year-1}), REJECT IT IMMEDIATELY.
+2. EXPIRED: The current year is {current_year}. If the document explicitly shows a tender deadline or publication date from {cutoff_year} or older, REJECT IT IMMEDIATELY.
 
 ACCEPT (is_lead=True) IF: Actively buying or inviting tenders.
 
@@ -166,7 +167,7 @@ DATA BATCH:
     raise Exception("All Gemini models unavailable.")
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Production)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (OSINT Procurement Portals)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         cloud_targets = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30).json().get("targets", [])
@@ -174,7 +175,13 @@ def run():
     if not cloud_targets: return print("    -> No targets found.", flush=True)
 
     current_year = datetime.now().year
-    keywords = [f'"{t}" AND ("Request for Quotation" OR "tender" OR "vendor empanelment") {current_year} India' for t in cloud_targets]
+    keywords = []
+    # OSINT Search Multiplexer for Free Market Data
+    for t in cloud_targets:
+        keywords.append(f'"{t}" AND ("Request for Quotation" OR "tender" OR "vendor empanelment") {current_year} India')
+        keywords.append(f'site:eprocure.gov.in "{t}" {current_year}')
+        keywords.append(f'site:gem.gov.in "{t}" {current_year}')
+        keywords.append(f'site:[linkedin.com/posts](https://linkedin.com/posts) "{t}" ("looking for vendors" OR "requirement")')
 
     for kw in keywords:
         print(f"\n[*] Scouting keyword: {kw}", flush=True)
