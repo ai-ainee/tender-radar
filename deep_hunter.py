@@ -54,13 +54,30 @@ def get_flash_model_stack(client):
     BEST_MODEL_STACK = ["gemini-2.5-flash", "gemini-2.0-flash"]
     return BEST_MODEL_STACK
 
+# 1. THE APOLLO HACK (Email Permutator & MX Validator)
+def generate_email_permutations(name, domain):
+    if not name or name == "N/A" or not domain or domain == "N/A": return []
+    parts = name.lower().replace(".", "").split()
+    if not parts: return []
+    f = parts[0]
+    l = parts[-1] if len(parts) > 1 else ""
+    domain = domain.replace("www.", "").replace("http://", "").replace("https://", "").split("/")[0]
+    perms = [f"{f}@{domain}"]
+    if l: perms.extend([f"{f}.{l}@{domain}", f"{f[0]}{l}@{domain}", f"{f}{l[0]}@{domain}"])
+    return perms
+
+async def verify_domain_mx(domain):
+    try:
+        await asyncio.to_thread(dns.resolver.resolve, domain, 'MX')
+        return True
+    except Exception: return False
+
 async def is_b2b_email(email):
     if not email: return False
     try:
         domain = email.split('@')[-1].lower()
         if domain in {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com"}: return False
-        await asyncio.to_thread(dns.resolver.resolve, domain, 'MX')
-        return True
+        return await verify_domain_mx(domain)
     except Exception: return False
 
 async def async_get_search_results(session, query, num=5):
@@ -87,7 +104,7 @@ def ai_verify_entity_sync(org_name, web_results, li_results):
     client = get_next_gemini_client()
     if not client: return None
     model_stack = get_flash_model_stack(client)
-    prompt = f"Target: '{org_name}'. Task 1: Identify OFFICIAL website from Web Results. Reject directories. Task 2: Identify DECISION MAKER (Procurement, CEO, Founder) from LinkedIn Results. Web: {json.dumps(web_results)}. LinkedIn: {json.dumps(li_results)}"
+    prompt = f"Target: '{org_name}'. Task 1: Identify OFFICIAL corporate website domain. Reject IndiaMart/directories. Task 2: Identify DECISION MAKER (Procurement, CEO, Founder) from LinkedIn. Web: {json.dumps(web_results)}. LinkedIn: {json.dumps(li_results)}"
     schema = {"type": "OBJECT", "properties": {"verified_website": {"type": "STRING", "nullable": True}, "dm_name": {"type": "STRING", "nullable": True}, "dm_title": {"type": "STRING", "nullable": True}}}
     
     for model_name in model_stack:
@@ -123,15 +140,31 @@ async def async_send_telegram(session, lead):
 async def process_lead(session, lead, sem):
     async with sem:
         print(f"[*] Enriching Target: {lead['org']}", flush=True)
-        web_res, li_res = await asyncio.gather(async_get_search_results(session, f'"{lead["org"]}" official website india'), async_get_search_results(session, f'"{lead["org"]}" (Procurement OR Purchase OR Sourcing OR CEO) site:linkedin.com/in/'))
+        web_res, li_res = await asyncio.gather(
+            async_get_search_results(session, f'"{lead["org"]}" official website india'), 
+            async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Purchase" OR "CEO") "{lead["org"]}"')
+        )
         if web_res or li_res:
             ai_data = await asyncio.to_thread(ai_verify_entity_sync, lead['org'], web_res, li_res)
             if ai_data:
                 if ai_data.get("verified_website"): lead["website"] = ai_data["verified_website"]
                 if ai_data.get("dm_name"): lead["dm_name"], lead["dm_title"] = ai_data["dm_name"], ai_data.get("dm_title", "Decision Maker")
                     
+        # 2. THE ROCKETREACH HACK (Resume Dorking for Phones)
+        if lead["dm_name"] != "N/A":
+            resume_res = await async_get_search_results(session, f'"{lead["dm_name"]}" "{lead["org"]}" (resume OR CV OR "mobile") filetype:pdf')
+            for r in resume_res:
+                phones = re.findall(r"(?:\+91[- ]?|0)?[6-9]\d{9}\b", r["snippet"])
+                if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
+
         if lead["website"] and lead["website"] != "N/A":
             emails, phones = await async_crawl_contacts(session, lead["website"])
+            
+            # The Apollo Hack Execution
+            if not emails and lead["dm_name"] != "N/A":
+                perms = generate_email_permutations(lead["dm_name"], lead["website"])
+                if perms: emails = perms # We ping these below
+
             for e in emails:
                 if await is_b2b_email(e):
                     lead["email"] = e
@@ -146,7 +179,7 @@ async def process_lead(session, lead, sem):
         await async_send_telegram(session, lead)
 
 async def hunt_async():
-    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (Production)", flush=True)
+    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (OSINT Verifier)", flush=True)
     if not WEBHOOK or not SECRET: return
     try: pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30).json().get("pending_leads", [])
     except Exception as e: return print(f"❌ Failed to fetch pending leads: {e}", flush=True)
