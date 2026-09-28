@@ -36,7 +36,7 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-# --- NEW STRICT MODEL FILTER ---
+# --- BULLETPROOF MODEL FILTER ---
 BEST_MODEL_STACK = []
 def get_flash_model_stack(client):
     global BEST_MODEL_STACK
@@ -45,19 +45,21 @@ def get_flash_model_stack(client):
         valid_models = []
         for m in client.models.list():
             name = m.name.lower()
-            banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking"]
+            # Exclude experimental, audio, vision, and the dead 2.5 models
+            banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
             if "flash" in name and not any(bad in name for bad in banned_keywords):
                 valid_models.append(name)
         
         if valid_models:
             valid_models.sort(reverse=True)
-            for preferred in ["models/gemini-3.5-flash", "models/gemini-3.5-flash-lite"]:
+            # Prioritize 3.5-flash-lite and 1.5-flash to avoid the harsh 20/day limit on 3.8
+            for preferred in ["models/gemini-3.5-flash-lite", "models/gemini-1.5-flash"]:
                 if preferred in valid_models:
                     valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+    BEST_MODEL_STACK = ["gemini-3.5-flash-lite", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
 def is_duplicate(link):
@@ -146,20 +148,33 @@ DATA BATCH:
 
     for model_name in model_stack:
         try:
-            res = client.models.generate_content(
-                model=model_name, contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
+            # FIX: Use Chat session instead of direct generate_content to silence AFC warnings
+            chat = client.chats.create(model=model_name)
+            res = chat.send_message(
+                prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json", 
+                    response_schema=schema, 
+                    temperature=0.2
+                )
             )
             raw_text = res.text.strip()
+            
+            # SAFE JSON STRIPPER
             if raw_text.startswith("```"):
                 raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
+            
         except Exception as e:
-            if "503" in str(e) or "500" in str(e) or "limit: 0" in str(e):
+            err_str = str(e)
+            # Smart cascade for 404s, 503s, and 429s with "limit: 20" or "limit: 0"
+            if "NOT_FOUND" in err_str or "404" in err_str or "503" in err_str or "500" in err_str or "limit: 0" in err_str or "limit: 20" in err_str:
+                print(f"    ⚠️ Model {model_name} unavailable/exhausted. Cascading...", flush=True)
                 continue
-            print(f"    ⚠️ Model {model_name} failed: {e}. Cascading...", flush=True)
-            continue
-    raise Exception("All Gemini models unavailable.")
+            # If it's a standard RPM limit, let Tenacity retry it after waiting
+            raise e
+            
+    raise Exception("All Gemini models unavailable or failed.")
 
 def build_vector_matrix(target):
     return [
@@ -170,7 +185,7 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Strict Model Filter)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Chat SDK & Quota-Safe Version)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     cloud_targets = []
@@ -243,7 +258,9 @@ def run():
                         break
                     except Exception:
                         time.sleep(3)
-        time.sleep(5)
+                        
+        # FIX: Ensure a generous delay between requests to protect the daily API quotas
+        time.sleep(15)
 
 if __name__ == "__main__":
     run()
