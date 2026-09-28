@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import uuid
@@ -18,7 +19,10 @@ logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 try:
     from ddgs import DDGS
 except ImportError:
-    DDGS = None
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        DDGS = None
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -40,13 +44,14 @@ def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = [m.name.lower() for m in client.models.list() if "flash" in m.name.lower()]
+        valid_models = [m.name for m in client.models.list() if "flash" in m.name.lower()]
         if valid_models:
             valid_models.sort(reverse=True)
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    # Fallback to absolute stable endpoints
+    BEST_MODEL_STACK = ["gemini-2.0-flash", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
 def is_duplicate(link):
@@ -122,7 +127,7 @@ DATA BATCH:
             "properties": {
                 "item_index": {"type": "INTEGER"},
                 "is_valid": {"type": "BOOLEAN"},
-                "entity_role": {"type": "STRING", "enum": ["BUYER", "SELLER", "IRRELEVANT"]},
+                "entity_role": {"type": "STRING"},
                 "org": {"type": "STRING"},
                 "industry": {"type": "STRING"},
                 "intent_summary": {"type": "STRING"},
@@ -133,6 +138,7 @@ DATA BATCH:
         }
     }
 
+    # THE FIX: Bulletproof Cascade Loop
     for model_name in model_stack:
         try:
             res = client.models.generate_content(
@@ -140,15 +146,15 @@ DATA BATCH:
                 config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
             )
             raw_text = res.text.strip()
-            # SAFE JSON STRIPPER (Fixes SyntaxError)
             if raw_text.startswith("```"):
                 raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
         except Exception as e:
-            if "503" in str(e) or "500" in str(e) or "limit: 0" in str(e):
-                continue
-            raise e
-    raise Exception("All Gemini models unavailable.")
+            # We print the exact error and move on, NO CRASHING.
+            print(f"    ⚠️ Model {model_name} failed: {e}. Cascading...", flush=True)
+            continue
+            
+    raise Exception("All Gemini models unavailable or failed.")
 
 def build_vector_matrix(target):
     return [
@@ -159,10 +165,9 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Safe Retry Version)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Crash-Proof Cascade Version)", flush=True)
     if not WEBHOOK or not SECRET: return
     
-    # GOOGLE SHEETS RETRY LOOP (Fixes 30s Timeout Crash)
     cloud_targets = []
     for attempt in range(3):
         try:
@@ -225,7 +230,6 @@ def run():
                     "website": "N/A"
                 }
                 
-                # Push Retry Loop
                 for attempt in range(3):
                     try:
                         requests.post(WEBHOOK, json=payload, timeout=60)
