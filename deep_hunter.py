@@ -160,40 +160,42 @@ async def async_send_telegram(session, lead):
         async with session.post(url, json=payload, timeout=30) as response: await response.read()
     except Exception: pass
 
-async def process_lead(session, lead):
-    print(f"\n[*] Enriching Target: {lead['org']}")
-    web_task = async_get_search_results(session, f'"{lead["org"]}" official website india')
-    li_task = async_get_search_results(session, f'"{lead["org"]}" (Procurement OR Purchase OR Sourcing OR CEO) site:linkedin.com/in/')
-    web_res, li_res = await asyncio.gather(web_task, li_task)
-    
-    if web_res or li_res:
-        ai_data = await asyncio.to_thread(ai_verify_entity_sync, lead['org'], web_res, li_res)
-        if ai_data:
-            if ai_data.get("verified_website"): lead["website"] = ai_data["verified_website"]
-            if ai_data.get("dm_name"):
-                lead["dm_name"] = ai_data["dm_name"]
-                lead["dm_title"] = ai_data.get("dm_title", "Decision Maker")
-                
-    if lead["website"] and lead["website"] != "N/A":
-        emails, phones = await async_crawl_contacts(session, lead["website"])
-        for e in emails:
-            if await is_b2b_email(e):
-                lead["email"] = e
-                break
-        if phones and lead["phone"] == "N/A": lead["phone"] = phones[0]
-
-    payload = {"secret": SECRET, "action": "update_lead", "lead_id": lead['lead_id'], **lead}
-    try:
-        async with session.post(WEBHOOK, json=payload, timeout=30) as response: await response.read()
-    except Exception: pass
+# Pass the Semaphore (sem) into the function
+async def process_lead(session, lead, sem):
+    async with sem: # THIS IS THE TRAFFIC LIGHT
+        print(f"\n[*] Enriching Target: {lead['org']}")
+        web_task = async_get_search_results(session, f'"{lead["org"]}" official website india')
+        li_task = async_get_search_results(session, f'"{lead["org"]}" (Procurement OR Purchase OR Sourcing OR CEO) site:linkedin.com/in/')
+        web_res, li_res = await asyncio.gather(web_task, li_task)
         
-    await async_send_telegram(session, lead)
+        if web_res or li_res:
+            ai_data = await asyncio.to_thread(ai_verify_entity_sync, lead['org'], web_res, li_res)
+            if ai_data:
+                if ai_data.get("verified_website"): lead["website"] = ai_data["verified_website"]
+                if ai_data.get("dm_name"):
+                    lead["dm_name"] = ai_data["dm_name"]
+                    lead["dm_title"] = ai_data.get("dm_title", "Decision Maker")
+                    
+        if lead["website"] and lead["website"] != "N/A":
+            emails, phones = await async_crawl_contacts(session, lead["website"])
+            for e in emails:
+                if await is_b2b_email(e):
+                    lead["email"] = e
+                    break
+            if phones and lead["phone"] == "N/A": lead["phone"] = phones[0]
+
+        payload = {"secret": SECRET, "action": "update_lead", "lead_id": lead['lead_id'], **lead}
+        try:
+            async with session.post(WEBHOOK, json=payload, timeout=10) as response: await response.read()
+        except Exception: pass
+            
+        await async_send_telegram(session, lead)
 
 async def hunt_async():
     print(">>> 🕵️‍♂️ DEEP HUNTER V3 ACTIVE")
     if not WEBHOOK or not SECRET: return
     try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30)
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=15)
         pending = res.json().get("pending_leads", [])
     except Exception: return
     if not pending: return
@@ -201,9 +203,11 @@ async def hunt_async():
     client = get_next_gemini_client()
     if client: get_best_gemini_model(client)
 
+    # SET TRAFFIC LIGHT TO 2 CONCURRENT LEADS TO PROTECT GEMINI QUOTA
+    sem = asyncio.Semaphore(2) 
     connector = aiohttp.TCPConnector(limit=5)
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [process_lead(session, lead) for lead in pending]
+        tasks = [process_lead(session, lead, sem) for lead in pending]
         await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
