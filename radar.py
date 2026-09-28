@@ -55,7 +55,7 @@ def is_duplicate(link):
     if not WEBHOOK or not SECRET: return False
     try:
         payload = {"secret": SECRET, "action": "check_duplicate", "link": link}
-        res = requests.post(WEBHOOK, json=payload, timeout=10).json()
+        res = requests.post(WEBHOOK, json=payload, timeout=30).json()
         return res.get("duplicate", False)
     except Exception: return False
 
@@ -66,7 +66,7 @@ def get_search_results(query):
             url = "https://google.serper.dev/search"
             payload = json.dumps({"q": query, "gl": "in", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
-            response = requests.post(url, headers=headers, data=payload, timeout=15)
+            response = requests.post(url, headers=headers, data=payload, timeout=30)
             if response.status_code == 200:
                 for r in response.json().get("organic", []):
                     results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", "")})
@@ -168,7 +168,7 @@ def run():
     print(">>> 📡 RADAR SCOUT V2 ACTIVE (Dynamic Targets)")
     if not WEBHOOK or not SECRET: return
     try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=15)
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30)
         cloud_targets = res.json().get("targets", [])
     except Exception as e: return
         
@@ -208,7 +208,7 @@ def run():
                     "link": fresh_leads[idx]['link'], "email": "N/A", "phone": "N/A", 
                     "website": lead.get("website") or "N/A"
                 }
-                try: requests.post(WEBHOOK, json=payload, timeout=10)
+                try: requests.post(WEBHOOK, json=payload, timeout=30)
                 except Exception: pass
         time.sleep(2)
 
