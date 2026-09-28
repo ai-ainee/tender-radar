@@ -35,13 +35,13 @@ def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = [m.name.lower() for m in client.models.list() if "flash" in m.name.lower()]
+        valid_models = [m.name for m in client.models.list() if "flash" in m.name.lower()]
         if valid_models:
             valid_models.sort(reverse=True)
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    BEST_MODEL_STACK = ["gemini-2.0-flash", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
 async def async_serper_search(session, query, num=3):
@@ -63,16 +63,19 @@ def generate_deal_dossier(lead, context_data):
     
     for model_name in model_stack:
         try:
-            res = client.models.generate_content(model=model_name, contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2))
+            res = client.models.generate_content(
+                model=model_name, contents=prompt, 
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
+            )
             raw_text = res.text.strip()
-            # SAFE JSON STRIPPER
             if raw_text.startswith("```"):
                 raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text).get("dossier", "No intel generated.")
         except Exception as e:
-            if "503" in str(e) or "500" in str(e) or "limit: 0" in str(e): continue
-            raise e
-    raise Exception("Models unavailable.")
+            print(f"    ⚠️ Model {model_name} failed: {e}. Cascading...", flush=True)
+            continue
+            
+    raise Exception("All Gemini models unavailable or failed.")
 
 async def process_lead_intel(session, lead, sem):
     async with sem:
@@ -95,7 +98,7 @@ async def process_lead_intel(session, lead, sem):
             except Exception: pass
 
 async def run_intel():
-    print(">>> 🧠 DEAL ANALYST ACTIVE (Safe Regex & Retry Version)", flush=True)
+    print(">>> 🧠 DEAL ANALYST ACTIVE (Crash-Proof Cascade Version)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     pending = []
