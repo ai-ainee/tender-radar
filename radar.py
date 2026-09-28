@@ -62,6 +62,7 @@ def is_duplicate(link):
 
 def ddgs_search(query):
     ddgs = DDGS()
+    # RESTORED: Strict 30-Day Time Filter
     return list(ddgs.text(query, timelimit="m", max_results=10, backend="lite"))
 
 def get_search_results(query):
@@ -69,12 +70,19 @@ def get_search_results(query):
     if SERPER_KEY:
         try:
             url = "https://google.serper.dev/search"
+            # RESTORED: Strict 30-Day Time Filter (qdr:m)
             payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:m", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             response = requests.post(url, headers=headers, data=payload, timeout=30)
             if response.status_code == 200:
                 for r in response.json().get("organic", []):
-                    results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", "")})
+                    # NEW: Extracting Google's hidden Index Date
+                    results.append({
+                        "title": r.get("title", ""), 
+                        "link": r.get("link", ""), 
+                        "summary": r.get("snippet", ""),
+                        "publish_date": r.get("date", "Recent") 
+                    })
                 if results: return results
         except Exception: pass
 
@@ -84,7 +92,12 @@ def get_search_results(query):
                 future = executor.submit(ddgs_search, query)
                 res = future.result(timeout=15)
             for r in res:
-                results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", "")})
+                results.append({
+                    "title": r.get("title", ""), 
+                    "link": r.get("href", ""), 
+                    "summary": r.get("body", ""),
+                    "publish_date": "Recent"
+                })
         except Exception: pass
     return results
 
@@ -94,7 +107,7 @@ def fetch_deep_text(url):
         if r.status_code == 200:
             content_type = r.headers.get('Content-Type', '').lower()
             if 'text/html' not in content_type and 'application/pdf' not in content_type: return ""
-            soup = BeautifulSoup(r.text[:50000], "html.parser")
+            soup = BeautifulSoup(r.text[:30000], "html.parser")
             for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
             return soup.get_text(separator=" ", strip=True)
     except Exception: pass
@@ -108,32 +121,31 @@ def ai_analyze_batch(batch):
     
     items_block = ""
     for i, x in enumerate(batch):
-        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:3000]}\n"
+        # NEW: Injecting the Publish Date directly into the AI's brain
+        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nGoogle Publish Date: {x.get('publish_date', 'Recent')}\nData: {(x.get('deep_text') or x.get('summary') or '')[:3000]}\n"
         
-    current_date = datetime.now().strftime("%Y-%m-%d")
+    current_date = datetime.now().strftime("%B %d, %Y")
     current_year = datetime.now().year
         
     prompt = f"""
-You are an elite B2B Market Analyst classifying entities in India.
+You are an elite B2B Market Analyst ensuring NO EXPIRED LEADS pass through.
 Current Date: {current_date}. Year: {current_year}.
 
 Evaluate EVERY ITEM and classify whether it is a:
 1. 'BUYER' (Active procurement, RFQ, live tender, Capex project, looking for vendors)
 2. 'SELLER' (Manufacturer, authorized distributor, OEM, supplier, stockist offering products)
-3. 'IRRELEVANT' (Market research reports, financial news, stock tickers, retail/B2C, jobs, foreign)
+3. 'IRRELEVANT' (Market research, stock tickers, consumer retail, jobs, completely foreign)
 
-RULES FOR BUYERS:
-- MUST have active intent right now.
-- If tender/RFQ deadline has passed prior to {current_date}, reject (is_valid=False).
+STRICT TIME FILTERS FOR BUYERS:
+- If a deadline is explicitly shown in the text and it has ALREADY PASSED relative to {current_date}, REJECT IT (is_valid=False).
+- If the 'Google Publish Date' explicitly says it was published in 2024, 2023, or older, REJECT IT.
+- If NO deadline is shown, but the 'Google Publish Date' says "Recent", "X days ago", or a date within the last 2 months, ACCEPT IT. Give recent posts the benefit of the doubt.
 
 RULES FOR SELLERS:
-- MUST be an actual confirmed business entity supplying/manufacturing the target product in India.
-
-REJECTION CRITERIA (Set is_valid=False):
-- Blog spam, generic informational directories, market research PDFs, consumer retail, or unconfirmed signals.
+- Must be a confirmed business entity supplying/manufacturing the target product.
 
 CONFIDENCE SCORE (1-100):
-- Rate your certainty that this entity represents a confirmed Buyer or Supplier (Threshold >= 70).
+- Rate your certainty. Scores of 60+ are acceptable if the company name and recent intent are clear.
 
 DATA BATCH:
 {items_block}
@@ -178,15 +190,14 @@ DATA BATCH:
 def build_vector_matrix(target):
     current_year = datetime.now().year
     return [
-        f'(site:gem.gov.in OR site:eprocure.gov.in) "{target}" ("tender" OR "bidding" OR "BOQ") {current_year}',
-        f'(site:ireps.gov.in OR site:etenders.gov.in OR site:mahatenders.gov.in) "{target}"',
-        f'(site:[indiamart.com/proposals/](https://indiamart.com/proposals/) OR site:[indiamart.com/buy-leads/](https://indiamart.com/buy-leads/) OR site:[tradeindia.com/Buyer/](https://tradeindia.com/Buyer/)) "{target}"',
-        f'site:[linkedin.com/posts](https://linkedin.com/posts) "{target}" ("looking for vendors" OR "urgent requirement" OR "inviting quotations")',
-        f'"{target}" ("Notice Inviting Tender" OR "NIT" OR "Request for Quotation" OR "manufacturer" OR "authorized distributor") India'
+        f'"{target}" tender OR RFQ {current_year} site:gov.in',
+        f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com',
+        f'"{target}" "looking for vendors" site:[linkedin.com/posts](https://linkedin.com/posts)',
+        f'"{target}" "vendor empanelment" OR "request for quotation" India'
     ]
 
 def run():
-    print(">>> 📡 RADAR DUAL-SCOUT ACTIVE (Buyers & Suppliers)", flush=True)
+    print(">>> 📡 RADAR DUAL-SCOUT ACTIVE (Strict Time-Window Version)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         cloud_targets = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30).json().get("targets", [])
@@ -211,23 +222,31 @@ def run():
                 r['deep_text'] = fetch_deep_text(r['link'])
                 fresh_leads.append(r)
                 
-        if not fresh_leads: continue
+        if not fresh_leads: 
+            print("    -> 0 new leads found (all duplicates or filtered out).", flush=True)
+            continue
+            
         print(f"    -> Analyzing {len(fresh_leads)} candidates with AI...", flush=True)
         try: ai_data = ai_analyze_batch(fresh_leads)
-        except Exception: continue
+        except Exception as e: 
+            print(f"    -> AI Error: {e}", flush=True)
+            continue
             
         for entity in ai_data:
+            idx = entity.get("item_index")
+            if idx is None or idx >= len(fresh_leads) or idx < 0: continue
+            
+            print(f"       [AI Vote] Valid: {entity.get('is_valid')} | Role: {entity.get('entity_role')} | Score: {entity.get('confidence_score')} | Org: {entity.get('org', 'Unknown')}", flush=True)
+            
             if (entity.get("is_valid") and 
-                entity.get("confidence_score", 0) >= 70 and 
+                entity.get("confidence_score", 0) >= 60 and 
                 entity.get("org") and 
                 entity.get("org").lower() not in ["unknown firm", "linkedin", "naukri", "gem", "indiamart"]):
                 
-                idx = entity.get("item_index")
-                if idx is None or idx >= len(fresh_leads) or idx < 0: continue
-                
                 role = entity.get("entity_role", "BUYER")
-                is_supplier = (role == "SELLER")
+                if role == "IRRELEVANT": continue
                 
+                is_supplier = (role == "SELLER")
                 deadline_note = f" [Deadline: {entity.get('deadline')}]" if entity.get("deadline") else ""
                 intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else f"{entity.get('intent_summary')}{deadline_note}"
 
@@ -252,10 +271,10 @@ def run():
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=30)
                     dest = "Suppliers" if is_supplier else "Inbox"
-                    print(f"    ✅ [{role}] -> {dest}: {entity['org']} (Score: {entity.get('confidence_score')})", flush=True)
+                    print(f"    ✅ PUSHED [{role}] -> {dest}: {entity['org']}", flush=True)
                 except Exception: pass
         
-        time.sleep(10)
+        time.sleep(5)
 
 if __name__ == "__main__":
     run()
