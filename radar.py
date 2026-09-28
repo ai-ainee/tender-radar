@@ -33,10 +33,12 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-BEST_MODEL_CACHE = None
-def get_best_gemini_model(client):
-    global BEST_MODEL_CACHE
-    if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
+# --- CASCADING FAILOVER STACK ---
+BEST_MODEL_STACK = []
+
+def get_flash_model_stack(client):
+    global BEST_MODEL_STACK
+    if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
         valid_models = []
         for m in client.models.list():
@@ -45,11 +47,98 @@ def get_best_gemini_model(client):
                 valid_models.append(name)
         if valid_models:
             valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
-            BEST_MODEL_CACHE = valid_models[0]
-            return BEST_MODEL_CACHE
+            BEST_MODEL_STACK = valid_models
+            print(f"    🧠 Built AI Failover Stack: {BEST_MODEL_STACK[:3]}")
+            return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_CACHE = "gemini-2.5-flash"
-    return BEST_MODEL_CACHE
+    BEST_MODEL_STACK = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+    return BEST_MODEL_STACK
+
+import logging
+logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+
+# ... [Keep your is_duplicate, get_search_results, and fetch_deep_text exactly as they are] ...
+
+@retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
+def ai_analyze_batch(batch):
+    client = get_next_gemini_client()
+    if not client: return []
+    
+    # 1. Fetch the sorted stack of available models
+    model_stack = get_flash_model_stack(client)
+    
+    items_block = ""
+    for i, x in enumerate(batch):
+        body = x.get("deep_text") or x.get("summary") or ""
+        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {body[:3000]}\n"
+        
+    current_year = datetime.now().year
+    past_year = current_year - 1
+        
+    prompt = f"""
+You are an elite B2B Sales AI analyzing universal procurement and supply chain signals in India.
+Your goal is to capture organizations actively procuring or sourcing PHYSICAL PRODUCTS, materials, equipment, software, or services.
+Evaluate EVERY SINGLE ITEM.
+
+REJECT (is_lead=False) ONLY IF:
+1. It is a Market Research Report.
+2. It is Stock Market/Financial News.
+3. It is explicitly located OUTSIDE of India.
+4. It is a B2C/retail post or a freelance gig.
+5. OUTDATED / EXPIRED: The current year is {current_year}. If the document explicitly shows a tender deadline, RFQ closing date, or publication date from {past_year} or older, REJECT IT IMMEDIATELY. We only want fresh, active opportunities.
+
+ACCEPT (is_lead=True) IF:
+The organization is looking to BUY, PROCURE, SOURCE, or INVITE TENDERS right now.
+
+CLASSIFICATION MATRIX for 'lead_type':
+- Active Tender / RFQ -> 'Active Bulk Buyer (RFQ)'
+- Capex/Setup -> 'Capex Buyer'
+- General supply needs -> 'Corporate Sourcing'
+- Looking for vendors -> 'Vendor Empanelment'
+- Selling goods (Not buying) -> 'Supplier'
+
+RULES:
+- 'org' MUST be the actual client name. NEVER 'LinkedIn', 'Naukri', or 'GeM'. Use "Unknown Firm" if hidden.
+- 'industry' MUST be the specific product/service category they are buying.
+
+DATA BATCH:
+{items_block}
+"""
+    schema = {
+        "type": "ARRAY",
+        "items": {
+            "type": "OBJECT",
+            "properties": {
+                "item_index": {"type": "INTEGER"}, "is_lead": {"type": "BOOLEAN"},
+                "org": {"type": "STRING"}, "industry": {"type": "STRING"}, 
+                "lead_type": {"type": "STRING"},
+                "website": {"type": "STRING", "nullable": True},
+                "dm_name": {"type": "STRING", "nullable": True}, "dm_title": {"type": "STRING", "nullable": True}
+            }, "required": ["item_index", "is_lead", "org", "industry", "lead_type"]
+        }
+    }
+
+    # 2. CASCADING FAILOVER LOOP
+    for model_name in model_stack:
+        try:
+            res = client.models.generate_content(
+                model=model_name, contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
+            )
+            raw_text = res.text.strip()
+            if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
+            return json.loads(raw_text)
+        except Exception as e:
+            err_str = str(e)
+            # If Google throws a 503 Meltdown or a 0-Quota block, skip to the next model!
+            if "503" in err_str or "500" in err_str or "limit: 0" in err_str:
+                print(f"    ⚠️ {model_name} overloaded (503). Cascading to next model...")
+                continue
+            else:
+                # If it's a normal 20-RPM limit, trigger Tenacity to wait 60s and retry
+                raise e 
+                
+    raise Exception("All Gemini models in the stack are currently unavailable.")
 
 def is_duplicate(link):
     if not WEBHOOK or not SECRET: return False
