@@ -19,10 +19,7 @@ logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 try:
     from ddgs import DDGS
 except ImportError:
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        DDGS = None
+    DDGS = None
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -39,19 +36,28 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
+# --- NEW STRICT MODEL FILTER ---
 BEST_MODEL_STACK = []
 def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = [m.name for m in client.models.list() if "flash" in m.name.lower()]
+        valid_models = []
+        for m in client.models.list():
+            name = m.name.lower()
+            banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking"]
+            if "flash" in name and not any(bad in name for bad in banned_keywords):
+                valid_models.append(name)
+        
         if valid_models:
             valid_models.sort(reverse=True)
+            for preferred in ["models/gemini-3.5-flash", "models/gemini-3.5-flash-lite"]:
+                if preferred in valid_models:
+                    valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    # Fallback to absolute stable endpoints
-    BEST_MODEL_STACK = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    BEST_MODEL_STACK = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
     return BEST_MODEL_STACK
 
 def is_duplicate(link):
@@ -127,7 +133,7 @@ DATA BATCH:
             "properties": {
                 "item_index": {"type": "INTEGER"},
                 "is_valid": {"type": "BOOLEAN"},
-                "entity_role": {"type": "STRING"},
+                "entity_role": {"type": "STRING", "enum": ["BUYER", "SELLER", "IRRELEVANT"]},
                 "org": {"type": "STRING"},
                 "industry": {"type": "STRING"},
                 "intent_summary": {"type": "STRING"},
@@ -138,7 +144,6 @@ DATA BATCH:
         }
     }
 
-    # THE FIX: Bulletproof Cascade Loop
     for model_name in model_stack:
         try:
             res = client.models.generate_content(
@@ -150,11 +155,11 @@ DATA BATCH:
                 raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
         except Exception as e:
-            # We print the exact error and move on, NO CRASHING.
+            if "503" in str(e) or "500" in str(e) or "limit: 0" in str(e):
+                continue
             print(f"    ⚠️ Model {model_name} failed: {e}. Cascading...", flush=True)
             continue
-            
-    raise Exception("All Gemini models unavailable or failed.")
+    raise Exception("All Gemini models unavailable.")
 
 def build_vector_matrix(target):
     return [
@@ -165,7 +170,7 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Crash-Proof Cascade Version)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Strict Model Filter)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     cloud_targets = []
