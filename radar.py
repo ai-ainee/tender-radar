@@ -13,10 +13,8 @@ from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
-# Silence all annoying Google SDK warnings
 warnings.filterwarnings("ignore")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
-logging.getLogger("google.genai.discovery").setLevel(logging.ERROR)
 
 try:
     from ddgs import DDGS
@@ -29,7 +27,6 @@ except ImportError:
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
 SERPER_KEY = os.environ.get("SERPER_API_KEY")
-
 raw_keys = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
 current_key_index = 0
@@ -46,11 +43,7 @@ def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = []
-        for m in client.models.list():
-            name = m.name.lower()
-            if re.match(r'^models/gemini-\d+\.\d+-flash$', name):
-                valid_models.append(name)
+        valid_models = [m.name.lower() for m in client.models.list() if re.match(r'^models/gemini-\d+\.\d+-flash$', m.name.lower())]
         if valid_models:
             valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
             BEST_MODEL_STACK = valid_models
@@ -62,8 +55,7 @@ def get_flash_model_stack(client):
 def is_duplicate(link):
     if not WEBHOOK or not SECRET: return False
     try:
-        payload = {"secret": SECRET, "action": "check_duplicate", "link": link}
-        res = requests.post(WEBHOOK, json=payload, timeout=30).json()
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "check_duplicate", "link": link}, timeout=30).json()
         return res.get("duplicate", False)
     except Exception: return False
 
@@ -87,7 +79,6 @@ def get_search_results(query):
 
     if DDGS:
         try:
-            # HARD TIMEOUT for DuckDuckGo to prevent it from hanging the script
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(ddgs_search, query)
                 res = future.result(timeout=15)
@@ -98,16 +89,11 @@ def get_search_results(query):
 
 def fetch_deep_text(url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        # STRICT TUPLE TIMEOUT: (5 seconds to connect, 10 seconds to read)
-        # Prevents firewalls from "Tarpitting" the script
-        r = requests.get(url, headers=headers, timeout=(5, 10))
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=(5, 10))
         if r.status_code == 200:
             content_type = r.headers.get('Content-Type', '').lower()
             if 'text/html' not in content_type: return ""
-            # Slice text to 50,000 characters immediately to save memory
-            html_content = r.text[:50000]
-            soup = BeautifulSoup(html_content, "html.parser")
+            soup = BeautifulSoup(r.text[:50000], "html.parser")
             for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
             return soup.get_text(separator=" ", strip=True)
     except Exception: pass
@@ -117,42 +103,34 @@ def fetch_deep_text(url):
 def ai_analyze_batch(batch):
     client = get_next_gemini_client()
     if not client: return []
-    
     model_stack = get_flash_model_stack(client)
     
     items_block = ""
     for i, x in enumerate(batch):
-        body = x.get("deep_text") or x.get("summary") or ""
-        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {body[:3000]}\n"
+        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:3000]}\n"
         
     current_year = datetime.now().year
-    past_year = current_year - 1
+    cutoff_year = current_year - 2
         
     prompt = f"""
-You are an elite B2B Sales AI analyzing procurement and supply signals in India.
-Your goal is to capture organizations actively procuring or sourcing PHYSICAL PRODUCTS, materials, equipment, software, or services.
-Evaluate EVERY SINGLE ITEM.
+You are an elite B2B Sales AI. Goal: Capture organizations actively procuring PHYSICAL PRODUCTS, equipment, or services. Evaluate EVERY ITEM.
 
 REJECT (is_lead=False) ONLY IF:
-1. It is a Market Research Report.
-2. It is Stock Market/Financial News.
-3. It is explicitly located OUTSIDE of India.
-4. It is a B2C/retail post or a freelance gig.
-5. OUTDATED / EXPIRED: The current year is {current_year}. If the document explicitly shows a tender deadline, RFQ closing date, or publication date from {past_year} or older, REJECT IT IMMEDIATELY.
+1. Market Research/News/B2C/Outside India.
+2. EXPIRED: The current year is {current_year}. If the document explicitly shows a tender deadline or publication date from {cutoff_year} or older (e.g. {cutoff_year}, {cutoff_year-1}), REJECT IT IMMEDIATELY.
 
-ACCEPT (is_lead=True) IF:
-The organization is looking to BUY, PROCURE, SOURCE, or INVITE TENDERS right now.
+ACCEPT (is_lead=True) IF: Actively buying or inviting tenders.
 
-CLASSIFICATION MATRIX for 'lead_type':
+CLASSIFICATION:
 - Active Tender / RFQ -> 'Active Bulk Buyer (RFQ)'
 - Capex/Setup -> 'Capex Buyer'
-- General supply needs -> 'Corporate Sourcing'
+- General supply -> 'Corporate Sourcing'
 - Looking for vendors -> 'Vendor Empanelment'
-- Selling goods (Not buying) -> 'Supplier'
+- Selling goods -> 'Supplier'
 
 RULES:
-- 'org' MUST be the actual client name. NEVER 'LinkedIn', 'Naukri', or 'GeM'. Use "Unknown Firm" if hidden.
-- 'industry' MUST be the specific product/service category they are buying.
+- 'org' MUST be actual client name (Use "Unknown Firm" if hidden). Never 'LinkedIn'.
+- 'industry' MUST be the specific product category.
 
 DATA BATCH:
 {items_block}
@@ -181,28 +159,19 @@ DATA BATCH:
             if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
             return json.loads(raw_text)
         except Exception as e:
-            err_str = str(e)
-            if "503" in err_str or "500" in err_str or "limit: 0" in err_str:
-                print(f"    ⚠️ {model_name} unavailable. Cascading to next model...", flush=True)
+            if "503" in str(e) or "500" in str(e) or "limit: 0" in str(e):
+                print(f"    ⚠️ {model_name} overloaded. Cascading...", flush=True)
                 continue
-            else:
-                raise e
-
-    raise Exception("All Gemini models in the stack are currently unavailable.")
+            raise e
+    raise Exception("All Gemini models unavailable.")
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Anti-Hang Version)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Production)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30)
-        cloud_targets = res.json().get("targets", [])
-    except Exception as e:
-        print(f"❌ Failed to fetch targets: {e}", flush=True)
-        return
-        
-    if not cloud_targets:
-        print("    -> No targets found in Google Sheet '🎯 Targets'.", flush=True)
-        return
+        cloud_targets = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30).json().get("targets", [])
+    except Exception as e: return print(f"❌ Failed to fetch targets: {e}", flush=True)
+    if not cloud_targets: return print("    -> No targets found.", flush=True)
 
     current_year = datetime.now().year
     keywords = [f'"{t}" AND ("Request for Quotation" OR "tender" OR "vendor empanelment") {current_year} India' for t in cloud_targets]
@@ -217,7 +186,6 @@ def run():
                 fresh_leads.append(r)
                 
         if not fresh_leads: continue
-            
         print(f"    -> Analyzing {len(fresh_leads)} items with AI...", flush=True)
         try: ai_data = ai_analyze_batch(fresh_leads)
         except Exception: continue
@@ -226,22 +194,18 @@ def run():
             if lead.get("is_lead") and lead.get("org") and lead.get("org").lower() not in ["linkedin", "naukri", "indeed"]:
                 idx = lead.get("item_index")
                 if idx is None or idx >= len(fresh_leads) or idx < 0: continue
-                
                 payload = {
                     "secret": SECRET, "action": "add_lead", "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "source": "Web",
-                    "org": lead.get("org", "Unknown"), 
-                    "industry": lead.get("industry", "General Products"), 
+                    "org": lead.get("org", "Unknown"), "industry": lead.get("industry", "General"), 
                     "intent": lead.get("lead_type", "Corporate Sourcing"),
                     "dm_name": lead.get("dm_name") or "N/A", "dm_title": lead.get("dm_title") or "N/A", 
-                    "link": fresh_leads[idx]['link'], "email": "N/A", "phone": "N/A", 
-                    "website": lead.get("website") or "N/A"
+                    "link": fresh_leads[idx]['link'], "email": "N/A", "phone": "N/A", "website": lead.get("website") or "N/A"
                 }
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=30)
                     print(f"    ✅ Pushed to Inbox: {lead['org']}", flush=True)
                 except Exception: pass
-        
         time.sleep(15)
 
 if __name__ == "__main__":
