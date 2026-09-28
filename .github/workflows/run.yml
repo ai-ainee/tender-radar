@@ -42,10 +42,20 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python deep_hunter.py
 
-      - name: 🚨 Critical Failure Alert (Heartbeat Monitor)
+      - name: 🧠 Phase 3 - Run Deal Intel (The Analyst)
+        env:
+          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python deal_intel.py
+
+      - name: 🚨 Critical Failure Alert
         if: failure()
         run: |
           curl -s -X POST "[https://api.telegram.org/bot$](https://api.telegram.org/bot$){{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
           -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-          -d text="🚨 <b>CRITICAL ALERT:</b> The Radar V2 Engine just crashed in GitHub Actions! Please check the logs immediately." \
+          -d text="🚨 <b>CRITICAL ALERT:</b> The Radar Engine crashed in GitHub Actions! Please check logs." \
           -d parse_mode="HTML"
