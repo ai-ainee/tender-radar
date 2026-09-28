@@ -210,7 +210,7 @@ def run():
                 }
                 try: requests.post(WEBHOOK, json=payload, timeout=30)
                 except Exception: pass
-        time.sleep(2)
+        time.sleep(15)
 
 if __name__ == "__main__":
     run()
