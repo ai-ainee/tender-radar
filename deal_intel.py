@@ -1,12 +1,15 @@
 import os
 import re
 import json
+import logging
 import asyncio
 import aiohttp
 import requests
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
+
+logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -25,19 +28,24 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-BEST_MODEL_CACHE = None
-def get_best_gemini_model(client):
-    global BEST_MODEL_CACHE
-    if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
+BEST_MODEL_STACK = []
+
+def get_flash_model_stack(client):
+    global BEST_MODEL_STACK
+    if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = [m.name.lower() for m in client.models.list() if re.match(r'^models/gemini-\d+\.\d+-flash$', m.name.lower())]
+        valid_models = []
+        for m in client.models.list():
+            name = m.name.lower()
+            if re.match(r'^models/gemini-\d+\.\d+-flash$', name):
+                valid_models.append(name)
         if valid_models:
             valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
-            BEST_MODEL_CACHE = valid_models[0]
-            return BEST_MODEL_CACHE
+            BEST_MODEL_STACK = valid_models
+            return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_CACHE = "gemini-2.5-flash"
-    return BEST_MODEL_CACHE
+    BEST_MODEL_STACK = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    return BEST_MODEL_STACK
 
 async def async_serper_search(session, query, num=3):
     if not SERPER_KEY: return []
@@ -45,7 +53,6 @@ async def async_serper_search(session, query, num=3):
     payload = json.dumps({"q": query, "gl": "in", "num": num})
     headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
     try:
-        # Increased to 20 seconds for slower API responses
         async with session.post(url, headers=headers, data=payload, timeout=20) as response:
             if response.status == 200:
                 data = await response.json()
@@ -53,43 +60,55 @@ async def async_serper_search(session, query, num=3):
     except Exception: pass
     return []
 
-# ADDED RETRY LOGIC: If Gemini times out writing the dossier, wait and retry.
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def generate_deal_dossier(lead, context_data):
     client = get_next_gemini_client()
     if not client: return "AI Unavailable."
     
+    model_stack = get_flash_model_stack(client)
+    
     prompt = f"""
 You are an elite Enterprise B2B Sales Strategist. 
-Your Account Executive just pushed this company into the "LEADS" stage and needs a Deal Strategy Brief.
+Your Account Executive just moved this company into the "LEADS" stage and needs a Deal Strategy Brief.
 
 Target Company: {lead['org']}
-Decision Maker: {lead['dm_name']} ({lead['dm_title']})
+Decision Maker: {lead['dm_name']} ({lead.get('dm_title', 'Decision Maker')})
 Industry: {lead['industry']}
 
 Web OSINT Context Collected:
 {json.dumps(context_data)}
 
 Output a JSON object with a single key "dossier". The value must be an actionable, executive-level text report with EXACTLY these 3 sections (Use emojis and bullet points):
-1. 🏢 Company Profile: (Size, market positioning, what they do).
-2. 📰 Recent Signals: (Summarize recent news, financials, or major projects found in the context).
+1. 🏢 Company Profile: (Size, market positioning, core business).
+2. 📰 Recent Signals: (Summarize recent news, financial health, or major projects).
 3. 🎯 Sales Pitch Strategy: (How should we approach {lead['dm_name']}? What pain points should we target based on their industry?)
 """
     schema = {"type": "OBJECT", "properties": {"dossier": {"type": "STRING"}}}
-    try:
-        res = client.models.generate_content(
-            model=get_best_gemini_model(client), contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
-        )
-        raw_text = res.text.strip()
-        if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
-        return json.loads(raw_text).get("dossier", "No intel generated.")
-    except Exception as e: 
-        print(f"    ⚠️ AI Timeout/Error: {e} - Retrying...")
-        raise e
+    
+    for model_name in model_stack:
+        try:
+            res = client.models.generate_content(
+                model=model_name, contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
+            )
+            raw_text = res.text.strip()
+            if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
+            return json.loads(raw_text).get("dossier", "No intel generated.")
+        except Exception as e:
+            err_str = str(e)
+            if "503" in err_str or "500" in err_str or "limit: 0" in err_str:
+                continue
+            else:
+                raise e
+
+    raise Exception("All Gemini models in the stack are currently unavailable.")
 
 async def async_send_dossier(session, lead, dossier_text):
-    msg = f"📊 <b>DEAL STRATEGY BRIEF</b>\n\n🏢 <b>Target:</b> {lead['org']}\n👤 <b>DM:</b> {lead['dm_name']} ({lead['dm_title']})\n📞 <b>Contact:</b> {lead['phone']} | {lead['email']}\n\n<b>--- DOSSIER ---</b>\n{dossier_text}"
+    msg = f"📊 <b>DEAL STRATEGY BRIEF</b>\n\n" \
+          f"🏢 <b>Target:</b> {lead['org']}\n" \
+          f"👤 <b>DM:</b> {lead['dm_name']} ({lead.get('dm_title', 'Decision Maker')})\n" \
+          f"📞 <b>Contact:</b> {lead.get('phone', 'N/A')} | {lead.get('email', 'N/A')}\n\n" \
+          f"<b>--- DOSSIER ---</b>\n{dossier_text}"
     if len(msg) > 4000: msg = msg[:3990] + "...\n(Truncated)"
           
     reply_markup = {"inline_keyboard": [
@@ -98,15 +117,17 @@ async def async_send_dossier(session, lead, dossier_text):
     ]}
     
     url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "reply_markup": reply_markup, "disable_web_page_preview": True}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", 
+        "reply_markup": reply_markup, "disable_web_page_preview": True
+    }
     try:
-        # Telegram can be slow to accept massive messages. Increased to 30.
-        async with session.post(url, json=payload, timeout=30) as response: await response.read()
-    except Exception as e:
-        print(f"    ⚠️ Telegram send failed: {e}")
+        async with session.post(url, json=payload, timeout=30) as response: 
+            await response.read()
+    except Exception: pass
 
 async def process_lead_intel(session, lead, sem):
-    async with sem: # THIS IS THE TRAFFIC LIGHT
+    async with sem:
         print(f"[*] Gathering OSINT Intel for Lead: {lead['org']}")
         
         q1 = async_serper_search(session, f'"{lead["org"]}" company profile India')
@@ -120,13 +141,14 @@ async def process_lead_intel(session, lead, sem):
         
         payload = {"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}
         try:
-            async with session.post(WEBHOOK, json=payload, timeout=30) as response: await response.read()
+            async with session.post(WEBHOOK, json=payload, timeout=30) as response: 
+                await response.read()
         except Exception: pass
             
         await async_send_dossier(session, lead, dossier)
 
 async def run_intel():
-    print(">>> 🧠 DEAL ANALYST V1 ACTIVE")
+    print(">>> 🧠 DEAL ANALYST ACTIVE")
     if not WEBHOOK or not SECRET: return
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=30)
@@ -135,9 +157,8 @@ async def run_intel():
     if not pending: return
         
     client = get_next_gemini_client()
-    if client: get_best_gemini_model(client)
+    if client: get_flash_model_stack(client)
     
-    # SET TRAFFIC LIGHT TO 2 CONCURRENT LEADS
     sem = asyncio.Semaphore(2)
     connector = aiohttp.TCPConnector(limit=5)
     timeout = aiohttp.ClientTimeout(total=60)
