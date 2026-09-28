@@ -69,7 +69,7 @@ async def async_get_search_results(session, query, num=5):
             url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
             payload = json.dumps({"q": query, "gl": "in", "num": num})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
-            async with session.post(url, headers=headers, data=payload, timeout=10) as response:
+            async with session.post(url, headers=headers, data=payload, timeout=30) as response:
                 if response.status == 200:
                     data = await response.json()
                     for r in data.get("organic", []):
@@ -127,7 +127,7 @@ LinkedIn Results: {json.dumps(li_results)}
 async def async_crawl_contacts(session, url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        async with session.get(url, headers=headers, timeout=10) as response:
+        async with session.get(url, headers=headers, timeout=30) as response:
             if response.status == 200:
                 html = await response.read()
                 text = html.decode('utf-8', errors='ignore')
@@ -157,7 +157,7 @@ async def async_send_telegram(session, lead):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "reply_markup": reply_markup, "disable_web_page_preview": True}
     try:
-        async with session.post(url, json=payload, timeout=10) as response: await response.read()
+        async with session.post(url, json=payload, timeout=30) as response: await response.read()
     except Exception: pass
 
 async def process_lead(session, lead):
@@ -184,7 +184,7 @@ async def process_lead(session, lead):
 
     payload = {"secret": SECRET, "action": "update_lead", "lead_id": lead['lead_id'], **lead}
     try:
-        async with session.post(WEBHOOK, json=payload, timeout=10) as response: await response.read()
+        async with session.post(WEBHOOK, json=payload, timeout=30) as response: await response.read()
     except Exception: pass
         
     await async_send_telegram(session, lead)
@@ -193,7 +193,7 @@ async def hunt_async():
     print(">>> 🕵️‍♂️ DEEP HUNTER V3 ACTIVE")
     if not WEBHOOK or not SECRET: return
     try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=15)
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30)
         pending = res.json().get("pending_leads", [])
     except Exception: return
     if not pending: return
