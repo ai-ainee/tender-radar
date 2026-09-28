@@ -1,10 +1,14 @@
-name: Radar Enterprise Auto-Scanner V2
+name: Radar Enterprise CRM Engine
 
 on:
   schedule:
-    # Runs at 8:30 AM, 10:30 AM, 12:30 PM, 2:30 PM, 4:30 PM, 6:30 PM, 8:30 PM IST (Mon-Fri)
     - cron: '0 3,5,7,9,11,13,15 * * 1-5'
   workflow_dispatch:
+
+# PRE-EMPTIVE FIX: Prevents two chron jobs from colliding if one runs long.
+concurrency:
+  group: radar-pipeline
+  cancel-in-progress: false
 
 jobs:
   hunt:
@@ -25,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 📡 Phase 1 - Run Radar (The Scout)
+      - name: 📡 Phase 1 - Scout (radar.py)
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
@@ -33,7 +37,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python radar.py
 
-      - name: 🕵️‍♂️ Phase 2 - Run Deep Hunter (The Detective)
+      - name: 🕵️‍♂️ Phase 2 - Detective (deep_hunter.py)
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
@@ -43,7 +47,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python deep_hunter.py
 
-      - name: 🧠 Phase 3 - Run Deal Intel (The Analyst)
+      - name: 🧠 Phase 3 - Analyst (deal_intel.py)
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
@@ -53,10 +57,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python deal_intel.py
 
-      - name: 🚨 Critical Failure Alert
+      - name: 🚨 Alert on Failure
         if: failure()
         run: |
           curl -s -X POST "[https://api.telegram.org/bot$](https://api.telegram.org/bot$){{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
           -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-          -d text="🚨 <b>CRITICAL ALERT:</b> Radar CRM Engine encountered an error in GitHub Actions. Please review workflow logs." \
+          -d text="🚨 <b>CRITICAL ALERT:</b> Engine crashed in GitHub Actions. Check logs." \
           -d parse_mode="HTML"
