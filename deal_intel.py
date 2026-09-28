@@ -105,47 +105,44 @@ async def async_send_dossier(session, lead, dossier_text):
     except Exception as e:
         print(f"    ⚠️ Telegram send failed: {e}")
 
-async def process_lead_intel(session, lead):
-    print(f"[*] Gathering OSINT Intel for Lead: {lead['org']}")
-    
-    q1 = async_serper_search(session, f'"{lead["org"]}" company profile India')
-    q2 = async_serper_search(session, f'"{lead["org"]}" recent news OR financials')
-    q3 = async_serper_search(session, f'"{lead["dm_name"]}" "{lead["org"]}" LinkedIn')
-    
-    results = await asyncio.gather(q1, q2, q3)
-    context_data = {"profile": results[0], "news": results[1], "dm_info": results[2]}
-    
-    dossier = await asyncio.to_thread(generate_deal_dossier, lead, context_data)
-    
-    payload = {"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}
-    try:
-        # Apps Script updates take time on large sheets. Increased to 30.
-        async with session.post(WEBHOOK, json=payload, timeout=30) as response: await response.read()
-    except Exception as e: 
-        print(f"    ⚠️ Google Sheet update failed: {e}")
+async def process_lead_intel(session, lead, sem):
+    async with sem: # THIS IS THE TRAFFIC LIGHT
+        print(f"[*] Gathering OSINT Intel for Lead: {lead['org']}")
         
-    await async_send_dossier(session, lead, dossier)
+        q1 = async_serper_search(session, f'"{lead["org"]}" company profile India')
+        q2 = async_serper_search(session, f'"{lead["org"]}" recent news OR projects OR financials')
+        q3 = async_serper_search(session, f'"{lead["dm_name"]}" "{lead["org"]}" LinkedIn')
+        
+        results = await asyncio.gather(q1, q2, q3)
+        context_data = {"profile": results[0], "news": results[1], "dm_info": results[2]}
+        
+        dossier = await asyncio.to_thread(generate_deal_dossier, lead, context_data)
+        
+        payload = {"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}
+        try:
+            async with session.post(WEBHOOK, json=payload, timeout=30) as response: await response.read()
+        except Exception: pass
+            
+        await async_send_dossier(session, lead, dossier)
 
 async def run_intel():
     print(">>> 🧠 DEAL ANALYST V1 ACTIVE")
     if not WEBHOOK or not SECRET: return
     try:
-        # Wake up Apps Script (Cold starts take up to 15s)
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=30)
         pending = res.json().get("pending_leads", [])
-    except Exception as e:
-        print(f"❌ Failed to fetch pending leads: {e}")
-        return
+    except Exception: return
     if not pending: return
         
     client = get_next_gemini_client()
     if client: get_best_gemini_model(client)
     
+    # SET TRAFFIC LIGHT TO 2 CONCURRENT LEADS
+    sem = asyncio.Semaphore(2)
     connector = aiohttp.TCPConnector(limit=5)
-    # Increased session timeout limits to 60 seconds total per connection
     timeout = aiohttp.ClientTimeout(total=60)
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        tasks = [process_lead_intel(session, lead) for lead in pending]
+        tasks = [process_lead_intel(session, lead, sem) for lead in pending]
         await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
