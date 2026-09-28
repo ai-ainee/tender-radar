@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 import aiohttp
@@ -11,7 +12,31 @@ SECRET = os.environ.get("WEBHOOK_SECRET")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SERPER_KEY = os.environ.get("SERPER_API_KEY")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+
+raw_keys = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
+current_key_index = 0
+
+def get_next_gemini_client():
+    global current_key_index
+    if not GEMINI_KEYS: return None
+    key = GEMINI_KEYS[current_key_index]
+    current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
+    return genai.Client(api_key=key)
+
+BEST_MODEL_CACHE = None
+def get_best_gemini_model(client):
+    global BEST_MODEL_CACHE
+    if BEST_MODEL_CACHE: return BEST_MODEL_CACHE
+    try:
+        valid_models = [m.name.lower() for m in client.models.list() if re.match(r'^models/gemini-\d+\.\d+-flash$', m.name.lower())]
+        if valid_models:
+            valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
+            BEST_MODEL_CACHE = valid_models[0]
+            return BEST_MODEL_CACHE
+    except Exception: pass
+    BEST_MODEL_CACHE = "gemini-2.5-flash"
+    return BEST_MODEL_CACHE
 
 async def async_serper_search(session, query, num=3):
     if not SERPER_KEY: return []
@@ -23,67 +48,67 @@ async def async_serper_search(session, query, num=3):
             if response.status == 200:
                 data = await response.json()
                 return [r.get("snippet", "") for r in data.get("organic", [])]
-    except Exception:
-        pass
+    except Exception: pass
     return []
 
 def generate_deal_dossier(lead, context_data):
-    if not GEMINI_KEY: return None
-    client = genai.Client(api_key=GEMINI_KEY)
+    client = get_next_gemini_client()
+    if not client: return "AI Unavailable."
     
     prompt = f"""
-You are an elite Enterprise Deal Strategist. 
-Your Account Executive just moved this company into the "LEADS" stage. 
-Write a highly actionable "Deal Intelligence Dossier" based on the search context.
+You are an elite Enterprise B2B Sales Strategist. 
+Your Account Executive just pushed this company into the "LEADS" stage and needs a Deal Strategy Brief.
 
 Target Company: {lead['org']}
 Decision Maker: {lead['dm_name']} ({lead['dm_title']})
-Product Category: {lead['industry']}
+Industry: {lead['industry']}
 
-Search Context Collected:
+Web OSINT Context Collected:
 {json.dumps(context_data)}
 
-Output a JSON object with a single key "dossier". The value must be a beautifully formatted text report with these 3 sections (Use emojis and line breaks):
-1. 🏢 Company Profile (Size, what they do, market position).
-2. 📰 Recent Signals (Any recent news, projects, or financial health indicators).
-3. 🎯 Sales Strategy (How should the Account Executive pitch them? What pain points should they mention to {lead['dm_name']}?)
+Output a JSON object with a single key "dossier". The value must be an actionable, executive-level text report with EXACTLY these 3 sections (Use emojis and bullet points):
+1. 🏢 Company Profile: (Size, market positioning, what they do).
+2. 📰 Recent Signals: (Summarize recent news, financial health, or major projects found in the context).
+3. 🎯 Sales Pitch Strategy: (How should we approach {lead['dm_name']}? What pain points should we target based on their industry?)
 """
     schema = {"type": "OBJECT", "properties": {"dossier": {"type": "STRING"}}}
-    
     try:
         res = client.models.generate_content(
-            model='gemini-2.5-flash', contents=prompt,
+            model=get_best_gemini_model(client), contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
         )
-        return json.loads(res.text).get("dossier", "No intel generated.")
+        raw_text = res.text.strip()
+        if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
+        return json.loads(raw_text).get("dossier", "No intel generated.")
     except Exception as e:
         print(f"⚠️ AI Error: {e}")
         return "Failed to generate intel."
 
 async def async_send_dossier(session, lead, dossier_text):
-    msg = f"📊 <b>DEAL INTELLIGENCE GATHERED</b>\n\n" \
+    msg = f"📊 <b>DEAL STRATEGY BRIEF</b>\n\n" \
           f"🏢 <b>Target:</b> {lead['org']}\n" \
-          f"👤 <b>DM:</b> {lead['dm_name']}\n" \
+          f"👤 <b>DM:</b> {lead['dm_name']} ({lead['dm_title']})\n" \
           f"📞 <b>Contact:</b> {lead['phone']} | {lead['email']}\n\n" \
-          f"<b>--- DEAL STRATEGY DOSSIER ---</b>\n{dossier_text}"
+          f"<b>--- DOSSIER ---</b>\n{dossier_text}"
+          
+    # Truncate string if it exceeds Telegram's 4096 character limit
+    if len(msg) > 4000: msg = msg[:3990] + "...\n(Truncated)"
           
     reply_markup = {"inline_keyboard": [
-        [{"text": "🏆 WIN DEAL (Convert to Deal)", "callback_data": f"closedeal_{lead['lead_id']}"}],
-        [{"text": "🗑️ Drop Lead", "callback_data": f"droplead_{lead['lead_id']}"}]
+        [{"text": "🏆 WIN DEAL", "callback_data": f"windeal_{lead['lead_id']}"}],
+        [{"text": "🗑️ Drop Lead", "callback_data": f"dropdeal_{lead['lead_id']}"}]
     ]}
     
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg[:4000], "parse_mode": "HTML", "reply_markup": reply_markup}
+    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "reply_markup": reply_markup, "disable_web_page_preview": True}
     try:
         async with session.post(url, json=payload, timeout=10) as response:
             await response.read()
-    except Exception:
-        pass
+    except Exception: pass
 
 async def process_lead_intel(session, lead):
-    print(f"[*] Gathering deep intel for Lead: {lead['org']}")
+    print(f"[*] Gathering OSINT Intel for Lead: {lead['org']}")
     
-    # Run deep OSINT queries simultaneously
     q1 = async_serper_search(session, f'"{lead["org"]}" company profile India')
     q2 = async_serper_search(session, f'"{lead["org"]}" recent news OR projects OR financials')
     q3 = async_serper_search(session, f'"{lead["dm_name"]}" "{lead["org"]}" LinkedIn')
@@ -91,18 +116,15 @@ async def process_lead_intel(session, lead):
     results = await asyncio.gather(q1, q2, q3)
     context_data = {"profile": results[0], "news": results[1], "dm_info": results[2]}
     
-    # Generate the Deal Strategy
     dossier = await asyncio.to_thread(generate_deal_dossier, lead, context_data)
     
-    # Update Google Sheets
-    payload = {"secret": SECRET, "action": "update_lead_intel", "row_index": lead['row_index'], "dossier": dossier}
+    # Push the Dossier to the Sheets API. The Google Script will automatically move it to DEALS.
+    payload = {"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}
     try:
         async with session.post(WEBHOOK, json=payload, timeout=10) as response:
             await response.read()
-    except Exception:
-        pass
+    except Exception: pass
         
-    # Send massive Telegram Report
     await async_send_dossier(session, lead, dossier)
 
 async def run_intel():
@@ -111,14 +133,16 @@ async def run_intel():
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=15)
         pending = res.json().get("pending_leads", [])
-    except Exception:
-        return
+    except Exception: return
         
     if not pending:
-        print("    -> No new leads requiring intel. Sleeping.")
+        print("    -> No Leads require Intel. Sleeping.")
         return
         
-    print(f"    -> Gathering intel for {len(pending)} active Leads.")
+    print(f"    -> Running OSINT for {len(pending)} active Leads.")
+    client = get_next_gemini_client()
+    if client: get_best_gemini_model(client)
+    
     connector = aiohttp.TCPConnector(limit=5)
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [process_lead_intel(session, lead) for lead in pending]
