@@ -50,7 +50,7 @@ def get_flash_model_stack(client):
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    BEST_MODEL_STACK = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
 def is_duplicate(link):
@@ -60,42 +60,43 @@ def is_duplicate(link):
         return res.get("duplicate", False)
     except Exception: return False
 
-def ddgs_search(query):
-    ddgs = DDGS()
-    return list(ddgs.text(query, timelimit="y", max_results=10, backend="lite"))
-
 def get_search_results(query):
     results = []
     if SERPER_KEY:
         try:
-            # Reopened to qdr:y (1 year) to prevent zero-results from API
-            response = requests.post("https://google.serper.dev/search", headers={'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}, data=json.dumps({"q": query, "gl": "in", "tbs": "qdr:y", "num": 10}), timeout=30)
+            # Wide open: 1 year window to ensure we get maximum data volume
+            payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:y", "num": 10})
+            headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
+            response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=30)
             if response.status_code == 200:
                 for r in response.json().get("organic", []):
-                    results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", ""), "publish_date": r.get("date", "Recent")})
-                if results: return results
+                    results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", "")})
         except Exception: pass
 
-    if DDGS:
+    if DDGS and not results: # Only use DDGS if Serper failed or returned nothing
         try:
+            def ddgs_search(): return list(DDGS().text(query, timelimit="y", max_results=10, backend="lite"))
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                res = executor.submit(ddgs_search, query).result(timeout=15)
+                res = executor.submit(ddgs_search).result(timeout=15)
             for r in res:
-                results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", ""), "publish_date": "Recent"})
+                results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", "")})
         except Exception: pass
     return results
 
 def fetch_deep_text(url):
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=(5, 10))
+        # Better headers to bypass basic anti-bot blocks
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml"
+        }
+        r = requests.get(url, headers=headers, timeout=(5, 10))
         if r.status_code == 200:
             content_type = r.headers.get('Content-Type', '').lower()
-            if 'text/html' not in content_type and 'application/pdf' not in content_type: return ""
-            # FIX: Parse FULL HTML first to prevent broken tags, then slice pure text output
+            if 'text/html' not in content_type: return ""
             soup = BeautifulSoup(r.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]): tag.decompose()
-            text = soup.get_text(separator=" ", strip=True)
-            return text[:4000] 
+            for tag in soup(["script", "style", "nav", "footer", "header"]): tag.decompose()
+            return soup.get_text(separator=" ", strip=True)[:4000] 
     except Exception: pass
     return ""
 
@@ -107,27 +108,21 @@ def ai_analyze_batch(batch):
     
     items_block = ""
     for i, x in enumerate(batch):
-        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nPublish Date: {x.get('publish_date')}\nData: {(x.get('deep_text') or x.get('summary') or '')[:3000]}\n"
-        
-    current_date = datetime.now().strftime("%B %d, %Y")
-    current_year = datetime.now().year
+        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
         
     prompt = f"""
-You are an elite B2B Market Analyst. Current Date: {current_date}. Year: {current_year}.
+You are a B2B Lead Generator. Your goal is to capture as many potential leads as possible.
+Do NOT be strict. If there is ANY indication that a company might be buying or selling the product, ACCEPT IT (is_valid=True).
+
 Evaluate EVERY ITEM and classify whether it is a:
-1. 'BUYER' (Active procurement, RFQ, live tender, Capex project, looking for vendors)
-2. 'SELLER' (Manufacturer, authorized distributor, OEM, supplier, stockist offering products)
-3. 'IRRELEVANT' (Market research, stock tickers, consumer retail, jobs, completely foreign)
+1. 'BUYER' (Procurement, RFQ, tender, Capex, looking for vendors)
+2. 'SELLER' (Manufacturer, distributor, supplier, offering products)
+3. 'IRRELEVANT' (Only reject if it is a completely unrelated topic, a blog post, or a job listing).
 
-STRICT TIME FILTERS FOR BUYERS:
-- If a deadline is explicitly shown in the text and it has ALREADY PASSED relative to {current_date}, REJECT IT (is_valid=False).
-- If NO deadline is shown, but the intent is clearly a BUYER requirement, ACCEPT IT (is_valid=True). Give recent posts the benefit of the doubt.
-
-RULES FOR SELLERS:
-- Must be a confirmed business entity supplying/manufacturing the target product.
-
-CONFIDENCE SCORE (1-100):
-- Rate your certainty. Scores of 60+ are acceptable.
+RULES:
+- If the buyer's name is hidden (like on IndiaMART), set 'org' to "Hidden Buyer (IndiaMART)". Do NOT reject it.
+- If it is a government tender, set 'org' to the specific government department.
+- Be highly forgiving. If you aren't sure, mark it is_valid=True and let the human review it.
 
 DATA BATCH:
 {items_block}
@@ -137,14 +132,16 @@ DATA BATCH:
         "items": {
             "type": "OBJECT",
             "properties": {
-                "item_index": {"type": "INTEGER"}, "is_valid": {"type": "BOOLEAN"},
+                "item_index": {"type": "INTEGER"},
+                "is_valid": {"type": "BOOLEAN"},
                 "entity_role": {"type": "STRING", "enum": ["BUYER", "SELLER", "IRRELEVANT"]},
-                "confidence_score": {"type": "INTEGER"}, "org": {"type": "STRING"},
-                "industry": {"type": "STRING"}, "intent_summary": {"type": "STRING"},
-                "deadline": {"type": "STRING", "nullable": True}, "website": {"type": "STRING", "nullable": True},
-                "dm_name": {"type": "STRING", "nullable": True}, "dm_title": {"type": "STRING", "nullable": True}
+                "org": {"type": "STRING"},
+                "industry": {"type": "STRING"},
+                "intent_summary": {"type": "STRING"},
+                "dm_name": {"type": "STRING", "nullable": True},
+                "dm_title": {"type": "STRING", "nullable": True}
             },
-            "required": ["item_index", "is_valid", "entity_role", "confidence_score", "org", "industry", "intent_summary"]
+            "required": ["item_index", "is_valid", "entity_role", "org", "industry", "intent_summary"]
         }
     }
 
@@ -152,7 +149,7 @@ DATA BATCH:
         try:
             res = client.models.generate_content(
                 model=model_name, contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
             )
             raw_text = res.text.strip()
             if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
@@ -165,28 +162,27 @@ DATA BATCH:
     raise Exception("All Gemini models unavailable.")
 
 def build_vector_matrix(target):
-    current_year = datetime.now().year
     return [
-        f'"{target}" tender OR RFQ {current_year} site:gov.in',
+        f'"{target}" tender OR RFQ site:gov.in',
         f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com',
         f'"{target}" "looking for vendors" site:[linkedin.com/posts](https://linkedin.com/posts)',
         f'"{target}" "vendor empanelment" OR "request for quotation" India'
     ]
 
 def run():
-    print(">>> 📡 RADAR DUAL-SCOUT ACTIVE (Fix: Smart Dedupe & Safe HTML)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Wide-Open Funnel Fix)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         cloud_targets = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30).json().get("targets", [])
     except Exception as e: return print(f"❌ Failed to fetch targets: {e}", flush=True)
         
-    if not cloud_targets: return print("    -> No targets found in Google Sheet '🎯 Targets'.", flush=True)
+    if not cloud_targets: return print("    -> No targets found in '🎯 Targets' sheet.", flush=True)
 
     search_matrix = []
     for t in cloud_targets: search_matrix.extend(build_vector_matrix(t))
 
     for query in search_matrix:
-        print(f"\n[*] Scanning: {query[:95]}...", flush=True)
+        print(f"\n[*] Scanning: {query}", flush=True)
         results = get_search_results(query)
         fresh_leads = []
         for r in results:
@@ -195,10 +191,10 @@ def run():
                 fresh_leads.append(r)
                 
         if not fresh_leads: 
-            print("    -> 0 new leads found (all exact duplicates or filtered out).", flush=True)
+            print("    -> 0 fresh leads (duplicates skipped).", flush=True)
             continue
             
-        print(f"    -> Analyzing {len(fresh_leads)} candidates with AI...", flush=True)
+        print(f"    -> AI Analyzing {len(fresh_leads)} links...", flush=True)
         try: ai_data = ai_analyze_batch(fresh_leads)
         except Exception as e: 
             print(f"    -> AI Error: {e}", flush=True)
@@ -208,19 +204,14 @@ def run():
             idx = entity.get("item_index")
             if idx is None or idx >= len(fresh_leads) or idx < 0: continue
             
-            print(f"       [AI Vote] Valid: {entity.get('is_valid')} | Role: {entity.get('entity_role')} | Score: {entity.get('confidence_score')} | Org: {entity.get('org', 'Unknown')}", flush=True)
+            # X-RAY VOTE: See exactly what the AI decided
+            print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {entity.get('entity_role')} | Org: {entity.get('org')}", flush=True)
             
-            if (entity.get("is_valid") and 
-                entity.get("confidence_score", 0) >= 60 and 
-                entity.get("org") and 
-                entity.get("org").lower() not in ["unknown firm", "linkedin", "naukri", "gem", "indiamart"]):
+            # THE FIX: Removed the brutal blocklist. If the AI says it's valid, it goes in.
+            if entity.get("is_valid") and entity.get("entity_role") in ["BUYER", "SELLER"]:
                 
-                role = entity.get("entity_role", "BUYER")
-                if role == "IRRELEVANT": continue
-                
-                is_supplier = (role == "SELLER")
-                deadline_note = f" [Deadline: {entity.get('deadline')}]" if entity.get("deadline") else ""
-                intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else f"{entity.get('intent_summary')}{deadline_note}"
+                is_supplier = (entity.get("entity_role") == "SELLER")
+                intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
 
                 payload = {
                     "secret": SECRET,
@@ -229,7 +220,7 @@ def run():
                     "target_sheet": "Suppliers" if is_supplier else "Inbox",
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "source": "Omni-Radar",
+                    "source": "Radar Scout",
                     "org": entity.get("org", "Unknown"),
                     "industry": entity.get("industry", "General"),
                     "intent": intent_label,
@@ -238,12 +229,12 @@ def run():
                     "link": fresh_leads[idx]['link'],
                     "email": "N/A",
                     "phone": "N/A",
-                    "website": entity.get("website") or "N/A"
+                    "website": "N/A"
                 }
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=30)
                     dest = "Suppliers" if is_supplier else "Inbox"
-                    print(f"    ✅ PUSHED [{role}] -> {dest}: {entity['org']}", flush=True)
+                    print(f"    ✅ PUSHED [{entity.get('entity_role')}] -> {dest}: {entity['org']}", flush=True)
                 except Exception: pass
         
         time.sleep(5)
