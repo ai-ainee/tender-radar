@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import time
 import uuid
@@ -19,10 +18,7 @@ logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 try:
     from ddgs import DDGS
 except ImportError:
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        DDGS = None
+    DDGS = None
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -44,9 +40,9 @@ def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
     try:
-        valid_models = [m.name.lower() for m in client.models.list() if re.match(r'^models/gemini-\d+\.\d+-flash$', m.name.lower())]
+        valid_models = [m.name.lower() for m in client.models.list() if "flash" in m.name.lower()]
         if valid_models:
-            valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
+            valid_models.sort(reverse=True)
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
@@ -56,7 +52,7 @@ def get_flash_model_stack(client):
 def is_duplicate(link):
     if not WEBHOOK or not SECRET: return False
     try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "check_duplicate", "link": link}, timeout=30).json()
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "check_duplicate", "link": link}, timeout=60).json()
         return res.get("duplicate", False)
     except Exception: return False
 
@@ -64,7 +60,6 @@ def get_search_results(query):
     results = []
     if SERPER_KEY:
         try:
-            # Wide open: 1 year window to ensure we get maximum data volume
             payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:y", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=30)
@@ -73,7 +68,7 @@ def get_search_results(query):
                     results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", "")})
         except Exception: pass
 
-    if DDGS and not results: # Only use DDGS if Serper failed or returned nothing
+    if DDGS and not results:
         try:
             def ddgs_search(): return list(DDGS().text(query, timelimit="y", max_results=10, backend="lite"))
             with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -85,11 +80,7 @@ def get_search_results(query):
 
 def fetch_deep_text(url):
     try:
-        # Better headers to bypass basic anti-bot blocks
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml"
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
         r = requests.get(url, headers=headers, timeout=(5, 10))
         if r.status_code == 200:
             content_type = r.headers.get('Content-Type', '').lower()
@@ -111,18 +102,15 @@ def ai_analyze_batch(batch):
         items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
         
     prompt = f"""
-You are a B2B Lead Generator. Your goal is to capture as many potential leads as possible.
-Do NOT be strict. If there is ANY indication that a company might be buying or selling the product, ACCEPT IT (is_valid=True).
-
+You are a B2B Lead Generator. Capture as many potential leads as possible.
 Evaluate EVERY ITEM and classify whether it is a:
 1. 'BUYER' (Procurement, RFQ, tender, Capex, looking for vendors)
 2. 'SELLER' (Manufacturer, distributor, supplier, offering products)
-3. 'IRRELEVANT' (Only reject if it is a completely unrelated topic, a blog post, or a job listing).
+3. 'IRRELEVANT' (Blog post, job listing, totally unrelated)
 
 RULES:
-- If the buyer's name is hidden (like on IndiaMART), set 'org' to "Hidden Buyer (IndiaMART)". Do NOT reject it.
-- If it is a government tender, set 'org' to the specific government department.
-- Be highly forgiving. If you aren't sure, mark it is_valid=True and let the human review it.
+- If buyer name is hidden (like IndiaMART), set 'org' to "Hidden Buyer (IndiaMART)". Do NOT reject.
+- Be forgiving. If unsure, mark is_valid=True.
 
 DATA BATCH:
 {items_block}
@@ -152,11 +140,12 @@ DATA BATCH:
                 config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
             )
             raw_text = res.text.strip()
-            if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
+            # SAFE JSON STRIPPER (Fixes SyntaxError)
+            if raw_text.startswith("```"):
+                raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
         except Exception as e:
             if "503" in str(e) or "500" in str(e) or "limit: 0" in str(e):
-                print(f"    ⚠️ {model_name} overloaded. Cascading...", flush=True)
                 continue
             raise e
     raise Exception("All Gemini models unavailable.")
@@ -165,18 +154,27 @@ def build_vector_matrix(target):
     return [
         f'"{target}" tender OR RFQ site:gov.in',
         f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com',
-        f'"{target}" "looking for vendors" site:[linkedin.com/posts](https://linkedin.com/posts)',
+        f'"{target}" "looking for vendors" site:linkedin.com/posts',
         f'"{target}" "vendor empanelment" OR "request for quotation" India'
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Wide-Open Funnel Fix)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Safe Retry Version)", flush=True)
     if not WEBHOOK or not SECRET: return
-    try:
-        cloud_targets = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30).json().get("targets", [])
-    except Exception as e: return print(f"❌ Failed to fetch targets: {e}", flush=True)
+    
+    # GOOGLE SHEETS RETRY LOOP (Fixes 30s Timeout Crash)
+    cloud_targets = []
+    for attempt in range(3):
+        try:
+            res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=60)
+            cloud_targets = res.json().get("targets", [])
+            break
+        except Exception as e:
+            print(f"    ⚠️ Sheets API timeout. Retrying {attempt+1}/3...", flush=True)
+            time.sleep(5)
+            if attempt == 2: return print("❌ Failed to fetch targets after 3 tries.", flush=True)
         
-    if not cloud_targets: return print("    -> No targets found in '🎯 Targets' sheet.", flush=True)
+    if not cloud_targets: return print("    -> No targets found.", flush=True)
 
     search_matrix = []
     for t in cloud_targets: search_matrix.extend(build_vector_matrix(t))
@@ -190,9 +188,7 @@ def run():
                 r['deep_text'] = fetch_deep_text(r['link'])
                 fresh_leads.append(r)
                 
-        if not fresh_leads: 
-            print("    -> 0 fresh leads (duplicates skipped).", flush=True)
-            continue
+        if not fresh_leads: continue
             
         print(f"    -> AI Analyzing {len(fresh_leads)} links...", flush=True)
         try: ai_data = ai_analyze_batch(fresh_leads)
@@ -204,12 +200,9 @@ def run():
             idx = entity.get("item_index")
             if idx is None or idx >= len(fresh_leads) or idx < 0: continue
             
-            # X-RAY VOTE: See exactly what the AI decided
             print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {entity.get('entity_role')} | Org: {entity.get('org')}", flush=True)
             
-            # THE FIX: Removed the brutal blocklist. If the AI says it's valid, it goes in.
             if entity.get("is_valid") and entity.get("entity_role") in ["BUYER", "SELLER"]:
-                
                 is_supplier = (entity.get("entity_role") == "SELLER")
                 intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
 
@@ -231,12 +224,16 @@ def run():
                     "phone": "N/A",
                     "website": "N/A"
                 }
-                try:
-                    requests.post(WEBHOOK, json=payload, timeout=30)
-                    dest = "Suppliers" if is_supplier else "Inbox"
-                    print(f"    ✅ PUSHED [{entity.get('entity_role')}] -> {dest}: {entity['org']}", flush=True)
-                except Exception: pass
-        
+                
+                # Push Retry Loop
+                for attempt in range(3):
+                    try:
+                        requests.post(WEBHOOK, json=payload, timeout=60)
+                        dest = "Suppliers" if is_supplier else "Inbox"
+                        print(f"    ✅ PUSHED [{entity.get('entity_role')}] -> {dest}: {entity['org']}", flush=True)
+                        break
+                    except Exception:
+                        time.sleep(3)
         time.sleep(5)
 
 if __name__ == "__main__":
