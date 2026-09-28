@@ -2,6 +2,7 @@ import os
 import re
 import json
 import logging
+import warnings
 import asyncio
 import aiohttp
 import requests
@@ -11,7 +12,10 @@ from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
+# Silence all annoying warnings
+warnings.filterwarnings("ignore")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+logging.getLogger("google.genai.discovery").setLevel(logging.ERROR)
 
 try:
     from ddgs import AsyncDDGS
@@ -39,7 +43,6 @@ def get_next_gemini_client():
     return genai.Client(api_key=key)
 
 BEST_MODEL_STACK = []
-
 def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
@@ -74,7 +77,7 @@ async def async_get_search_results(session, query, num=5):
     results = []
     if SERPER_KEY:
         try:
-            url = "[https://google.serper.dev/search](https://google.serper.dev/search)"
+            url = "https://google.serper.dev/search"
             payload = json.dumps({"q": query, "gl": "in", "num": num})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             async with session.post(url, headers=headers, data=payload, timeout=20) as response:
@@ -87,8 +90,11 @@ async def async_get_search_results(session, query, num=5):
 
     if AsyncDDGS:
         try:
-            ddgs = AsyncDDGS()
-            res = await ddgs.text(query, max_results=num, backend="lite")
+            # HARD ASYNC TIMEOUT to prevent DuckDuckGo hanging
+            async def fetch_ddgs():
+                ddgs = AsyncDDGS()
+                return await ddgs.text(query, max_results=num, backend="lite")
+            res = await asyncio.wait_for(fetch_ddgs(), timeout=15.0)
             for r in res:
                 results.append({"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")})
         except Exception: pass
@@ -109,7 +115,7 @@ Task 1: Identify the OFFICIAL corporate website from 'Web Results'.
 - If none exist, return null.
 
 Task 2: Identify the DECISION MAKER from 'LinkedIn Results'.
-- MUST be a human profile ([linkedin.com/in/](https://linkedin.com/in/)).
+- MUST be a human profile (linkedin.com/in/).
 - Look for: Head of Procurement, Purchase Manager, Sourcing Lead, Supply Chain Director, CEO, Founder.
 - Extract Name and Title. If uncertain, return null.
 
@@ -146,7 +152,9 @@ LinkedIn Results: {json.dumps(li_results)}
 async def async_crawl_contacts(session, url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        async with session.get(url, headers=headers, timeout=15) as response:
+        # STRICT TARPIT GUILLOTINE: 5s to connect, 10s to read.
+        crawler_timeout = aiohttp.ClientTimeout(sock_connect=5, sock_read=10)
+        async with session.get(url, headers=headers, timeout=crawler_timeout) as response:
             if response.status == 200:
                 html = await response.read()
                 text = html.decode('utf-8', errors='ignore')
@@ -173,7 +181,7 @@ async def async_send_telegram(session, lead):
         [{"text": "🗑️ Drop", "callback_data": f"dropqual_{lead['lead_id']}"}]
     ]}
     
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", 
         "reply_markup": reply_markup, "disable_web_page_preview": True
@@ -185,9 +193,9 @@ async def async_send_telegram(session, lead):
 
 async def process_lead(session, lead, sem):
     async with sem:
-        print(f"\n[*] Enriching Target: {lead['org']}")
+        print(f"[*] Enriching Target: {lead['org']}", flush=True)
         web_task = async_get_search_results(session, f'"{lead["org"]}" official website india')
-        li_task = async_get_search_results(session, f'"{lead["org"]}" (Procurement OR Purchase OR Sourcing OR CEO) site:linkedin.com/in/')
+        li_task = async_get_search_results(session, f'"{lead["org"]}" (Procurement OR Purchase OR Sourcing OR CEO) site:[linkedin.com/in/](https://linkedin.com/in/)')
         web_res, li_res = await asyncio.gather(web_task, li_task)
         
         if web_res or li_res:
@@ -210,18 +218,24 @@ async def process_lead(session, lead, sem):
         try:
             async with session.post(WEBHOOK, json=payload, timeout=30) as response: 
                 await response.read()
+                print(f"    ✅ Updated: {lead['org']}", flush=True)
         except Exception: pass
             
         await async_send_telegram(session, lead)
 
 async def hunt_async():
-    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE")
+    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (Anti-Hang Version)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30)
         pending = res.json().get("pending_leads", [])
-    except Exception: return
-    if not pending: return
+    except Exception as e: 
+        print(f"❌ Failed to fetch pending leads: {e}", flush=True)
+        return
+        
+    if not pending: 
+        print("    -> No pending leads found.", flush=True)
+        return
         
     client = get_next_gemini_client()
     if client: get_flash_model_stack(client)
