@@ -62,14 +62,14 @@ def is_duplicate(link):
 
 def ddgs_search(query):
     ddgs = DDGS()
-    return list(ddgs.text(query, timelimit="y", max_results=10, backend="lite"))
+    return list(ddgs.text(query, timelimit="m", max_results=10, backend="lite"))
 
 def get_search_results(query):
     results = []
     if SERPER_KEY:
         try:
             url = "https://google.serper.dev/search"
-            payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:y", "num": 10})
+            payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:m", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             response = requests.post(url, headers=headers, data=payload, timeout=30)
             if response.status_code == 200:
@@ -90,10 +90,10 @@ def get_search_results(query):
 
 def fetch_deep_text(url):
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=(5, 10))
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=(5, 10))
         if r.status_code == 200:
             content_type = r.headers.get('Content-Type', '').lower()
-            if 'text/html' not in content_type: return ""
+            if 'text/html' not in content_type and 'application/pdf' not in content_type: return ""
             soup = BeautifulSoup(r.text[:50000], "html.parser")
             for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
             return soup.get_text(separator=" ", strip=True)
@@ -110,28 +110,30 @@ def ai_analyze_batch(batch):
     for i, x in enumerate(batch):
         items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:3000]}\n"
         
+    current_date = datetime.now().strftime("%Y-%m-%d")
     current_year = datetime.now().year
-    cutoff_year = current_year - 2
         
     prompt = f"""
-You are an elite B2B Sales AI. Goal: Capture organizations actively procuring PHYSICAL PRODUCTS, equipment, or services. Evaluate EVERY ITEM.
+You are an elite B2B Market Analyst classifying entities in India.
+Current Date: {current_date}. Year: {current_year}.
 
-REJECT (is_lead=False) ONLY IF:
-1. Market Research/News/B2C/Outside India.
-2. EXPIRED: The current year is {current_year}. If the document explicitly shows a tender deadline or publication date from {cutoff_year} or older, REJECT IT IMMEDIATELY.
+Evaluate EVERY ITEM and classify whether it is a:
+1. 'BUYER' (Active procurement, RFQ, live tender, Capex project, looking for vendors)
+2. 'SELLER' (Manufacturer, authorized distributor, OEM, supplier, stockist offering products)
+3. 'IRRELEVANT' (Market research reports, financial news, stock tickers, retail/B2C, jobs, foreign)
 
-ACCEPT (is_lead=True) IF: Actively buying or inviting tenders.
+RULES FOR BUYERS:
+- MUST have active intent right now.
+- If tender/RFQ deadline has passed prior to {current_date}, reject (is_valid=False).
 
-CLASSIFICATION:
-- Active Tender / RFQ -> 'Active Bulk Buyer (RFQ)'
-- Capex/Setup -> 'Capex Buyer'
-- General supply -> 'Corporate Sourcing'
-- Looking for vendors -> 'Vendor Empanelment'
-- Selling goods -> 'Supplier'
+RULES FOR SELLERS:
+- MUST be an actual confirmed business entity supplying/manufacturing the target product in India.
 
-RULES:
-- 'org' MUST be actual client name (Use "Unknown Firm" if hidden). Never 'LinkedIn'.
-- 'industry' MUST be the specific product category.
+REJECTION CRITERIA (Set is_valid=False):
+- Blog spam, generic informational directories, market research PDFs, consumer retail, or unconfirmed signals.
+
+CONFIDENCE SCORE (1-100):
+- Rate your certainty that this entity represents a confirmed Buyer or Supplier (Threshold >= 70).
 
 DATA BATCH:
 {items_block}
@@ -141,12 +143,19 @@ DATA BATCH:
         "items": {
             "type": "OBJECT",
             "properties": {
-                "item_index": {"type": "INTEGER"}, "is_lead": {"type": "BOOLEAN"},
-                "org": {"type": "STRING"}, "industry": {"type": "STRING"}, 
-                "lead_type": {"type": "STRING"},
+                "item_index": {"type": "INTEGER"},
+                "is_valid": {"type": "BOOLEAN"},
+                "entity_role": {"type": "STRING", "enum": ["BUYER", "SELLER", "IRRELEVANT"]},
+                "confidence_score": {"type": "INTEGER"},
+                "org": {"type": "STRING"},
+                "industry": {"type": "STRING"},
+                "intent_summary": {"type": "STRING"},
+                "deadline": {"type": "STRING", "nullable": True},
                 "website": {"type": "STRING", "nullable": True},
-                "dm_name": {"type": "STRING", "nullable": True}, "dm_title": {"type": "STRING", "nullable": True}
-            }, "required": ["item_index", "is_lead", "org", "industry", "lead_type"]
+                "dm_name": {"type": "STRING", "nullable": True},
+                "dm_title": {"type": "STRING", "nullable": True}
+            },
+            "required": ["item_index", "is_valid", "entity_role", "confidence_score", "org", "industry", "intent_summary"]
         }
     }
 
@@ -166,26 +175,36 @@ DATA BATCH:
             raise e
     raise Exception("All Gemini models unavailable.")
 
+def build_vector_matrix(target):
+    current_year = datetime.now().year
+    return [
+        f'(site:gem.gov.in OR site:eprocure.gov.in) "{target}" ("tender" OR "bidding" OR "BOQ") {current_year}',
+        f'(site:ireps.gov.in OR site:etenders.gov.in OR site:mahatenders.gov.in) "{target}"',
+        f'(site:[indiamart.com/proposals/](https://indiamart.com/proposals/) OR site:[indiamart.com/buy-leads/](https://indiamart.com/buy-leads/) OR site:[tradeindia.com/Buyer/](https://tradeindia.com/Buyer/)) "{target}"',
+        f'site:[linkedin.com/posts](https://linkedin.com/posts) "{target}" ("looking for vendors" OR "urgent requirement" OR "inviting quotations")',
+        f'"{target}" ("Notice Inviting Tender" OR "NIT" OR "Request for Quotation" OR "manufacturer" OR "authorized distributor") India'
+    ]
+
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (OSINT Procurement Portals)", flush=True)
+    print(">>> 📡 RADAR DUAL-SCOUT ACTIVE (Buyers & Suppliers)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         cloud_targets = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30).json().get("targets", [])
-    except Exception as e: return print(f"❌ Failed to fetch targets: {e}", flush=True)
-    if not cloud_targets: return print("    -> No targets found.", flush=True)
+    except Exception as e:
+        print(f"❌ Failed to fetch targets: {e}", flush=True)
+        return
+        
+    if not cloud_targets:
+        print("    -> No targets found in Google Sheet '🎯 Targets'.", flush=True)
+        return
 
-    current_year = datetime.now().year
-    keywords = []
-    # OSINT Search Multiplexer for Free Market Data
+    search_matrix = []
     for t in cloud_targets:
-        keywords.append(f'"{t}" AND ("Request for Quotation" OR "tender" OR "vendor empanelment") {current_year} India')
-        keywords.append(f'site:eprocure.gov.in "{t}" {current_year}')
-        keywords.append(f'site:gem.gov.in "{t}" {current_year}')
-        keywords.append(f'site:[linkedin.com/posts](https://linkedin.com/posts) "{t}" ("looking for vendors" OR "requirement")')
+        search_matrix.extend(build_vector_matrix(t))
 
-    for kw in keywords:
-        print(f"\n[*] Scouting keyword: {kw}", flush=True)
-        results = get_search_results(kw)
+    for query in search_matrix:
+        print(f"\n[*] Scanning: {query[:95]}...", flush=True)
+        results = get_search_results(query)
         fresh_leads = []
         for r in results:
             if not is_duplicate(r['link']):
@@ -193,27 +212,50 @@ def run():
                 fresh_leads.append(r)
                 
         if not fresh_leads: continue
-        print(f"    -> Analyzing {len(fresh_leads)} items with AI...", flush=True)
+        print(f"    -> Analyzing {len(fresh_leads)} candidates with AI...", flush=True)
         try: ai_data = ai_analyze_batch(fresh_leads)
         except Exception: continue
             
-        for lead in ai_data:
-            if lead.get("is_lead") and lead.get("org") and lead.get("org").lower() not in ["linkedin", "naukri", "indeed"]:
-                idx = lead.get("item_index")
+        for entity in ai_data:
+            if (entity.get("is_valid") and 
+                entity.get("confidence_score", 0) >= 70 and 
+                entity.get("org") and 
+                entity.get("org").lower() not in ["unknown firm", "linkedin", "naukri", "gem", "indiamart"]):
+                
+                idx = entity.get("item_index")
                 if idx is None or idx >= len(fresh_leads) or idx < 0: continue
+                
+                role = entity.get("entity_role", "BUYER")
+                is_supplier = (role == "SELLER")
+                
+                deadline_note = f" [Deadline: {entity.get('deadline')}]" if entity.get("deadline") else ""
+                intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else f"{entity.get('intent_summary')}{deadline_note}"
+
                 payload = {
-                    "secret": SECRET, "action": "add_lead", "lead_id": str(uuid.uuid4())[:8],
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "source": "Web",
-                    "org": lead.get("org", "Unknown"), "industry": lead.get("industry", "General"), 
-                    "intent": lead.get("lead_type", "Corporate Sourcing"),
-                    "dm_name": lead.get("dm_name") or "N/A", "dm_title": lead.get("dm_title") or "N/A", 
-                    "link": fresh_leads[idx]['link'], "email": "N/A", "phone": "N/A", "website": lead.get("website") or "N/A"
+                    "secret": SECRET,
+                    "action": "add_lead",
+                    "is_supplier": is_supplier,
+                    "target_sheet": "Suppliers" if is_supplier else "Inbox",
+                    "lead_id": str(uuid.uuid4())[:8],
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "source": "Omni-Radar",
+                    "org": entity.get("org", "Unknown"),
+                    "industry": entity.get("industry", "General"),
+                    "intent": intent_label,
+                    "dm_name": entity.get("dm_name") or "N/A",
+                    "dm_title": entity.get("dm_title") or "N/A",
+                    "link": fresh_leads[idx]['link'],
+                    "email": "N/A",
+                    "phone": "N/A",
+                    "website": entity.get("website") or "N/A"
                 }
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=30)
-                    print(f"    ✅ Pushed to Inbox: {lead['org']}", flush=True)
+                    dest = "Suppliers" if is_supplier else "Inbox"
+                    print(f"    ✅ [{role}] -> {dest}: {entity['org']} (Score: {entity.get('confidence_score')})", flush=True)
                 except Exception: pass
-        time.sleep(15)
+        
+        time.sleep(10)
 
 if __name__ == "__main__":
     run()
