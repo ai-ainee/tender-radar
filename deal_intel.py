@@ -6,6 +6,7 @@ import aiohttp
 import requests
 from google import genai
 from google.genai import types
+from tenacity import retry, wait_exponential, stop_after_attempt
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -44,13 +45,16 @@ async def async_serper_search(session, query, num=3):
     payload = json.dumps({"q": query, "gl": "in", "num": num})
     headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
     try:
-        async with session.post(url, headers=headers, data=payload, timeout=10) as response:
+        # Increased to 20 seconds for slower API responses
+        async with session.post(url, headers=headers, data=payload, timeout=20) as response:
             if response.status == 200:
                 data = await response.json()
                 return [r.get("snippet", "") for r in data.get("organic", [])]
     except Exception: pass
     return []
 
+# ADDED RETRY LOGIC: If Gemini times out writing the dossier, wait and retry.
+@retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def generate_deal_dossier(lead, context_data):
     client = get_next_gemini_client()
     if not client: return "AI Unavailable."
@@ -68,7 +72,7 @@ Web OSINT Context Collected:
 
 Output a JSON object with a single key "dossier". The value must be an actionable, executive-level text report with EXACTLY these 3 sections (Use emojis and bullet points):
 1. 🏢 Company Profile: (Size, market positioning, what they do).
-2. 📰 Recent Signals: (Summarize recent news, financial health, or major projects found in the context).
+2. 📰 Recent Signals: (Summarize recent news, financials, or major projects found in the context).
 3. 🎯 Sales Pitch Strategy: (How should we approach {lead['dm_name']}? What pain points should we target based on their industry?)
 """
     schema = {"type": "OBJECT", "properties": {"dossier": {"type": "STRING"}}}
@@ -80,7 +84,9 @@ Output a JSON object with a single key "dossier". The value must be an actionabl
         raw_text = res.text.strip()
         if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
         return json.loads(raw_text).get("dossier", "No intel generated.")
-    except Exception as e: return "Failed to generate intel."
+    except Exception as e: 
+        print(f"    ⚠️ AI Timeout/Error: {e} - Retrying...")
+        raise e
 
 async def async_send_dossier(session, lead, dossier_text):
     msg = f"📊 <b>DEAL STRATEGY BRIEF</b>\n\n🏢 <b>Target:</b> {lead['org']}\n👤 <b>DM:</b> {lead['dm_name']} ({lead['dm_title']})\n📞 <b>Contact:</b> {lead['phone']} | {lead['email']}\n\n<b>--- DOSSIER ---</b>\n{dossier_text}"
@@ -94,12 +100,16 @@ async def async_send_dossier(session, lead, dossier_text):
     url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "reply_markup": reply_markup, "disable_web_page_preview": True}
     try:
-        async with session.post(url, json=payload, timeout=10) as response: await response.read()
-    except Exception: pass
+        # Telegram can be slow to accept massive messages. Increased to 30.
+        async with session.post(url, json=payload, timeout=30) as response: await response.read()
+    except Exception as e:
+        print(f"    ⚠️ Telegram send failed: {e}")
 
 async def process_lead_intel(session, lead):
+    print(f"[*] Gathering OSINT Intel for Lead: {lead['org']}")
+    
     q1 = async_serper_search(session, f'"{lead["org"]}" company profile India')
-    q2 = async_serper_search(session, f'"{lead["org"]}" recent news OR projects OR financials')
+    q2 = async_serper_search(session, f'"{lead["org"]}" recent news OR financials')
     q3 = async_serper_search(session, f'"{lead["dm_name"]}" "{lead["org"]}" LinkedIn')
     
     results = await asyncio.gather(q1, q2, q3)
@@ -109,8 +119,10 @@ async def process_lead_intel(session, lead):
     
     payload = {"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}
     try:
-        async with session.post(WEBHOOK, json=payload, timeout=10) as response: await response.read()
-    except Exception: pass
+        # Apps Script updates take time on large sheets. Increased to 30.
+        async with session.post(WEBHOOK, json=payload, timeout=30) as response: await response.read()
+    except Exception as e: 
+        print(f"    ⚠️ Google Sheet update failed: {e}")
         
     await async_send_dossier(session, lead, dossier)
 
@@ -118,16 +130,21 @@ async def run_intel():
     print(">>> 🧠 DEAL ANALYST V1 ACTIVE")
     if not WEBHOOK or not SECRET: return
     try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=15)
+        # Wake up Apps Script (Cold starts take up to 15s)
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=30)
         pending = res.json().get("pending_leads", [])
-    except Exception: return
+    except Exception as e:
+        print(f"❌ Failed to fetch pending leads: {e}")
+        return
     if not pending: return
         
     client = get_next_gemini_client()
     if client: get_best_gemini_model(client)
     
     connector = aiohttp.TCPConnector(limit=5)
-    async with aiohttp.ClientSession(connector=connector) as session:
+    # Increased session timeout limits to 60 seconds total per connection
+    timeout = aiohttp.ClientTimeout(total=60)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         tasks = [process_lead_intel(session, lead) for lead in pending]
         await asyncio.gather(*tasks)
 
