@@ -4,15 +4,19 @@ import json
 import time
 import uuid
 import logging
+import warnings
 import requests
+import concurrent.futures
 from bs4 import BeautifulSoup
 from datetime import datetime
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
-# Silence AFC SDK warnings
+# Silence all annoying Google SDK warnings
+warnings.filterwarnings("ignore")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+logging.getLogger("google.genai.discovery").setLevel(logging.ERROR)
 
 try:
     from ddgs import DDGS
@@ -38,7 +42,6 @@ def get_next_gemini_client():
     return genai.Client(api_key=key)
 
 BEST_MODEL_STACK = []
-
 def get_flash_model_stack(client):
     global BEST_MODEL_STACK
     if BEST_MODEL_STACK: return BEST_MODEL_STACK
@@ -64,6 +67,10 @@ def is_duplicate(link):
         return res.get("duplicate", False)
     except Exception: return False
 
+def ddgs_search(query):
+    ddgs = DDGS()
+    return list(ddgs.text(query, timelimit="y", max_results=10, backend="lite"))
+
 def get_search_results(query):
     results = []
     if SERPER_KEY:
@@ -80,8 +87,10 @@ def get_search_results(query):
 
     if DDGS:
         try:
-            ddgs = DDGS()
-            res = list(ddgs.text(query, timelimit="y", max_results=10, backend="lite"))
+            # HARD TIMEOUT for DuckDuckGo to prevent it from hanging the script
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(ddgs_search, query)
+                res = future.result(timeout=15)
             for r in res:
                 results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", "")})
         except Exception: pass
@@ -90,14 +99,17 @@ def get_search_results(query):
 def fetch_deep_text(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        with requests.get(url, headers=headers, timeout=15, stream=True) as r:
-            if r.status_code == 200:
-                content_type = r.headers.get('Content-Type', '').lower()
-                if 'text/html' not in content_type: return ""
-                html_content = r.raw.read(50000, decode_content=True)
-                soup = BeautifulSoup(html_content, "html.parser")
-                for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
-                return soup.get_text(separator=" ", strip=True)
+        # STRICT TUPLE TIMEOUT: (5 seconds to connect, 10 seconds to read)
+        # Prevents firewalls from "Tarpitting" the script
+        r = requests.get(url, headers=headers, timeout=(5, 10))
+        if r.status_code == 200:
+            content_type = r.headers.get('Content-Type', '').lower()
+            if 'text/html' not in content_type: return ""
+            # Slice text to 50,000 characters immediately to save memory
+            html_content = r.text[:50000]
+            soup = BeautifulSoup(html_content, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
+            return soup.get_text(separator=" ", strip=True)
     except Exception: pass
     return ""
 
@@ -171,7 +183,7 @@ DATA BATCH:
         except Exception as e:
             err_str = str(e)
             if "503" in err_str or "500" in err_str or "limit: 0" in err_str:
-                print(f"    ⚠️ {model_name} unavailable. Cascading to next model...")
+                print(f"    ⚠️ {model_name} unavailable. Cascading to next model...", flush=True)
                 continue
             else:
                 raise e
@@ -179,24 +191,24 @@ DATA BATCH:
     raise Exception("All Gemini models in the stack are currently unavailable.")
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Universal Procurement Engine)")
+    print(">>> 📡 RADAR SCOUT ACTIVE (Anti-Hang Version)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30)
         cloud_targets = res.json().get("targets", [])
     except Exception as e:
-        print(f"❌ Failed to fetch targets: {e}")
+        print(f"❌ Failed to fetch targets: {e}", flush=True)
         return
         
     if not cloud_targets:
-        print("    -> No targets found in Google Sheet '🎯 Targets'.")
+        print("    -> No targets found in Google Sheet '🎯 Targets'.", flush=True)
         return
 
     current_year = datetime.now().year
     keywords = [f'"{t}" AND ("Request for Quotation" OR "tender" OR "vendor empanelment") {current_year} India' for t in cloud_targets]
 
     for kw in keywords:
-        print(f"\n[*] Scouting keyword: {kw}")
+        print(f"\n[*] Scouting keyword: {kw}", flush=True)
         results = get_search_results(kw)
         fresh_leads = []
         for r in results:
@@ -206,7 +218,7 @@ def run():
                 
         if not fresh_leads: continue
             
-        print(f"    -> Analyzing {len(fresh_leads)} items with AI...")
+        print(f"    -> Analyzing {len(fresh_leads)} items with AI...", flush=True)
         try: ai_data = ai_analyze_batch(fresh_leads)
         except Exception: continue
             
@@ -227,7 +239,7 @@ def run():
                 }
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=30)
-                    print(f"    ✅ Pushed to Inbox: {lead['org']}")
+                    print(f"    ✅ Pushed to Inbox: {lead['org']}", flush=True)
                 except Exception: pass
         
         time.sleep(15)
