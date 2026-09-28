@@ -3,12 +3,16 @@ import re
 import json
 import time
 import uuid
+import logging
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
+
+# Silence AFC SDK warnings
+logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 
 try:
     from ddgs import DDGS
@@ -33,7 +37,6 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-# --- CASCADING FAILOVER STACK ---
 BEST_MODEL_STACK = []
 
 def get_flash_model_stack(client):
@@ -48,23 +51,61 @@ def get_flash_model_stack(client):
         if valid_models:
             valid_models.sort(key=lambda x: float(re.search(r'\d+\.\d+', x).group()), reverse=True)
             BEST_MODEL_STACK = valid_models
-            print(f"    🧠 Built AI Failover Stack: {BEST_MODEL_STACK[:3]}")
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+    BEST_MODEL_STACK = ["gemini-2.5-flash", "gemini-2.0-flash"]
     return BEST_MODEL_STACK
 
-import logging
-logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+def is_duplicate(link):
+    if not WEBHOOK or not SECRET: return False
+    try:
+        payload = {"secret": SECRET, "action": "check_duplicate", "link": link}
+        res = requests.post(WEBHOOK, json=payload, timeout=30).json()
+        return res.get("duplicate", False)
+    except Exception: return False
 
-# ... [Keep your is_duplicate, get_search_results, and fetch_deep_text exactly as they are] ...
+def get_search_results(query):
+    results = []
+    if SERPER_KEY:
+        try:
+            url = "https://google.serper.dev/search"
+            payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:y", "num": 10})
+            headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
+            response = requests.post(url, headers=headers, data=payload, timeout=30)
+            if response.status_code == 200:
+                for r in response.json().get("organic", []):
+                    results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", "")})
+                if results: return results
+        except Exception: pass
+
+    if DDGS:
+        try:
+            ddgs = DDGS()
+            res = list(ddgs.text(query, timelimit="y", max_results=10, backend="lite"))
+            for r in res:
+                results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", "")})
+        except Exception: pass
+    return results
+
+def fetch_deep_text(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        with requests.get(url, headers=headers, timeout=15, stream=True) as r:
+            if r.status_code == 200:
+                content_type = r.headers.get('Content-Type', '').lower()
+                if 'text/html' not in content_type: return ""
+                html_content = r.raw.read(50000, decode_content=True)
+                soup = BeautifulSoup(html_content, "html.parser")
+                for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
+                return soup.get_text(separator=" ", strip=True)
+    except Exception: pass
+    return ""
 
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def ai_analyze_batch(batch):
     client = get_next_gemini_client()
     if not client: return []
     
-    # 1. Fetch the sorted stack of available models
     model_stack = get_flash_model_stack(client)
     
     items_block = ""
@@ -76,7 +117,7 @@ def ai_analyze_batch(batch):
     past_year = current_year - 1
         
     prompt = f"""
-You are an elite B2B Sales AI analyzing universal procurement and supply chain signals in India.
+You are an elite B2B Sales AI analyzing procurement and supply signals in India.
 Your goal is to capture organizations actively procuring or sourcing PHYSICAL PRODUCTS, materials, equipment, software, or services.
 Evaluate EVERY SINGLE ITEM.
 
@@ -85,7 +126,7 @@ REJECT (is_lead=False) ONLY IF:
 2. It is Stock Market/Financial News.
 3. It is explicitly located OUTSIDE of India.
 4. It is a B2C/retail post or a freelance gig.
-5. OUTDATED / EXPIRED: The current year is {current_year}. If the document explicitly shows a tender deadline, RFQ closing date, or publication date from {past_year} or older, REJECT IT IMMEDIATELY. We only want fresh, active opportunities.
+5. OUTDATED / EXPIRED: The current year is {current_year}. If the document explicitly shows a tender deadline, RFQ closing date, or publication date from {past_year} or older, REJECT IT IMMEDIATELY.
 
 ACCEPT (is_lead=True) IF:
 The organization is looking to BUY, PROCURE, SOURCE, or INVITE TENDERS right now.
@@ -118,7 +159,6 @@ DATA BATCH:
         }
     }
 
-    # 2. CASCADING FAILOVER LOOP
     for model_name in model_stack:
         try:
             res = client.models.generate_content(
@@ -130,142 +170,30 @@ DATA BATCH:
             return json.loads(raw_text)
         except Exception as e:
             err_str = str(e)
-            # If Google throws a 503 Meltdown or a 0-Quota block, skip to the next model!
             if "503" in err_str or "500" in err_str or "limit: 0" in err_str:
-                print(f"    ⚠️ {model_name} overloaded (503). Cascading to next model...")
+                print(f"    ⚠️ {model_name} unavailable. Cascading to next model...")
                 continue
             else:
-                # If it's a normal 20-RPM limit, trigger Tenacity to wait 60s and retry
-                raise e 
-                
+                raise e
+
     raise Exception("All Gemini models in the stack are currently unavailable.")
 
-def is_duplicate(link):
-    if not WEBHOOK or not SECRET: return False
-    try:
-        payload = {"secret": SECRET, "action": "check_duplicate", "link": link}
-        res = requests.post(WEBHOOK, json=payload, timeout=30).json()
-        return res.get("duplicate", False)
-    except Exception: return False
-
-def get_search_results(query):
-    results = []
-    if SERPER_KEY:
-        try:
-            url = "https://google.serper.dev/search"
-            payload = json.dumps({"q": query, "gl": "in", "num": 10})
-            headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
-            response = requests.post(url, headers=headers, data=payload, timeout=30)
-            if response.status_code == 200:
-                for r in response.json().get("organic", []):
-                    results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", "")})
-                if results: return results
-        except Exception: pass
-
-    if DDGS:
-        try:
-            ddgs = DDGS()
-            res = list(ddgs.text(query, max_results=10, backend="lite"))
-            for r in res:
-                results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", "")})
-        except Exception: pass
-    return results
-
-def fetch_deep_text(url):
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        with requests.get(url, headers=headers, timeout=8, stream=True) as r:
-            if r.status_code == 200:
-                content_type = r.headers.get('Content-Type', '').lower()
-                if 'text/html' not in content_type: return ""
-                html_content = r.raw.read(50000, decode_content=True)
-                soup = BeautifulSoup(html_content, "html.parser")
-                for tag in soup(["script", "style", "nav", "footer"]): tag.decompose()
-                return soup.get_text(separator=" ", strip=True)
-    except Exception: pass
-    return ""
-
-@retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
-def ai_analyze_batch(batch):
-    client = get_next_gemini_client()
-    if not client: return []
-    
-    best_model = get_best_gemini_model(client)
-    items_block = ""
-    for i, x in enumerate(batch):
-        body = x.get("deep_text") or x.get("summary") or ""
-        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {body[:3000]}\n"
-        
-    past_year = datetime.now().year - 1
-        
-    prompt = f"""
-You are an elite B2B Sales AI analyzing universal procurement and supply chain signals in India.
-Your goal is to capture organizations actively procuring or sourcing PHYSICAL PRODUCTS, materials, equipment, software, or services.
-Evaluate EVERY SINGLE ITEM.
-
-REJECT (is_lead=False) ONLY IF:
-1. It is a Market Research Report.
-2. It is Stock Market/Financial News.
-3. It is explicitly located OUTSIDE of India.
-4. It is a B2C/retail post or a freelance gig.
-5. Explicit date from {past_year} or older.
-
-ACCEPT (is_lead=True) IF:
-The organization is looking to BUY, PROCURE, SOURCE, or INVITE TENDERS. 
-
-CLASSIFICATION MATRIX for 'lead_type':
-- Active Tender / RFQ -> 'Active Bulk Buyer (RFQ)'
-- Capex/Setup -> 'Capex Buyer'
-- General supply needs -> 'Corporate Sourcing'
-- Looking for vendors -> 'Vendor Empanelment'
-- Selling goods (Not buying) -> 'Supplier'
-
-RULES:
-- 'org' MUST be the actual client name. NEVER 'LinkedIn', 'Naukri', or 'GeM'. Use "Unknown Firm" if hidden.
-- 'industry' MUST be the specific product/service category they are buying.
-
-DATA BATCH:
-{items_block}
-"""
-    schema = {
-        "type": "ARRAY",
-        "items": {
-            "type": "OBJECT",
-            "properties": {
-                "item_index": {"type": "INTEGER"}, "is_lead": {"type": "BOOLEAN"},
-                "org": {"type": "STRING"}, "industry": {"type": "STRING"}, 
-                "lead_type": {"type": "STRING"},
-                "website": {"type": "STRING", "nullable": True},
-                "dm_name": {"type": "STRING", "nullable": True}, "dm_title": {"type": "STRING", "nullable": True}
-            }, "required": ["item_index", "is_lead", "org", "industry", "lead_type"]
-        }
-    }
-
-    try:
-        res = client.models.generate_content(
-            model=best_model, contents=prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
-        )
-        raw_text = res.text.strip()
-        if raw_text.startswith("```"): raw_text = re.sub(r'^```(?:json)?|```$', '', raw_text, flags=re.IGNORECASE | re.MULTILINE).strip()
-        return json.loads(raw_text)
-    except Exception as e:
-        print(f"    ⚠️ Gemini Error. Retrying... ({e})")
-        raise e 
-
 def run():
-    print(">>> 📡 RADAR SCOUT V2 ACTIVE (Dynamic Targets)")
+    print(">>> 📡 RADAR SCOUT ACTIVE (Universal Procurement Engine)")
     if not WEBHOOK or not SECRET: return
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30)
         cloud_targets = res.json().get("targets", [])
-    except Exception as e: return
+    except Exception as e:
+        print(f"❌ Failed to fetch targets: {e}")
+        return
         
     if not cloud_targets:
-        print("    -> No targets found in Google Sheet.")
+        print("    -> No targets found in Google Sheet '🎯 Targets'.")
         return
 
-    keywords = [f'"{t}" AND ("Request for Quotation" OR "tender" OR "vendor empanelment") India' for t in cloud_targets]
+    current_year = datetime.now().year
+    keywords = [f'"{t}" AND ("Request for Quotation" OR "tender" OR "vendor empanelment") {current_year} India' for t in cloud_targets]
 
     for kw in keywords:
         print(f"\n[*] Scouting keyword: {kw}")
@@ -297,8 +225,11 @@ def run():
                     "link": fresh_leads[idx]['link'], "email": "N/A", "phone": "N/A", 
                     "website": lead.get("website") or "N/A"
                 }
-                try: requests.post(WEBHOOK, json=payload, timeout=30)
+                try:
+                    requests.post(WEBHOOK, json=payload, timeout=30)
+                    print(f"    ✅ Pushed to Inbox: {lead['org']}")
                 except Exception: pass
+        
         time.sleep(15)
 
 if __name__ == "__main__":
