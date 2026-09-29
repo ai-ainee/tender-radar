@@ -170,7 +170,8 @@ DATA BATCH:
                 "item_index": {"type": "INTEGER"},
                 "product_match_reasoning": {"type": "STRING", "description": "Explain how this entity interacts with the Target Product."},
                 "is_valid": {"type": "BOOLEAN"},
-                "entity_role": {"type": "STRING", "enum": ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER", "IRRELEVANT"]},
+                # FIXED: Removed 'enum' constraint to prevent API 400 crashes. Added description instead.
+                "entity_role": {"type": "STRING", "description": "Must be exactly one of: BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT"},
                 "org": {"type": "STRING", "description": "Entity name"},
                 "city": {"type": "STRING", "description": "Normalized Indian City"},
                 "state": {"type": "STRING", "description": "Normalized Indian State/UT"},
@@ -182,7 +183,6 @@ DATA BATCH:
             "required": ["item_index", "product_match_reasoning", "is_valid", "entity_role", "org", "city", "state", "industry", "intent_summary"]
         }
     }
-
     for model_name in model_stack:
         try:
             chat = client.chats.create(model=model_name)
@@ -283,19 +283,13 @@ def run():
             if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
                 
-                # Explicit sheet routing
-                if is_supplier:
-                    target_sheet = "Suppliers"
-                    source_tag = "Supplier-Radar"
-                elif role == "PROJECT_BUYER":
-                    target_sheet = "Projects & MOUs"
-                    source_tag = "Project-Radar"
-                elif role == "SERVICE_USER":
-                    target_sheet = "Inbox"
-                    source_tag = "Ecosystem-Scout"
-                else:
-                    target_sheet = "Inbox"
-                    source_tag = "Radar Scout"
+                # Intelligent Routing
+                if role == "PROJECT_BUYER": source = "Project-Radar"
+                elif role == "SERVICE_USER": source = "Ecosystem-Scout"
+                else: source = "Radar Scout"
+                
+                # FIXED: Restored the clean "Supplier" prefix for the Intent column
+                intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
                 
                 payload = {
                     "secret": SECRET,
@@ -304,12 +298,12 @@ def run():
                     "is_supplier": is_supplier,
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "source": source_tag,
+                    "source": source,
                     "org": entity.get("org", "Unknown"),
                     "city": entity.get("city", "Unknown"),
                     "state": entity.get("state", "Pan-India"),
-                    "industry": target_product,
-                    "intent": entity.get("intent_summary"),
+                    "industry": target_product, # Product mapping is successfully retained!
+                    "intent": intent_label,     # Now uses the beautifully formatted label
                     "dm_name": entity.get("dm_name") or "N/A",
                     "dm_title": entity.get("dm_title") or "N/A",
                     "link": fresh_leads[idx]['link'],
