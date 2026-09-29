@@ -36,7 +36,6 @@ def get_next_gemini_client():
     current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
     return genai.Client(api_key=key)
 
-# --- BULLETPROOF MODEL FILTER ---
 BEST_MODEL_STACK = []
 def get_flash_model_stack(client):
     global BEST_MODEL_STACK
@@ -45,14 +44,12 @@ def get_flash_model_stack(client):
         valid_models = []
         for m in client.models.list():
             name = m.name.lower()
-            # Exclude experimental, audio, vision, and the dead 2.5 models
             banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
             if "flash" in name and not any(bad in name for bad in banned_keywords):
                 valid_models.append(name)
         
         if valid_models:
             valid_models.sort(reverse=True)
-            # Prioritize 3.5-flash-lite and 1.5-flash to avoid the harsh 20/day limit on 3.8
             for preferred in ["models/gemini-3.5-flash-lite", "models/gemini-1.5-flash"]:
                 if preferred in valid_models:
                     valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
@@ -105,7 +102,7 @@ def fetch_deep_text(url):
     return ""
 
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
-def ai_analyze_batch(batch):
+def ai_analyze_batch(batch, exclusions):
     client = get_next_gemini_client()
     if not client: return []
     model_stack = get_flash_model_stack(client)
@@ -114,6 +111,16 @@ def ai_analyze_batch(batch):
     for i, x in enumerate(batch):
         items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
         
+    exclusion_rule = ""
+    if exclusions:
+        exclusion_rule = f"""
+CRITICAL CONTEXTUAL EXCLUSIONS:
+The user has provided a list of Banned Intents/Keywords: {json.dumps(exclusions)}
+You must evaluate the core INTENT of the webpage. 
+- If the primary intent of the organization is to procure or offer [Banned Keywords], REJECT THEM (is_valid=False, entity_role="IRRELEVANT").
+- HOWEVER, if these words merely appear in the organization's name (e.g., 'Department of Repair and Maintenance') or as background context, BUT their actual intent is to buy/sell the target product, you MUST ACCEPT THEM (is_valid=True).
+"""
+
     prompt = f"""
 You are a B2B Lead Generator. Capture as many potential leads as possible.
 Evaluate EVERY ITEM and classify whether it is a:
@@ -124,6 +131,7 @@ Evaluate EVERY ITEM and classify whether it is a:
 RULES:
 - If buyer name is hidden (like IndiaMART), set 'org' to "Hidden Buyer (IndiaMART)". Do NOT reject.
 - Be forgiving. If unsure, mark is_valid=True.
+{exclusion_rule}
 
 DATA BATCH:
 {items_block}
@@ -148,7 +156,6 @@ DATA BATCH:
 
     for model_name in model_stack:
         try:
-            # FIX: Use Chat session instead of direct generate_content to silence AFC warnings
             chat = client.chats.create(model=model_name)
             res = chat.send_message(
                 prompt,
@@ -159,19 +166,14 @@ DATA BATCH:
                 )
             )
             raw_text = res.text.strip()
-            
-            # SAFE JSON STRIPPER
             if raw_text.startswith("```"):
                 raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
-            
         except Exception as e:
             err_str = str(e)
-            # Smart cascade for 404s, 503s, and 429s with "limit: 20" or "limit: 0"
             if "NOT_FOUND" in err_str or "404" in err_str or "503" in err_str or "500" in err_str or "limit: 0" in err_str or "limit: 20" in err_str:
                 print(f"    ⚠️ Model {model_name} unavailable/exhausted. Cascading...", flush=True)
                 continue
-            # If it's a standard RPM limit, let Tenacity retry it after waiting
             raise e
             
     raise Exception("All Gemini models unavailable or failed.")
@@ -185,21 +187,30 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Chat SDK & Quota-Safe Version)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Contextual AI Filter)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     cloud_targets = []
+    cloud_exclusions = []
+    
     for attempt in range(3):
         try:
             res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=60)
             cloud_targets = res.json().get("targets", [])
             break
         except Exception as e:
-            print(f"    ⚠️ Sheets API timeout. Retrying {attempt+1}/3...", flush=True)
             time.sleep(5)
-            if attempt == 2: return print("❌ Failed to fetch targets after 3 tries.", flush=True)
-        
+            
+    for attempt in range(3):
+        try:
+            res_ex = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_exclusions"}, timeout=60)
+            cloud_exclusions = res_ex.json().get("exclusions", [])
+            break
+        except Exception:
+            time.sleep(5)
+            
     if not cloud_targets: return print("    -> No targets found.", flush=True)
+    if cloud_exclusions: print(f"    -> Contextual Exclusions Active: {cloud_exclusions}", flush=True)
 
     search_matrix = []
     for t in cloud_targets: search_matrix.extend(build_vector_matrix(t))
@@ -216,7 +227,7 @@ def run():
         if not fresh_leads: continue
             
         print(f"    -> AI Analyzing {len(fresh_leads)} links...", flush=True)
-        try: ai_data = ai_analyze_batch(fresh_leads)
+        try: ai_data = ai_analyze_batch(fresh_leads, cloud_exclusions)
         except Exception as e: 
             print(f"    -> AI Error: {e}", flush=True)
             continue
@@ -259,7 +270,6 @@ def run():
                     except Exception:
                         time.sleep(3)
                         
-        # FIX: Ensure a generous delay between requests to protect the daily API quotas
         time.sleep(15)
 
 if __name__ == "__main__":
