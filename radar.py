@@ -31,7 +31,6 @@ raw_keys = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
 current_key_index = 0
 
-# In-memory deduplication set
 EXISTING_URLS_CACHE = set()
 
 def get_next_gemini_client():
@@ -70,7 +69,7 @@ def load_existing_urls_cache():
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_all_urls"}, timeout=30).json()
         raw_urls = res.get("urls", [])
         EXISTING_URLS_CACHE = {u.strip().lower() for u in raw_urls if u.strip()}
-        print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} existing records into local deduplication cache.", flush=True)
+        print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} existing records (including AI_Trash) into local cache.", flush=True)
     except Exception as e:
         print(f"⚠️ Cache load failed: {e}. Proceeding with clean cache.", flush=True)
 
@@ -80,7 +79,6 @@ def is_duplicate_cached(link):
     if clean in EXISTING_URLS_CACHE: return True
     parsed = urlparse(clean)
     netloc = parsed.netloc.replace("www.", "")
-    # Check directory vs standard domains
     directory_domains = ["indiamart.com", "tradeindia.com", "linkedin.com", "gem.gov.in", "eprocure.gov.in", "bseindia.com"]
     if not any(d in netloc for d in directory_domains):
         if any(netloc in cached for cached in EXISTING_URLS_CACHE if cached):
@@ -113,7 +111,6 @@ def fetch_deep_text(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
         session = requests.Session()
-        # Disabling SSL verify for troublesome Indian tender portals if necessary
         r = session.get(url, headers=headers, timeout=(5, 10), verify=False)
         if r.status_code == 200:
             if 'text/html' not in r.headers.get('Content-Type', '').lower(): return ""
@@ -170,7 +167,6 @@ DATA BATCH:
                 "item_index": {"type": "INTEGER"},
                 "product_match_reasoning": {"type": "STRING", "description": "Explain how this entity interacts with the Target Product."},
                 "is_valid": {"type": "BOOLEAN"},
-                # FIXED: Removed 'enum' constraint to prevent API 400 crashes. Added description instead.
                 "entity_role": {"type": "STRING", "description": "Must be exactly one of: BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT"},
                 "org": {"type": "STRING", "description": "Entity name"},
                 "city": {"type": "STRING", "description": "Normalized Indian City"},
@@ -183,6 +179,7 @@ DATA BATCH:
             "required": ["item_index", "product_match_reasoning", "is_valid", "entity_role", "org", "city", "state", "industry", "intent_summary"]
         }
     }
+
     for model_name in model_stack:
         try:
             chat = client.chats.create(model=model_name)
@@ -219,13 +216,11 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Optimized V3 Engine)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (V4 Engine with AI Trash Bin)", flush=True)
     if not WEBHOOK or not SECRET: return
     
-    # 1. Warm local deduplication cache
     load_existing_urls_cache()
 
-    # 2. Fetch targets & exclusions
     cloud_targets, cloud_exclusions, cloud_domains = [], [], []
     try:
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30)
@@ -260,7 +255,6 @@ def run():
             if any(b_dom in link_lower for b_dom in cloud_domains):
                 continue
                 
-            # Instant in-memory deduplication check
             if not is_duplicate_cached(r['link']):
                 r['deep_text'] = fetch_deep_text(r['link'])
                 r['target'] = target_product
@@ -275,20 +269,34 @@ def run():
             print(f"    -> AI Error: {e}", flush=True)
             continue
             
+        # 🗑️ The AI Trash Bin (Batch Collector)
+        ai_trash_log = []
+            
         for entity in ai_data:
             idx = entity.get("item_index")
             if idx is None or idx >= len(fresh_leads) or idx < 0: continue
             
             role = entity.get('entity_role')
+            reason = entity.get("product_match_reasoning", "No reasoning provided")
+            print(f"       [Reasoning] {reason}")
+            print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {role} | Location: {entity.get('city')}, {entity.get('state')} | Org: {entity.get('org')}", flush=True)
+            
             if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
                 
-                # Intelligent Routing
-                if role == "PROJECT_BUYER": source = "Project-Radar"
-                elif role == "SERVICE_USER": source = "Ecosystem-Scout"
-                else: source = "Radar Scout"
+                if role == "PROJECT_BUYER":
+                    target_sheet = "Projects & MOUs"
+                    source_tag = "Project-Radar"
+                elif role == "SERVICE_USER":
+                    target_sheet = "Inbox"
+                    source_tag = "Ecosystem-Scout"
+                elif is_supplier:
+                    target_sheet = "Suppliers"
+                    source_tag = "Supplier-Radar"
+                else:
+                    target_sheet = "Inbox"
+                    source_tag = "Radar Scout"
                 
-                # FIXED: Restored the clean "Supplier" prefix for the Intent column
                 intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
                 
                 payload = {
@@ -298,12 +306,12 @@ def run():
                     "is_supplier": is_supplier,
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "source": source,
+                    "source": source_tag,
                     "org": entity.get("org", "Unknown"),
                     "city": entity.get("city", "Unknown"),
                     "state": entity.get("state", "Pan-India"),
-                    "industry": target_product, # Product mapping is successfully retained!
-                    "intent": intent_label,     # Now uses the beautifully formatted label
+                    "industry": target_product,
+                    "intent": intent_label,
                     "dm_name": entity.get("dm_name") or "N/A",
                     "dm_title": entity.get("dm_title") or "N/A",
                     "link": fresh_leads[idx]['link'],
@@ -315,13 +323,34 @@ def run():
                 for attempt in range(3):
                     try:
                         requests.post(WEBHOOK, json=payload, timeout=30)
-                        # Add to local cache immediately to prevent re-capturing in the same run
                         EXISTING_URLS_CACHE.add(fresh_leads[idx]['link'].strip().lower())
                         print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']} ({entity.get('city')}, {entity.get('state')})", flush=True)
                         break
                     except Exception: time.sleep(2)
+            else:
+                # 🗑️ Mark as Junk internally and prepare for batch upload
+                ai_trash_log.append({
+                    "url": fresh_leads[idx]['link'],
+                    "reason": f"[{role}] {reason}"
+                })
+                EXISTING_URLS_CACHE.add(fresh_leads[idx]['link'].strip().lower())
+        
+        # 🚀 Perform High-Speed Junk Sweep
+        if ai_trash_log:
+            payload = {
+                "secret": SECRET,
+                "action": "log_trash_batch",
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "trash_data": ai_trash_log
+            }
+            for attempt in range(3):
+                try:
+                    requests.post(WEBHOOK, json=payload, timeout=30)
+                    print(f"    🗑️ Swept {len(ai_trash_log)} rejected links into AI_Trash sheet.", flush=True)
+                    break
+                except Exception: time.sleep(2)
                         
-        time.sleep(4) # Reduced delay because batch deduplication eliminated API load
+        time.sleep(4)
 
 if __name__ == "__main__":
     run()
