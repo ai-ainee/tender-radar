@@ -109,28 +109,32 @@ def ai_analyze_batch(batch, exclusions):
     
     items_block = ""
     for i, x in enumerate(batch):
-        items_block += f"\n--- ITEM {i} ---\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
+        items_block += f"\n--- ITEM {i} ---\nTarget Product: {x.get('target', 'Unknown')}\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
         
     exclusion_rule = ""
     if exclusions:
         exclusion_rule = f"""
 CRITICAL CONTEXTUAL EXCLUSIONS:
-The user has provided a list of Banned Intents/Keywords: {json.dumps(exclusions)}
-You must evaluate the core INTENT of the webpage. 
-- If the primary intent of the organization is to procure or offer [Banned Keywords], REJECT THEM (is_valid=False, entity_role="IRRELEVANT").
-- HOWEVER, if these words merely appear in the organization's name (e.g., 'Department of Repair and Maintenance') or as background context, BUT their actual intent is to buy/sell the target product, you MUST ACCEPT THEM (is_valid=True).
+Banned Intents/Keywords: {json.dumps(exclusions)}
+- If the primary intent is to procure or offer [Banned Keywords], REJECT THEM (is_valid=False).
 """
 
     prompt = f"""
-You are a B2B Lead Generator. Capture as many potential leads as possible.
-Evaluate EVERY ITEM and classify whether it is a:
-1. 'BUYER' (Procurement, RFQ, tender, Capex, looking for vendors)
-2. 'SELLER' (Manufacturer, distributor, supplier, offering products)
-3. 'IRRELEVANT' (Blog post, job listing, totally unrelated)
+You are a ZERO-TOLERANCE B2B Lead Generator. 
+You must evaluate EVERY ITEM strictly against its assigned 'Target Product'.
+
+CLASSIFICATION:
+1. 'BUYER' (Procuring, requesting quotes, or actively buying the EXACT Target Product)
+2. 'SELLER' (Manufacturing or supplying the EXACT Target Product)
+3. 'IRRELEVANT' (Unrelated product, generic buying/selling, blog post, job listing)
+
+CRITICAL PRODUCT RELEVANCE RULE (ZERO TOLERANCE):
+- If the organization is buying or selling ANYTHING other than the 'Target Product', you MUST REJECT THEM (is_valid=False, entity_role="IRRELEVANT").
+- Example: If the Target Product is "AutoCAD", but the buyer is asking for "Laptops", REJECT THEM. 
+- You must write your reasoning in 'product_match_reasoning' before deciding.
 
 RULES:
 - If buyer name is hidden (like IndiaMART), set 'org' to "Hidden Buyer (IndiaMART)". Do NOT reject.
-- Be forgiving. If unsure, mark is_valid=True.
 {exclusion_rule}
 
 DATA BATCH:
@@ -142,6 +146,8 @@ DATA BATCH:
             "type": "OBJECT",
             "properties": {
                 "item_index": {"type": "INTEGER"},
+                # NEW: Chain of Thought reasoning field forces the AI to check the product match first
+                "product_match_reasoning": {"type": "STRING", "description": "Explain exactly if the webpage text matches the Target Product."},
                 "is_valid": {"type": "BOOLEAN"},
                 "entity_role": {"type": "STRING", "enum": ["BUYER", "SELLER", "IRRELEVANT"]},
                 "org": {"type": "STRING"},
@@ -150,7 +156,7 @@ DATA BATCH:
                 "dm_name": {"type": "STRING", "nullable": True},
                 "dm_title": {"type": "STRING", "nullable": True}
             },
-            "required": ["item_index", "is_valid", "entity_role", "org", "industry", "intent_summary"]
+            "required": ["item_index", "product_match_reasoning", "is_valid", "entity_role", "org", "industry", "intent_summary"]
         }
     }
 
@@ -162,7 +168,7 @@ DATA BATCH:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json", 
                     response_schema=schema, 
-                    temperature=0.2
+                    temperature=0.0 # ZERO TEMPERATURE FOR STRICT LOGIC
                 )
             )
             raw_text = res.text.strip()
@@ -187,7 +193,7 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Domain Blacklist + Context Filter)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Zero-Tolerance Product Filter)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     cloud_targets = []
@@ -211,31 +217,34 @@ def run():
         except Exception: time.sleep(5)
             
     if not cloud_targets: return print("    -> No targets found.", flush=True)
-    if cloud_exclusions: print(f"    -> Context Exclusions: {cloud_exclusions}", flush=True)
-    if cloud_domains: print(f"    -> Banned Domains: {cloud_domains}", flush=True)
 
     search_matrix = []
-    for t in cloud_targets: search_matrix.extend(build_vector_matrix(t))
+    for t in cloud_targets:
+        for q in build_vector_matrix(t):
+            search_matrix.append({"target": t, "query": q})
 
-    for query in search_matrix:
-        print(f"\n[*] Scanning: {query}", flush=True)
+    for item in search_matrix:
+        target_product = item["target"]
+        query = item["query"]
+        
+        print(f"\n[*] Scanning: {query} (Target: {target_product})", flush=True)
         results = get_search_results(query)
         fresh_leads = []
+        
         for r in results:
             link_lower = r['link'].lower()
-            
-            # THE PRE-FETCH GUILLOTINE
             if any(b_dom in link_lower for b_dom in cloud_domains):
                 print(f"    🚫 Skipped Blocked Domain: {r['link']}", flush=True)
                 continue
                 
             if not is_duplicate(r['link']):
                 r['deep_text'] = fetch_deep_text(r['link'])
+                r['target'] = target_product
                 fresh_leads.append(r)
                 
         if not fresh_leads: continue
             
-        print(f"    -> AI Analyzing {len(fresh_leads)} links...", flush=True)
+        print(f"    -> AI Analyzing {len(fresh_leads)} links against '{target_product}'...", flush=True)
         try: ai_data = ai_analyze_batch(fresh_leads, cloud_exclusions)
         except Exception as e: 
             print(f"    -> AI Error: {e}", flush=True)
@@ -245,10 +254,14 @@ def run():
             idx = entity.get("item_index")
             if idx is None or idx >= len(fresh_leads) or idx < 0: continue
             
+            # Print the AI's reasoning so you can see EXACTLY why it rejected or accepted it
+            reason = entity.get("product_match_reasoning", "No reasoning provided")
+            print(f"       [Reasoning] {reason}")
             print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {entity.get('entity_role')} | Org: {entity.get('org')}", flush=True)
             
             if entity.get("is_valid") and entity.get("entity_role") in ["BUYER", "SELLER"]:
                 is_supplier = (entity.get("entity_role") == "SELLER")
+                industry_tag = target_product 
                 intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
 
                 payload = {
@@ -260,7 +273,7 @@ def run():
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "source": "Radar Scout",
                     "org": entity.get("org", "Unknown"),
-                    "industry": entity.get("industry", "General"),
+                    "industry": industry_tag,
                     "intent": intent_label,
                     "dm_name": entity.get("dm_name") or "N/A",
                     "dm_title": entity.get("dm_title") or "N/A",
