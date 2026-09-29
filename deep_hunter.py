@@ -6,7 +6,6 @@ import warnings
 import asyncio
 import aiohttp
 import requests
-import time
 import dns.resolver
 from bs4 import BeautifulSoup
 from google import genai
@@ -111,7 +110,7 @@ def ai_verify_entity_sync(org_name, web_results, li_results, legal_results, b2b_
     
     prompt = f"""
 You are an expert OSINT Triangulation Analyst investigating: "{org_name}"
-Extract the OFFICIAL corporate domain, primary Decision Maker (Procurement, Managing Director, Founder, CEO), and official phone/email.
+Extract the OFFICIAL corporate domain, primary Decision Maker, and official phone/email.
 Web: {json.dumps(web_results)}
 LinkedIn: {json.dumps(li_results)}
 Corporate Registries: {json.dumps(legal_results)}
@@ -131,13 +130,9 @@ Directories: {json.dumps(b2b_results)}
     for model_name in model_stack:
         try:
             chat = client.chats.create(model=model_name)
-            res = chat.send_message(
-                prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
-            )
+            res = chat.send_message(prompt, config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0))
             raw_text = res.text.strip()
-            if raw_text.startswith("```"):
-                raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
+            if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
         except Exception: continue
     return None
@@ -159,7 +154,7 @@ async def process_lead(session, lead, sem):
         
         web_res, li_res, legal_res, b2b_res = await asyncio.gather(
             async_get_search_results(session, f'"{lead["org"]}" official website india'),
-            async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Purchase" OR "Director" OR "CEO") "{lead["org"]}"'),
+            async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Director" OR "CEO") "{lead["org"]}"'),
             async_get_search_results(session, f'(site:zaubacorp.com OR site:thecompanycheck.com) "{lead["org"]}" directors'),
             async_get_search_results(session, f'(site:indiamart.com OR site:justdial.com) "{lead["org"]}" contact')
         )
@@ -178,28 +173,41 @@ async def process_lead(session, lead, sem):
                 perms = generate_email_permutations(lead["dm_name"], lead["website"])
                 if perms: emails = perms
             for e in emails:
-                if await is_b2b_email(e):
-                    lead["email"] = e
-                    break
+                if await is_b2b_email(e): lead["email"] = e; break
             if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
 
         for attempt in range(3):
             try:
                 async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead", **lead}, timeout=30) as response: 
                     await response.read()
-                    print(f"    ✅ Enriched 17-Col Layout: {lead['org']}", flush=True)
+                    print(f"    ✅ Enriched Target: {lead['org']}", flush=True)
                     break
             except Exception: await asyncio.sleep(2)
+
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            msg = (
+                f"🌟 <b>ENRICHED QUALIFIED TARGET</b>\n\n"
+                f"🏢 <b>Company:</b> {lead.get('org', 'Unknown')}\n"
+                f"📍 <b>Location:</b> {lead.get('city', 'Unknown')}, {lead.get('state', 'Pan-India')}\n"
+                f"👤 <b>DM:</b> {lead.get('dm_name', 'N/A')} ({lead.get('dm_title', 'N/A')})\n"
+                f"✉️ <b>Email:</b> {lead.get('email', 'N/A')}\n"
+                f"📞 <b>Phone:</b> {lead.get('phone', 'N/A')}\n"
+                f"🌐 <b>Web:</b> {lead.get('website', 'N/A')}"
+            )
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True,
+                "reply_markup": {"inline_keyboard": [ [{"text": "🎯 Move to Leads", "callback_data": f"tolead_{lead['lead_id']}"}], [{"text": "❌ Reject", "callback_data": f"rejectqual_{lead['lead_id']}"}] ] }
+            }
+            try:
+                async with session.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=30) as response: await response.read()
+            except Exception: pass
 
 async def hunt_async():
     print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (17-Column Synchronized)", flush=True)
     if not WEBHOOK or not SECRET: return
-    
-    pending = []
     try:
         pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30).json().get("pending_leads", [])
     except Exception: return
-            
     if not pending: return print("    -> No leads currently pending enrichment.", flush=True)
 
     sem = asyncio.Semaphore(2)
