@@ -103,16 +103,18 @@ async def async_get_search_results(session, query, num=5):
     return results
 
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
-def ai_verify_entity_sync(org_name, web_results, li_results, legal_results, b2b_results):
+def ai_extract_stakeholders(org_name, web_results, li_results, legal_results, b2b_results):
     client = get_next_gemini_client()
     if not client: return None
     model_stack = get_flash_model_stack(client)
     
     prompt = f"""
-You are an expert OSINT Triangulation Analyst investigating: "{org_name}"
-Extract the OFFICIAL corporate domain, primary Decision Maker, and official phone/email.
-Web: {json.dumps(web_results)}
-LinkedIn: {json.dumps(li_results)}
+You are an expert OSINT Corporate Analyst investigating: "{org_name}"
+Extract the OFFICIAL corporate website, and assemble the "Buying Committee" (identify as many relevant stakeholders as possible: Procurement, Tech Leads, Directors, Founders, Project Managers).
+Also extract their emails and phones if visible in the snippets.
+
+Web Data: {json.dumps(web_results)}
+LinkedIn Data: {json.dumps(li_results)}
 Corporate Registries: {json.dumps(legal_results)}
 Directories: {json.dumps(b2b_results)}
 """
@@ -120,10 +122,21 @@ Directories: {json.dumps(b2b_results)}
         "type": "OBJECT",
         "properties": {
             "verified_website": {"type": "STRING", "nullable": True},
-            "dm_name": {"type": "STRING", "nullable": True},
-            "dm_title": {"type": "STRING", "nullable": True},
-            "directory_phone": {"type": "STRING", "nullable": True},
-            "directory_email": {"type": "STRING", "nullable": True}
+            "contacts": {
+                "type": "ARRAY",
+                "description": "List of all stakeholders found across the sources.",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "name": {"type": "STRING"},
+                        "designation": {"type": "STRING"},
+                        "email": {"type": "STRING", "nullable": True},
+                        "phone": {"type": "STRING", "nullable": True},
+                        "source": {"type": "STRING", "description": "e.g., 'LinkedIn', 'ZaubaCorp', 'Company Website'"}
+                    },
+                    "required": ["name", "designation"]
+                }
+            }
         }
     }
     
@@ -134,65 +147,84 @@ Directories: {json.dumps(b2b_results)}
             raw_text = res.text.strip()
             if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
-        except Exception: continue
+        except Exception as e: 
+            print(f"⚠️ Model error: {e}")
+            continue
     return None
-
-async def async_crawl_contacts(session, url):
-    try:
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, ssl=False, timeout=aiohttp.ClientTimeout(sock_connect=5, sock_read=10)) as response:
-            if response.status == 200:
-                text = (await response.read()).decode('utf-8', errors='ignore')
-                emails = [e for e in set(re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)) if not e.lower().endswith((".png", ".jpg", ".css", ".js"))]
-                phones = [p for p in set(re.findall(r"(?:\+91[- ]?|0)?[6-9]\d{9}\b", text)) if len(p.replace("+91", "").replace("-", "").replace(" ", "").strip()) >= 10]
-                return emails, phones
-    except Exception: pass
-    return [], []
 
 async def process_lead(session, lead, sem):
     async with sem:
-        print(f"[*] Triangulating: {lead['org']}", flush=True)
+        print(f"[*] Stakeholder Matrix Scan: {lead['org']}", flush=True)
         
         web_res, li_res, legal_res, b2b_res = await asyncio.gather(
             async_get_search_results(session, f'"{lead["org"]}" official website india'),
-            async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Director" OR "CEO") "{lead["org"]}"'),
+            async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Director" OR "Manager" OR "Head") "{lead["org"]}"'),
             async_get_search_results(session, f'(site:zaubacorp.com OR site:thecompanycheck.com) "{lead["org"]}" directors'),
             async_get_search_results(session, f'(site:indiamart.com OR site:justdial.com) "{lead["org"]}" contact')
         )
         
-        ai_data = await asyncio.to_thread(ai_verify_entity_sync, lead['org'], web_res, li_res, legal_res, b2b_res)
+        ai_data = await asyncio.to_thread(ai_extract_stakeholders, lead['org'], web_res, li_res, legal_res, b2b_res)
+        all_contacts = []
         
         if ai_data:
             if ai_data.get("verified_website"): lead["website"] = ai_data["verified_website"]
-            if ai_data.get("dm_name"): lead["dm_name"], lead["dm_title"] = ai_data["dm_name"], ai_data.get("dm_title", "Decision Maker")
-            if ai_data.get("directory_email") and not await is_b2b_email(lead.get("email", "")): lead["email"] = ai_data["directory_email"]
-            if ai_data.get("directory_phone") and lead.get("phone", "N/A") == "N/A": lead["phone"] = ai_data["directory_phone"]
+            all_contacts = ai_data.get("contacts", [])
+            
+            # Select the primary DM for the main Pipeline tracking sheet
+            if all_contacts:
+                primary = all_contacts[0] # Assumes first extracted is highest relevance
+                lead["dm_name"] = primary.get("name", "N/A")
+                lead["dm_title"] = primary.get("designation", "Decision Maker")
+                lead["email"] = primary.get("email", "N/A")
+                lead["phone"] = primary.get("phone", "N/A")
 
-        if lead.get("website") and lead["website"] != "N/A":
-            emails, phones = await async_crawl_contacts(session, lead["website"])
-            if not emails and lead.get("dm_name") != "N/A":
+        # Fallback email guessing logic if primary email is missing
+        if lead.get("website") and lead["website"] != "N/A" and lead.get("email", "N/A") == "N/A":
+            if lead.get("dm_name") != "N/A":
                 perms = generate_email_permutations(lead["dm_name"], lead["website"])
-                if perms: emails = perms
-            for e in emails:
-                if await is_b2b_email(e): lead["email"] = e; break
-            if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
+                for e in perms:
+                    if await is_b2b_email(e): 
+                        lead["email"] = e
+                        if all_contacts: all_contacts[0]["email"] = e # Update the DB record too
+                        break
 
+        # 1. Update the Main Lead in the "Qualified" Tab
         for attempt in range(3):
             try:
                 async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead", **lead}, timeout=30) as response: 
                     await response.read()
-                    print(f"    ✅ Enriched Target: {lead['org']}", flush=True)
+                    print(f"    ✅ Main Profile Enriched: {lead['org']}", flush=True)
                     break
             except Exception: await asyncio.sleep(2)
 
+        # 2. Push all discovered stakeholders to "Account Contacts" Tab
+        if all_contacts:
+            payload_contacts = {
+                "secret": SECRET,
+                "action": "add_contacts",
+                "lead_id": lead['lead_id'],
+                "org": lead['org'],
+                "contacts": all_contacts
+            }
+            for attempt in range(3):
+                try:
+                    async with session.post(WEBHOOK, json=payload_contacts, timeout=30) as response:
+                        await response.read()
+                        print(f"    ✅ Logged {len(all_contacts)} contacts to Account DB.", flush=True)
+                        break
+                except Exception: await asyncio.sleep(2)
+
+        # 3. Telegram Alert
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            stakeholder_list = "\n".join([f"• {c.get('name')} ({c.get('designation')})" for c in all_contacts[:3]])
             msg = (
                 f"🌟 <b>ENRICHED QUALIFIED TARGET</b>\n\n"
                 f"🏢 <b>Company:</b> {lead.get('org', 'Unknown')}\n"
                 f"📍 <b>Location:</b> {lead.get('city', 'Unknown')}, {lead.get('state', 'Pan-India')}\n"
-                f"👤 <b>DM:</b> {lead.get('dm_name', 'N/A')} ({lead.get('dm_title', 'N/A')})\n"
-                f"✉️ <b>Email:</b> {lead.get('email', 'N/A')}\n"
-                f"📞 <b>Phone:</b> {lead.get('phone', 'N/A')}\n"
-                f"🌐 <b>Web:</b> {lead.get('website', 'N/A')}"
+                f"🌐 <b>Web:</b> {lead.get('website', 'N/A')}\n\n"
+                f"👥 <b>Buying Committee Found ({len(all_contacts)}):</b>\n{stakeholder_list}\n\n"
+                f"✉️ <b>Primary Email:</b> {lead.get('email', 'N/A')}\n"
+                f"📞 <b>Primary Phone:</b> {lead.get('phone', 'N/A')}"
             )
             payload = {
                 "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True,
@@ -203,7 +235,7 @@ async def process_lead(session, lead, sem):
             except Exception: pass
 
 async def hunt_async():
-    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (17-Column Synchronized)", flush=True)
+    print(">>> 🕵️‍♂️ STAKEHOLDER HUNTER ACTIVE (Relational V8 Engine)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30).json().get("pending_leads", [])
