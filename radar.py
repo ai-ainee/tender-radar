@@ -109,32 +109,34 @@ def ai_analyze_batch(batch, exclusions):
     
     items_block = ""
     for i, x in enumerate(batch):
-        items_block += f"\n--- ITEM {i} ---\nTarget Product: {x.get('target', 'Unknown')}\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
+        items_block += f"\n--- ITEM {i} ---\nTarget Product: {x.get('target', 'Unknown')}\nQuery Type: {x.get('query_type', 'Direct')}\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
         
     exclusion_rule = ""
     if exclusions:
         exclusion_rule = f"""
 CRITICAL CONTEXTUAL EXCLUSIONS:
 Banned Intents/Keywords: {json.dumps(exclusions)}
-- If the primary intent is to procure or offer [Banned Keywords], REJECT THEM (is_valid=False).
+- If the primary intent of the project/lead is to procure or offer [Banned Keywords], REJECT THEM (is_valid=False).
 """
 
     prompt = f"""
-You are a ZERO-TOLERANCE B2B Lead Generator. 
-You must evaluate EVERY ITEM strictly against its assigned 'Target Product'.
+You are an expert B2B Procurement & Capex Signal Analyst.
+You evaluate news, tender announcements, MOUs, and project awards to identify entities requiring the 'Target Product' (software or specialized solution).
 
 CLASSIFICATION:
-1. 'BUYER' (Procuring, requesting quotes, or actively buying the EXACT Target Product)
-2. 'SELLER' (Manufacturing or supplying the EXACT Target Product)
-3. 'IRRELEVANT' (Unrelated product, generic buying/selling, blog post, job listing)
+1. 'BUYER' (Direct Procurement):
+   - Actively purchasing or issuing an RFQ/tender for the Target Product.
+2. 'PROJECT_BUYER' (Derived Demand / Capex Signal): 
+   - An organization, EPC contractor, or engineering consultant that won a project contract, signed an MOU, or is setting up a new unit/facility that REQUIRES the Target Product to execute design, modeling, or manufacturing work.
+3. 'SELLER':
+   - Certified distributor, OEM, or supplier authorized to sell the Target Product.
+4. 'IRRELEVANT':
+   - Unrelated product, general news, or resumes.
 
-CRITICAL PRODUCT RELEVANCE RULE (ZERO TOLERANCE):
-- If the organization is buying or selling ANYTHING other than the 'Target Product', you MUST REJECT THEM (is_valid=False, entity_role="IRRELEVANT").
-- Example: If the Target Product is "AutoCAD", but the buyer is asking for "Laptops", REJECT THEM. 
-- You must write your reasoning in 'product_match_reasoning' before deciding.
+RULES FOR LOCATION ('city' and 'state'):
+- Identify the specific Indian City (e.g., 'Pune', 'Chennai', 'Noida') and State/UT (e.g., 'Maharashtra', 'Tamil Nadu', 'Uttar Pradesh').
+- If unspecified or nationwide, output "Unknown".
 
-RULES:
-- If buyer name is hidden (like IndiaMART), set 'org' to "Hidden Buyer (IndiaMART)". Do NOT reject.
 {exclusion_rule}
 
 DATA BATCH:
@@ -146,17 +148,18 @@ DATA BATCH:
             "type": "OBJECT",
             "properties": {
                 "item_index": {"type": "INTEGER"},
-                # NEW: Chain of Thought reasoning field forces the AI to check the product match first
-                "product_match_reasoning": {"type": "STRING", "description": "Explain exactly if the webpage text matches the Target Product."},
+                "product_match_reasoning": {"type": "STRING", "description": "Explain how this project, tender, or company requires or sells the Target Product."},
                 "is_valid": {"type": "BOOLEAN"},
-                "entity_role": {"type": "STRING", "enum": ["BUYER", "SELLER", "IRRELEVANT"]},
-                "org": {"type": "STRING"},
+                "entity_role": {"type": "STRING", "enum": ["BUYER", "PROJECT_BUYER", "SELLER", "IRRELEVANT"]},
+                "org": {"type": "STRING", "description": "Company name or agency winning the project/buying"},
+                "city": {"type": "STRING", "description": "Indian City where the project/entity is located"},
+                "state": {"type": "STRING", "description": "Indian state or UT"},
                 "industry": {"type": "STRING"},
-                "intent_summary": {"type": "STRING"},
+                "intent_summary": {"type": "STRING", "description": "Brief description of the tender, project award, or MOU"},
                 "dm_name": {"type": "STRING", "nullable": True},
                 "dm_title": {"type": "STRING", "nullable": True}
             },
-            "required": ["item_index", "product_match_reasoning", "is_valid", "entity_role", "org", "industry", "intent_summary"]
+            "required": ["item_index", "product_match_reasoning", "is_valid", "entity_role", "org", "city", "state", "industry", "intent_summary"]
         }
     }
 
@@ -168,7 +171,7 @@ DATA BATCH:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json", 
                     response_schema=schema, 
-                    temperature=0.0 # ZERO TEMPERATURE FOR STRICT LOGIC
+                    temperature=0.0
                 )
             )
             raw_text = res.text.strip()
@@ -185,15 +188,18 @@ DATA BATCH:
     raise Exception("All Gemini models unavailable or failed.")
 
 def build_vector_matrix(target):
+    current_year = datetime.now().year
     return [
-        f'"{target}" tender OR RFQ site:gov.in',
-        f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com',
-        f'"{target}" "looking for vendors" site:linkedin.com/posts',
-        f'"{target}" "vendor empanelment" OR "request for quotation" India'
+        {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in'},
+        {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
+        {"type": "Project", "query": f'"{target}" ("Letter of Award" OR "awarded contract" OR "lowest bidder" OR "L1 bidder") India {current_year}'},
+        {"type": "Project", "query": f'"{target}" ("MoU signed" OR "groundbreaking ceremony" OR "setting up new plant" OR "greenfield facility") India'},
+        {"type": "Project", "query": f'site:bseindia.com/xml-data/corpfiling/ "{target}" ("bagged order" OR "contract worth" OR "LoA")'},
+        {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'}
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Zero-Tolerance Product Filter)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (State/City-Aware Project Engine)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     cloud_targets = []
@@ -217,15 +223,18 @@ def run():
         except Exception: time.sleep(5)
             
     if not cloud_targets: return print("    -> No targets found.", flush=True)
+    if cloud_exclusions: print(f"    -> Context Exclusions: {cloud_exclusions}", flush=True)
+    if cloud_domains: print(f"    -> Banned Domains: {cloud_domains}", flush=True)
 
     search_matrix = []
     for t in cloud_targets:
-        for q in build_vector_matrix(t):
-            search_matrix.append({"target": t, "query": q})
+        for v in build_vector_matrix(t):
+            search_matrix.append({"target": t, "query": v["query"], "query_type": v["type"]})
 
     for item in search_matrix:
         target_product = item["target"]
         query = item["query"]
+        query_type = item["query_type"]
         
         print(f"\n[*] Scanning: {query} (Target: {target_product})", flush=True)
         results = get_search_results(query)
@@ -240,6 +249,7 @@ def run():
             if not is_duplicate(r['link']):
                 r['deep_text'] = fetch_deep_text(r['link'])
                 r['target'] = target_product
+                r['query_type'] = query_type
                 fresh_leads.append(r)
                 
         if not fresh_leads: continue
@@ -254,27 +264,27 @@ def run():
             idx = entity.get("item_index")
             if idx is None or idx >= len(fresh_leads) or idx < 0: continue
             
-            # Print the AI's reasoning so you can see EXACTLY why it rejected or accepted it
             reason = entity.get("product_match_reasoning", "No reasoning provided")
+            role = entity.get('entity_role')
             print(f"       [Reasoning] {reason}")
-            print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {entity.get('entity_role')} | Org: {entity.get('org')}", flush=True)
+            print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {role} | Location: {entity.get('city')}, {entity.get('state')} | Org: {entity.get('org')}", flush=True)
             
-            if entity.get("is_valid") and entity.get("entity_role") in ["BUYER", "SELLER"]:
-                is_supplier = (entity.get("entity_role") == "SELLER")
-                industry_tag = target_product 
-                intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
-
+            if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SELLER"]:
+                is_supplier = (role == "SELLER")
+                source = "Project-Radar" if role == "PROJECT_BUYER" else "Radar Scout"
+                
                 payload = {
                     "secret": SECRET,
                     "action": "add_lead",
                     "is_supplier": is_supplier,
-                    "target_sheet": "Suppliers" if is_supplier else "Inbox",
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "source": "Radar Scout",
+                    "source": source,
                     "org": entity.get("org", "Unknown"),
-                    "industry": industry_tag,
-                    "intent": intent_label,
+                    "city": entity.get("city", "Unknown"),
+                    "state": entity.get("state", "Unknown"),
+                    "industry": target_product,
+                    "intent": entity.get("intent_summary"),
                     "dm_name": entity.get("dm_name") or "N/A",
                     "dm_title": entity.get("dm_title") or "N/A",
                     "link": fresh_leads[idx]['link'],
@@ -286,8 +296,10 @@ def run():
                 for attempt in range(3):
                     try:
                         requests.post(WEBHOOK, json=payload, timeout=60)
-                        dest = "Suppliers" if is_supplier else "Inbox"
-                        print(f"    ✅ PUSHED [{entity.get('entity_role')}] -> {dest}: {entity['org']}", flush=True)
+                        if is_supplier: dest = "Suppliers"
+                        elif role == "PROJECT_BUYER": dest = "Projects & MOUs"
+                        else: dest = "Inbox"
+                        print(f"    ✅ PUSHED [{role}] -> {dest}: {entity['org']}", flush=True)
                         break
                     except Exception:
                         time.sleep(3)
