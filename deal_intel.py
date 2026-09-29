@@ -5,7 +5,6 @@ import warnings
 import asyncio
 import aiohttp
 import requests
-import time
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -83,13 +82,9 @@ Output JSON with key 'dossier' containing:
     for model_name in model_stack:
         try:
             chat = client.chats.create(model=model_name)
-            res = chat.send_message(
-                prompt, 
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2)
-            )
+            res = chat.send_message(prompt, config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.2))
             raw_text = res.text.strip()
-            if raw_text.startswith("```"):
-                raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
+            if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text).get("dossier", "No intel generated.")
         except Exception: continue
     return "Failed to generate AI dossier."
@@ -106,29 +101,37 @@ async def process_lead_intel(session, lead, sem):
         
         for attempt in range(3):
             try:
-                async with session.post(WEBHOOK, json={"secret": SECRET, "action": "promote_to_deal", "lead_id": lead['lead_id'], "dossier": dossier}, timeout=30) as response: 
+                # IMPORTANT UPDATE: Updates the dossier in the LEADS tab instead of forcing it to Pipeline
+                async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead_dossier", "lead_id": lead['lead_id'], "dossier": dossier}, timeout=30) as response: 
                     await response.read()
-                    print(f"    ✅ Dossier Stored in Column 17: {lead['org']}", flush=True)
+                    print(f"    ✅ Dossier Stored in Leads Tab: {lead['org']}", flush=True)
                     break
             except Exception: await asyncio.sleep(2)
         
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
             d_text = dossier[:3200] + "\n\n... [Truncated]" if len(dossier) > 3200 else dossier
-            msg = f"📊 <b>EXECUTIVE DEAL DOSSIER</b>\n\n🏢 <b>Target:</b> {lead['org']}\n📍 <b>Location:</b> {lead.get('city')}, {lead.get('state')}\n👤 <b>DM:</b> {lead['dm_name']} ({lead.get('dm_title')})\n📞 <b>Contact:</b> {lead.get('phone', 'N/A')} | {lead.get('email', 'N/A')}\n\n<b>--- DOSSIER ---</b>\n{d_text}"
-            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True, "reply_markup": {"inline_keyboard": [[{"text": "🏆 WIN DEAL", "callback_data": f"windeal_{lead['lead_id']}"}], [{"text": "🗑️ Drop Lead", "callback_data": f"dropdeal_{lead['lead_id']}"}]]}}
+            msg = (
+                f"📊 <b>LEAD INTEL BRIEF READY</b>\n\n"
+                f"🏢 <b>Target:</b> {lead['org']}\n"
+                f"📍 <b>Location:</b> {lead.get('city')}, {lead.get('state')}\n"
+                f"👤 <b>DM:</b> {lead.get('dm_name')} ({lead.get('dm_title')})\n"
+                f"📞 <b>Contact:</b> {lead.get('phone', 'N/A')} | {lead.get('email', 'N/A')}\n\n"
+                f"<b>--- DOSSIER ---</b>\n{d_text}"
+            )
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True,
+                "reply_markup": {"inline_keyboard": [ [{"text": "🚀 Move to Pipeline", "callback_data": f"topipeline_{lead['lead_id']}"}], [{"text": "🗑️ Drop Lead", "callback_data": f"droplead_{lead['lead_id']}"}] ] }
+            }
             try:
                 async with session.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=30) as response: await response.read()
             except Exception: pass
 
 async def run_intel():
-    print(">>> 🧠 DEAL ANALYST ACTIVE (17-Column Synchronized)", flush=True)
+    print(">>> 🧠 DEAL ANALYST ACTIVE (Manual Pipeline Promotion)", flush=True)
     if not WEBHOOK or not SECRET: return
-    
-    pending = []
     try:
         pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=30).json().get("pending_leads", [])
     except Exception: return
-            
     if not pending: return print("    -> No leads require deep intel.", flush=True)
 
     sem = asyncio.Semaphore(2)
