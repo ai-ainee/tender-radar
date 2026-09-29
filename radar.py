@@ -1,5 +1,6 @@
 import os
 import re
+import ssl
 import json
 import time
 import uuid
@@ -7,6 +8,7 @@ import logging
 import warnings
 import requests
 import concurrent.futures
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from datetime import datetime
 from google import genai
@@ -29,6 +31,9 @@ raw_keys = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
 current_key_index = 0
 
+# In-memory deduplication set
+EXISTING_URLS_CACHE = set()
+
 def get_next_gemini_client():
     global current_key_index
     if not GEMINI_KEYS: return None
@@ -47,7 +52,6 @@ def get_flash_model_stack(client):
             banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
             if "flash" in name and not any(bad in name for bad in banned_keywords):
                 valid_models.append(name)
-        
         if valid_models:
             valid_models.sort(reverse=True)
             for preferred in ["models/gemini-3.5-flash-lite", "models/gemini-1.5-flash"]:
@@ -59,12 +63,29 @@ def get_flash_model_stack(client):
     BEST_MODEL_STACK = ["gemini-3.5-flash-lite", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
-def is_duplicate(link):
-    if not WEBHOOK or not SECRET: return False
+def load_existing_urls_cache():
+    global EXISTING_URLS_CACHE
+    if not WEBHOOK or not SECRET: return
     try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "check_duplicate", "link": link}, timeout=60).json()
-        return res.get("duplicate", False)
-    except Exception: return False
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_all_urls"}, timeout=30).json()
+        raw_urls = res.get("urls", [])
+        EXISTING_URLS_CACHE = {u.strip().lower() for u in raw_urls if u.strip()}
+        print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} existing records into local deduplication cache.", flush=True)
+    except Exception as e:
+        print(f"⚠️ Cache load failed: {e}. Proceeding with clean cache.", flush=True)
+
+def is_duplicate_cached(link):
+    if not link: return False
+    clean = link.strip().lower()
+    if clean in EXISTING_URLS_CACHE: return True
+    parsed = urlparse(clean)
+    netloc = parsed.netloc.replace("www.", "")
+    # Check directory vs standard domains
+    directory_domains = ["indiamart.com", "tradeindia.com", "linkedin.com", "gem.gov.in", "eprocure.gov.in", "bseindia.com"]
+    if not any(d in netloc for d in directory_domains):
+        if any(netloc in cached for cached in EXISTING_URLS_CACHE if cached):
+            return True
+    return False
 
 def get_search_results(query):
     results = []
@@ -72,7 +93,7 @@ def get_search_results(query):
         try:
             payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:y", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
-            response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=30)
+            response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=25)
             if response.status_code == 200:
                 for r in response.json().get("organic", []):
                     results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", "")})
@@ -91,13 +112,14 @@ def get_search_results(query):
 def fetch_deep_text(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
-        r = requests.get(url, headers=headers, timeout=(5, 10))
+        session = requests.Session()
+        # Disabling SSL verify for troublesome Indian tender portals if necessary
+        r = session.get(url, headers=headers, timeout=(5, 10), verify=False)
         if r.status_code == 200:
-            content_type = r.headers.get('Content-Type', '').lower()
-            if 'text/html' not in content_type: return ""
+            if 'text/html' not in r.headers.get('Content-Type', '').lower(): return ""
             soup = BeautifulSoup(r.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header"]): tag.decompose()
-            return soup.get_text(separator=" ", strip=True)[:4000] 
+            for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]): tag.decompose()
+            return soup.get_text(separator=" ", strip=True)[:4000]
     except Exception: pass
     return ""
 
@@ -116,27 +138,24 @@ def ai_analyze_batch(batch, exclusions):
         exclusion_rule = f"""
 CRITICAL CONTEXTUAL EXCLUSIONS:
 Banned Intents/Keywords: {json.dumps(exclusions)}
-- If the primary intent is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False).
+- If the primary intent of the organization/lead is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False, entity_role="IRRELEVANT").
+- If the banned keyword is incidental or context (e.g. 'Repair Dept buying AutoCAD'), DO NOT REJECT.
 """
 
     prompt = f"""
 You are an expert B2B Ecosystem Analyst.
-You evaluate news, tenders, and company profiles to find leads related to the 'Target Product'.
+You evaluate news, tenders, contracts, and company profiles related to the 'Target Product'.
 
-CLASSIFICATION:
-1. 'BUYER' (Direct Procurement): Actively purchasing or issuing an RFQ/tender for the Target Product.
-2. 'PROJECT_BUYER' (Derived Demand): An organization winning a contract or setting up a facility that REQUIRES the Target Product.
-3. 'SERVICE_USER' (Ecosystem Prospect): A company offering commercial services USING the Target Product (e.g., AutoCAD drafting, design services). These are high-value prospects because they must purchase the product to do their job.
-4. 'SELLER' (Competitor/Distributor): Companies manufacturing or supplying the Target Product OR its direct alternatives/competitors.
-5. 'IRRELEVANT': Unrelated products, generic jobs, or consumer retail.
+CLASSIFICATION ROLES:
+1. 'BUYER': Organization directly procuring or issuing an RFQ/tender for the Target Product.
+2. 'PROJECT_BUYER': Organization/EPC contractor winning a project, signing an MOU, or setting up a plant that REQUIRES the Target Product to execute engineering/design.
+3. 'SERVICE_USER': Company offering commercial services using the Target Product (e.g., AutoCAD drafting services). These are prime prospects because they must purchase software licenses.
+4. 'SELLER': Company manufacturing or supplying the Target Product or a direct alternative/competitor product.
+5. 'IRRELEVANT': Completely unrelated, job listings, generic articles, consumer retail.
 
-ECOSYSTEM AWARENESS RULE:
-- Do NOT reject companies offering services related to the Target Product. They belong in 'SERVICE_USER'.
-- Do NOT reject alternative products. They belong in 'SELLER'.
-
-RULES FOR LOCATION ('city' and 'state'):
-- Identify the specific Indian City (e.g., 'Pune', 'Chennai') and State/UT (e.g., 'Maharashtra').
-- If unspecified or nationwide, output "Unknown".
+GEOGRAPHIC NORMALIZATION RULES:
+- 'city': Specific Indian city (e.g., 'Bengaluru', 'Pune', 'Noida', 'Mumbai', 'Chennai'). Normalize colonial names (e.g., use 'Bengaluru' not 'Bangalore'). If unknown, write 'Unknown'.
+- 'state': Standard Indian State or UT (e.g., 'Karnataka', 'Maharashtra', 'Uttar Pradesh', 'Tamil Nadu'). If central/nationwide, write 'Pan-India'.
 
 {exclusion_rule}
 
@@ -149,14 +168,14 @@ DATA BATCH:
             "type": "OBJECT",
             "properties": {
                 "item_index": {"type": "INTEGER"},
-                "product_match_reasoning": {"type": "STRING", "description": "Explain how this entity interacts with the Target Product (Buys it, Uses it for services, or Sells it)."},
+                "product_match_reasoning": {"type": "STRING", "description": "Explain how this entity interacts with the Target Product."},
                 "is_valid": {"type": "BOOLEAN"},
                 "entity_role": {"type": "STRING", "enum": ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER", "IRRELEVANT"]},
-                "org": {"type": "STRING", "description": "Company name or agency"},
-                "city": {"type": "STRING", "description": "Indian City"},
-                "state": {"type": "STRING", "description": "Indian state or UT"},
+                "org": {"type": "STRING", "description": "Entity name"},
+                "city": {"type": "STRING", "description": "Normalized Indian City"},
+                "state": {"type": "STRING", "description": "Normalized Indian State/UT"},
                 "industry": {"type": "STRING"},
-                "intent_summary": {"type": "STRING", "description": "Brief description of what they are doing"},
+                "intent_summary": {"type": "STRING", "description": "Summary of opportunity"},
                 "dm_name": {"type": "STRING", "nullable": True},
                 "dm_title": {"type": "STRING", "nullable": True}
             },
@@ -181,8 +200,8 @@ DATA BATCH:
             return json.loads(raw_text)
         except Exception as e:
             err_str = str(e)
-            if "NOT_FOUND" in err_str or "404" in err_str or "503" in err_str or "500" in err_str or "limit: 0" in err_str or "limit: 20" in err_str:
-                print(f"    ⚠️ Model {model_name} unavailable/exhausted. Cascading...", flush=True)
+            if any(err in err_str for err in ["NOT_FOUND", "404", "503", "500", "limit: 0", "limit: 20"]):
+                print(f"    ⚠️ Model {model_name} unavailable. Cascading...", flush=True)
                 continue
             raise e
             
@@ -200,32 +219,27 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Ecosystem & Alternative Aware)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Optimized V3 Engine)", flush=True)
     if not WEBHOOK or not SECRET: return
     
-    cloud_targets = []
-    cloud_exclusions = []
-    cloud_domains = []
-    
-    for attempt in range(3):
-        try:
-            res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=60)
-            cloud_targets = res.json().get("targets", [])
-            break
-        except Exception: time.sleep(5)
-            
-    for attempt in range(3):
-        try:
-            res_ex = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_exclusions"}, timeout=60)
-            data = res_ex.json()
-            cloud_exclusions = [e.strip() for e in data.get("exclusions", []) if e.strip()]
-            cloud_domains = [d.strip().lower() for d in data.get("blocked_domains", []) if d.strip()]
-            break
-        except Exception: time.sleep(5)
-            
-    if not cloud_targets: return print("    -> No targets found.", flush=True)
-    if cloud_exclusions: print(f"    -> Context Exclusions: {cloud_exclusions}", flush=True)
-    if cloud_domains: print(f"    -> Banned Domains: {cloud_domains}", flush=True)
+    # 1. Warm local deduplication cache
+    load_existing_urls_cache()
+
+    # 2. Fetch targets & exclusions
+    cloud_targets, cloud_exclusions, cloud_domains = [], [], []
+    try:
+        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30)
+        cloud_targets = res.json().get("targets", [])
+    except Exception: pass
+
+    try:
+        res_ex = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_exclusions"}, timeout=30)
+        data = res_ex.json()
+        cloud_exclusions = [e.strip() for e in data.get("exclusions", []) if e.strip()]
+        cloud_domains = [d.strip().lower() for d in data.get("blocked_domains", []) if d.strip()]
+    except Exception: pass
+
+    if not cloud_targets: return print("    -> No targets found in 🎯 Targets sheet.", flush=True)
 
     search_matrix = []
     for t in cloud_targets:
@@ -244,10 +258,10 @@ def run():
         for r in results:
             link_lower = r['link'].lower()
             if any(b_dom in link_lower for b_dom in cloud_domains):
-                print(f"    🚫 Skipped Blocked Domain: {r['link']}", flush=True)
                 continue
                 
-            if not is_duplicate(r['link']):
+            # Instant in-memory deduplication check
+            if not is_duplicate_cached(r['link']):
                 r['deep_text'] = fetch_deep_text(r['link'])
                 r['target'] = target_product
                 r['query_type'] = query_type
@@ -255,7 +269,7 @@ def run():
                 
         if not fresh_leads: continue
             
-        print(f"    -> AI Analyzing {len(fresh_leads)} links against '{target_product}'...", flush=True)
+        print(f"    -> AI Analyzing {len(fresh_leads)} links...", flush=True)
         try: ai_data = ai_analyze_batch(fresh_leads, cloud_exclusions)
         except Exception as e: 
             print(f"    -> AI Error: {e}", flush=True)
@@ -265,29 +279,35 @@ def run():
             idx = entity.get("item_index")
             if idx is None or idx >= len(fresh_leads) or idx < 0: continue
             
-            reason = entity.get("product_match_reasoning", "No reasoning provided")
             role = entity.get('entity_role')
-            print(f"       [Reasoning] {reason}")
-            print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {role} | Location: {entity.get('city')}, {entity.get('state')} | Org: {entity.get('org')}", flush=True)
-            
             if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
                 
-                # Intelligent Routing
-                if role == "PROJECT_BUYER": source = "Project-Radar"
-                elif role == "SERVICE_USER": source = "Ecosystem-Scout"
-                else: source = "Radar Scout"
+                # Explicit sheet routing
+                if is_supplier:
+                    target_sheet = "Suppliers"
+                    source_tag = "Supplier-Radar"
+                elif role == "PROJECT_BUYER":
+                    target_sheet = "Projects & MOUs"
+                    source_tag = "Project-Radar"
+                elif role == "SERVICE_USER":
+                    target_sheet = "Inbox"
+                    source_tag = "Ecosystem-Scout"
+                else:
+                    target_sheet = "Inbox"
+                    source_tag = "Radar Scout"
                 
                 payload = {
                     "secret": SECRET,
                     "action": "add_lead",
+                    "target_sheet": target_sheet,
                     "is_supplier": is_supplier,
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "source": source,
+                    "source": source_tag,
                     "org": entity.get("org", "Unknown"),
                     "city": entity.get("city", "Unknown"),
-                    "state": entity.get("state", "Unknown"),
+                    "state": entity.get("state", "Pan-India"),
                     "industry": target_product,
                     "intent": entity.get("intent_summary"),
                     "dm_name": entity.get("dm_name") or "N/A",
@@ -300,16 +320,14 @@ def run():
                 
                 for attempt in range(3):
                     try:
-                        requests.post(WEBHOOK, json=payload, timeout=60)
-                        if is_supplier: dest = "Suppliers"
-                        elif role == "PROJECT_BUYER": dest = "Projects & MOUs"
-                        else: dest = "Inbox"
-                        print(f"    ✅ PUSHED [{role}] -> {dest}: {entity['org']}", flush=True)
+                        requests.post(WEBHOOK, json=payload, timeout=30)
+                        # Add to local cache immediately to prevent re-capturing in the same run
+                        EXISTING_URLS_CACHE.add(fresh_leads[idx]['link'].strip().lower())
+                        print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']} ({entity.get('city')}, {entity.get('state')})", flush=True)
                         break
-                    except Exception:
-                        time.sleep(3)
+                    except Exception: time.sleep(2)
                         
-        time.sleep(15)
+        time.sleep(4) # Reduced delay because batch deduplication eliminated API load
 
 if __name__ == "__main__":
     run()
