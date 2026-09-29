@@ -116,25 +116,26 @@ def ai_analyze_batch(batch, exclusions):
         exclusion_rule = f"""
 CRITICAL CONTEXTUAL EXCLUSIONS:
 Banned Intents/Keywords: {json.dumps(exclusions)}
-- If the primary intent of the project/lead is to procure or offer [Banned Keywords], REJECT THEM (is_valid=False).
+- If the primary intent is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False).
 """
 
     prompt = f"""
-You are an expert B2B Procurement & Capex Signal Analyst.
-You evaluate news, tender announcements, MOUs, and project awards to identify entities requiring the 'Target Product' (software or specialized solution).
+You are an expert B2B Ecosystem Analyst.
+You evaluate news, tenders, and company profiles to find leads related to the 'Target Product'.
 
 CLASSIFICATION:
-1. 'BUYER' (Direct Procurement):
-   - Actively purchasing or issuing an RFQ/tender for the Target Product.
-2. 'PROJECT_BUYER' (Derived Demand / Capex Signal): 
-   - An organization, EPC contractor, or engineering consultant that won a project contract, signed an MOU, or is setting up a new unit/facility that REQUIRES the Target Product to execute design, modeling, or manufacturing work.
-3. 'SELLER':
-   - Certified distributor, OEM, or supplier authorized to sell the Target Product.
-4. 'IRRELEVANT':
-   - Unrelated product, general news, or resumes.
+1. 'BUYER' (Direct Procurement): Actively purchasing or issuing an RFQ/tender for the Target Product.
+2. 'PROJECT_BUYER' (Derived Demand): An organization winning a contract or setting up a facility that REQUIRES the Target Product.
+3. 'SERVICE_USER' (Ecosystem Prospect): A company offering commercial services USING the Target Product (e.g., AutoCAD drafting, design services). These are high-value prospects because they must purchase the product to do their job.
+4. 'SELLER' (Competitor/Distributor): Companies manufacturing or supplying the Target Product OR its direct alternatives/competitors.
+5. 'IRRELEVANT': Unrelated products, generic jobs, or consumer retail.
+
+ECOSYSTEM AWARENESS RULE:
+- Do NOT reject companies offering services related to the Target Product. They belong in 'SERVICE_USER'.
+- Do NOT reject alternative products. They belong in 'SELLER'.
 
 RULES FOR LOCATION ('city' and 'state'):
-- Identify the specific Indian City (e.g., 'Pune', 'Chennai', 'Noida') and State/UT (e.g., 'Maharashtra', 'Tamil Nadu', 'Uttar Pradesh').
+- Identify the specific Indian City (e.g., 'Pune', 'Chennai') and State/UT (e.g., 'Maharashtra').
 - If unspecified or nationwide, output "Unknown".
 
 {exclusion_rule}
@@ -148,14 +149,14 @@ DATA BATCH:
             "type": "OBJECT",
             "properties": {
                 "item_index": {"type": "INTEGER"},
-                "product_match_reasoning": {"type": "STRING", "description": "Explain how this project, tender, or company requires or sells the Target Product."},
+                "product_match_reasoning": {"type": "STRING", "description": "Explain how this entity interacts with the Target Product (Buys it, Uses it for services, or Sells it)."},
                 "is_valid": {"type": "BOOLEAN"},
-                "entity_role": {"type": "STRING", "enum": ["BUYER", "PROJECT_BUYER", "SELLER", "IRRELEVANT"]},
-                "org": {"type": "STRING", "description": "Company name or agency winning the project/buying"},
-                "city": {"type": "STRING", "description": "Indian City where the project/entity is located"},
+                "entity_role": {"type": "STRING", "enum": ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER", "IRRELEVANT"]},
+                "org": {"type": "STRING", "description": "Company name or agency"},
+                "city": {"type": "STRING", "description": "Indian City"},
                 "state": {"type": "STRING", "description": "Indian state or UT"},
                 "industry": {"type": "STRING"},
-                "intent_summary": {"type": "STRING", "description": "Brief description of the tender, project award, or MOU"},
+                "intent_summary": {"type": "STRING", "description": "Brief description of what they are doing"},
                 "dm_name": {"type": "STRING", "nullable": True},
                 "dm_title": {"type": "STRING", "nullable": True}
             },
@@ -199,7 +200,7 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (State/City-Aware Project Engine)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Ecosystem & Alternative Aware)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     cloud_targets = []
@@ -269,9 +270,13 @@ def run():
             print(f"       [Reasoning] {reason}")
             print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {role} | Location: {entity.get('city')}, {entity.get('state')} | Org: {entity.get('org')}", flush=True)
             
-            if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SELLER"]:
+            if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
-                source = "Project-Radar" if role == "PROJECT_BUYER" else "Radar Scout"
+                
+                # Intelligent Routing
+                if role == "PROJECT_BUYER": source = "Project-Radar"
+                elif role == "SERVICE_USER": source = "Ecosystem-Scout"
+                else: source = "Radar Scout"
                 
                 payload = {
                     "secret": SECRET,
