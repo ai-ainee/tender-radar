@@ -187,30 +187,32 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Contextual AI Filter)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Domain Blacklist + Context Filter)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     cloud_targets = []
     cloud_exclusions = []
+    cloud_domains = []
     
     for attempt in range(3):
         try:
             res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=60)
             cloud_targets = res.json().get("targets", [])
             break
-        except Exception as e:
-            time.sleep(5)
+        except Exception: time.sleep(5)
             
     for attempt in range(3):
         try:
             res_ex = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_exclusions"}, timeout=60)
-            cloud_exclusions = res_ex.json().get("exclusions", [])
+            data = res_ex.json()
+            cloud_exclusions = [e.strip() for e in data.get("exclusions", []) if e.strip()]
+            cloud_domains = [d.strip().lower() for d in data.get("blocked_domains", []) if d.strip()]
             break
-        except Exception:
-            time.sleep(5)
+        except Exception: time.sleep(5)
             
     if not cloud_targets: return print("    -> No targets found.", flush=True)
-    if cloud_exclusions: print(f"    -> Contextual Exclusions Active: {cloud_exclusions}", flush=True)
+    if cloud_exclusions: print(f"    -> Context Exclusions: {cloud_exclusions}", flush=True)
+    if cloud_domains: print(f"    -> Banned Domains: {cloud_domains}", flush=True)
 
     search_matrix = []
     for t in cloud_targets: search_matrix.extend(build_vector_matrix(t))
@@ -220,6 +222,13 @@ def run():
         results = get_search_results(query)
         fresh_leads = []
         for r in results:
+            link_lower = r['link'].lower()
+            
+            # THE PRE-FETCH GUILLOTINE
+            if any(b_dom in link_lower for b_dom in cloud_domains):
+                print(f"    🚫 Skipped Blocked Domain: {r['link']}", flush=True)
+                continue
+                
             if not is_duplicate(r['link']):
                 r['deep_text'] = fetch_deep_text(r['link'])
                 fresh_leads.append(r)
