@@ -69,7 +69,7 @@ def load_existing_urls_cache():
         res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_all_urls"}, timeout=30).json()
         raw_urls = res.get("urls", [])
         EXISTING_URLS_CACHE = {u.strip().lower() for u in raw_urls if u.strip()}
-        print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} existing records (including AI_Trash) into local cache.", flush=True)
+        print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} existing records into cache.", flush=True)
     except Exception as e:
         print(f"⚠️ Cache load failed: {e}. Proceeding with clean cache.", flush=True)
 
@@ -135,8 +135,8 @@ def ai_analyze_batch(batch, exclusions):
         exclusion_rule = f"""
 CRITICAL CONTEXTUAL EXCLUSIONS:
 Banned Intents/Keywords: {json.dumps(exclusions)}
-- If the primary intent of the organization/lead is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False, entity_role="IRRELEVANT").
-- If the banned keyword is incidental or context (e.g. 'Repair Dept buying AutoCAD'), DO NOT REJECT.
+- If the primary intent of the organization/lead is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False).
+- If the banned keyword is incidental context (e.g. 'Repair Dept buying AutoCAD'), DO NOT REJECT.
 """
 
     prompt = f"""
@@ -145,14 +145,14 @@ You evaluate news, tenders, contracts, and company profiles related to the 'Targ
 
 CLASSIFICATION ROLES:
 1. 'BUYER': Organization directly procuring or issuing an RFQ/tender for the Target Product.
-2. 'PROJECT_BUYER': Organization/EPC contractor winning a project, signing an MOU, or setting up a plant that REQUIRES the Target Product to execute engineering/design.
-3. 'SERVICE_USER': Company offering commercial services using the Target Product (e.g., AutoCAD drafting services). These are prime prospects because they must purchase software licenses.
-4. 'SELLER': Company manufacturing or supplying the Target Product or a direct alternative/competitor product.
-5. 'IRRELEVANT': Completely unrelated, job listings, generic articles, consumer retail.
+2. 'PROJECT_BUYER': Organization winning a project/MOU that REQUIRES the Target Product.
+3. 'SERVICE_USER': Company offering commercial services using the Target Product (e.g., AutoCAD drafting services).
+4. 'SELLER': Company manufacturing/supplying the Target Product or an alternative.
+5. 'IRRELEVANT': Unrelated products, job listings, generic articles.
 
-GEOGRAPHIC NORMALIZATION RULES:
-- 'city': Specific Indian city (e.g., 'Bengaluru', 'Pune', 'Noida', 'Mumbai', 'Chennai'). Normalize colonial names (e.g., use 'Bengaluru' not 'Bangalore'). If unknown, write 'Unknown'.
-- 'state': Standard Indian State or UT (e.g., 'Karnataka', 'Maharashtra', 'Uttar Pradesh', 'Tamil Nadu'). If central/nationwide, write 'Pan-India'.
+GEOGRAPHIC NORMALIZATION:
+- 'city': Specific Indian city (e.g., 'Bengaluru', 'Pune'). 
+- 'state': Standard Indian State/UT (e.g., 'Karnataka', 'Maharashtra').
 
 {exclusion_rule}
 
@@ -165,7 +165,7 @@ DATA BATCH:
             "type": "OBJECT",
             "properties": {
                 "item_index": {"type": "INTEGER"},
-                "product_match_reasoning": {"type": "STRING", "description": "Explain how this entity interacts with the Target Product."},
+                "product_match_reasoning": {"type": "STRING", "description": "Explain interaction with Target Product."},
                 "is_valid": {"type": "BOOLEAN"},
                 "entity_role": {"type": "STRING", "description": "Must be exactly one of: BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT"},
                 "org": {"type": "STRING", "description": "Entity name"},
@@ -185,11 +185,7 @@ DATA BATCH:
             chat = client.chats.create(model=model_name)
             res = chat.send_message(
                 prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json", 
-                    response_schema=schema, 
-                    temperature=0.0
-                )
+                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
             )
             raw_text = res.text.strip()
             if raw_text.startswith("```"):
@@ -201,22 +197,21 @@ DATA BATCH:
                 print(f"    ⚠️ Model {model_name} unavailable. Cascading...", flush=True)
                 continue
             raise e
-            
-    raise Exception("All Gemini models unavailable or failed.")
+    raise Exception("All Gemini models unavailable.")
 
 def build_vector_matrix(target):
     current_year = datetime.now().year
     return [
         {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in'},
         {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
-        {"type": "Project", "query": f'"{target}" ("Letter of Award" OR "awarded contract" OR "lowest bidder" OR "L1 bidder") India {current_year}'},
-        {"type": "Project", "query": f'"{target}" ("MoU signed" OR "groundbreaking ceremony" OR "setting up new plant" OR "greenfield facility") India'},
+        {"type": "Project", "query": f'"{target}" ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
+        {"type": "Project", "query": f'"{target}" ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'},
         {"type": "Project", "query": f'site:bseindia.com/xml-data/corpfiling/ "{target}" ("bagged order" OR "contract worth" OR "LoA")'},
         {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'}
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V4 Engine with AI Trash Bin)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (V7 Master Engine)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     load_existing_urls_cache()
@@ -234,7 +229,7 @@ def run():
         cloud_domains = [d.strip().lower() for d in data.get("blocked_domains", []) if d.strip()]
     except Exception: pass
 
-    if not cloud_targets: return print("    -> No targets found in 🎯 Targets sheet.", flush=True)
+    if not cloud_targets: return print("    -> No targets found.", flush=True)
 
     search_matrix = []
     for t in cloud_targets:
@@ -254,7 +249,6 @@ def run():
             link_lower = r['link'].lower()
             if any(b_dom in link_lower for b_dom in cloud_domains):
                 continue
-                
             if not is_duplicate_cached(r['link']):
                 r['deep_text'] = fetch_deep_text(r['link'])
                 r['target'] = target_product
@@ -269,7 +263,6 @@ def run():
             print(f"    -> AI Error: {e}", flush=True)
             continue
             
-        # 🗑️ The AI Trash Bin (Batch Collector)
         ai_trash_log = []
             
         for entity in ai_data:
@@ -278,24 +271,15 @@ def run():
             
             role = entity.get('entity_role')
             reason = entity.get("product_match_reasoning", "No reasoning provided")
-            print(f"       [Reasoning] {reason}")
-            print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {role} | Location: {entity.get('city')}, {entity.get('state')} | Org: {entity.get('org')}", flush=True)
+            print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {role} | Org: {entity.get('org')}", flush=True)
             
             if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
                 
-                if role == "PROJECT_BUYER":
-                    target_sheet = "Projects & MOUs"
-                    source_tag = "Project-Radar"
-                elif role == "SERVICE_USER":
-                    target_sheet = "Inbox"
-                    source_tag = "Ecosystem-Scout"
-                elif is_supplier:
-                    target_sheet = "Suppliers"
-                    source_tag = "Supplier-Radar"
-                else:
-                    target_sheet = "Inbox"
-                    source_tag = "Radar Scout"
+                if role == "PROJECT_BUYER": target_sheet, source_tag = "Projects & MOUs", "Project-Radar"
+                elif role == "SERVICE_USER": target_sheet, source_tag = "Inbox", "Ecosystem-Scout"
+                elif is_supplier: target_sheet, source_tag = "Suppliers", "Supplier-Radar"
+                else: target_sheet, source_tag = "Inbox", "Radar Scout"
                 
                 intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
                 
@@ -319,23 +303,17 @@ def run():
                     "phone": "N/A",
                     "website": "N/A"
                 }
-                
                 for attempt in range(3):
                     try:
                         requests.post(WEBHOOK, json=payload, timeout=30)
                         EXISTING_URLS_CACHE.add(fresh_leads[idx]['link'].strip().lower())
-                        print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']} ({entity.get('city')}, {entity.get('state')})", flush=True)
+                        print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']}", flush=True)
                         break
                     except Exception: time.sleep(2)
             else:
-                # 🗑️ Mark as Junk internally and prepare for batch upload
-                ai_trash_log.append({
-                    "url": fresh_leads[idx]['link'],
-                    "reason": f"[{role}] {reason}"
-                })
+                ai_trash_log.append({"url": fresh_leads[idx]['link'], "reason": f"[{role}] {reason}"})
                 EXISTING_URLS_CACHE.add(fresh_leads[idx]['link'].strip().lower())
         
-        # 🚀 Perform High-Speed Junk Sweep
         if ai_trash_log:
             payload = {
                 "secret": SECRET,
@@ -346,10 +324,9 @@ def run():
             for attempt in range(3):
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=30)
-                    print(f"    🗑️ Swept {len(ai_trash_log)} rejected links into AI_Trash sheet.", flush=True)
+                    print(f"    🗑️ Swept {len(ai_trash_log)} rejected links into AI_Trash.", flush=True)
                     break
                 except Exception: time.sleep(2)
-                        
         time.sleep(4)
 
 if __name__ == "__main__":
