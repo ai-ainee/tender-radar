@@ -14,8 +14,6 @@ print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (Stakeholder Enrichment Engine)")
 load_dotenv()
 WEBHOOK_URL = os.getenv("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.getenv("WEBHOOK_SECRET", "RadarEngine2026_Secure!")
-
-# API Key Rotation Logic
 raw_keys = os.getenv("GEMINI_API_KEY", "")
 all_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 
@@ -23,10 +21,33 @@ if not WEBHOOK_URL or not all_keys:
     print("[-] ERROR: Missing .env credentials or API keys.")
     exit(1)
 
-# Pick a random key for this run
 GEMINI_API_KEY = random.choice(all_keys)
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-3.8-flash')
+
+# --- DYNAMIC MODEL FALLBACK ENGINE ---
+def generate_with_fallback(prompt):
+    # Ask Google API what models this key is allowed to use
+    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    
+    # Sort them to try 'flash' (fastest) first, then 'pro'
+    flash_models = [m for m in available_models if 'flash' in m.lower()]
+    pro_models = [m for m in available_models if 'pro' in m.lower()]
+    fallback_order = flash_models + pro_models + [m for m in available_models if m not in flash_models + pro_models]
+    
+    if not fallback_order:
+        fallback_order = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro'] # Safe baseline
+        
+    for model_name in fallback_order:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            print(f"       [!] {model_name} failed/rate-limited. Switching to next model...")
+            time.sleep(2)
+            
+    raise Exception("All available Gemini models failed or hit rate limits.")
+# -------------------------------------
 
 # 2. Webhook Helpers
 def fetch_from_sheet(action):
@@ -55,11 +76,8 @@ def web_scrape_context(query):
                     text_data += f"{r.get('title', '')}: {r.get('body', '')}\n"
         time.sleep(2)
     except Exception as e:
-        print(f"       [-] Search engine rate limit: {e}")
-        
-    if not text_data:
-        return "Company information restricted. Base analysis on industry standards."
-    return text_data[:3000]
+        print(f"       [-] Search engine limit: {e}")
+    return text_data[:3000] if text_data else "Info restricted. Base analysis on standards."
 
 # 4. TASK 1: Find Stakeholders
 def task_1_stakeholder_enrichment():
@@ -77,55 +95,29 @@ def task_1_stakeholder_enrichment():
         print(f"    -> Hunting stakeholders for: {org}")
         
         context = web_scrape_context(f"{org} {lead.get('city', '')} CEO CTO Director procurement contact")
-        
         prompt = f"""
-        Extract decision makers (CEO, CTO, Directors, Procurement, etc.), the official company website, and a main phone number for the entity '{org}'.
-        Use this scraped web data: {context}
-        
-        Return STRICTLY in JSON format:
-        {{
-          "website": "https://...",
-          "phone": "...",
-          "primary_dm": {{"name": "...", "title": "...", "email": "..."}},
-          "other_contacts": [
-            {{"name": "...", "designation": "...", "email": "...", "phone": "...", "source": "..."}}
-          ]
-        }}
-        If a field is missing or unknown, output "N/A".
+        Extract decision makers, website, and phone for '{org}'. Context: {context}
+        Return STRICTLY in JSON:
+        {{"website": "...", "phone": "...", "primary_dm": {{"name": "...", "title": "...", "email": "..."}}, "other_contacts": []}}
         """
         try:
-            response = model.generate_content(prompt)
-            txt = response.text.strip()
+            txt = generate_with_fallback(prompt).strip()
             if txt.startswith("```json"): txt = txt[7:-3].strip()
             elif txt.startswith("```"): txt = txt[3:-3].strip()
             result = json.loads(txt)
             
             dm = result.get("primary_dm", {})
-            update_payload = {
-                "secret": SECRET,
-                "action": "update_lead",
-                "lead_id": lead_id,
-                "website": result.get("website", "N/A"),
-                "phone": result.get("phone", "N/A"),
-                "dm_name": dm.get("name", "N/A"),
-                "dm_title": dm.get("title", "N/A"),
-                "email": dm.get("email", "N/A")
-            }
-            send_to_sheet(update_payload)
-            
+            send_to_sheet({
+                "secret": SECRET, "action": "update_lead", "lead_id": lead_id,
+                "website": result.get("website", "N/A"), "phone": result.get("phone", "N/A"),
+                "dm_name": dm.get("name", "N/A"), "dm_title": dm.get("title", "N/A"), "email": dm.get("email", "N/A")
+            })
             others = result.get("other_contacts", [])
             if others:
-                contact_payload = {
-                    "secret": SECRET,
-                    "action": "add_contacts",
-                    "lead_id": lead_id,
-                    "org": org,
-                    "contacts": others
-                }
-                send_to_sheet(contact_payload)
+                send_to_sheet({"secret": SECRET, "action": "add_contacts", "lead_id": lead_id, "org": org, "contacts": others})
             print(f"       [+] Enriched {org}. Found {len(others)} extra contacts.")
         except Exception as e:
-            print(f"       [-] Failed to parse Gemini response for {org}: {e}")
+            print(f"       [-] Failed AI extraction for {org}: {e}")
 
 if __name__ == "__main__":
     task_1_stakeholder_enrichment()
