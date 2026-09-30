@@ -65,8 +65,8 @@ def generate_intel_dossiers():
         return
 
     for lead in pending_intel:
-        lead_id = lead['lead_id']
-        org = lead['org']
+        lead_id = lead.get('lead_id')
+        org = lead.get('org', 'Unknown Company')
         industry = lead.get('industry', 'Unknown')
         dm_name = lead.get('dm_name', 'Decision Maker')
         
