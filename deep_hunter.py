@@ -8,7 +8,7 @@ import aiohttp
 import requests
 import dns.resolver
 from bs4 import BeautifulSoup
-from google import genai
+import google.generativeai as genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
 
