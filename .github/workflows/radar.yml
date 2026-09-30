@@ -21,7 +21,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install python-dotenv requests beautifulsoup4 google-generativeai dnspython aiohttp tenacity
+          pip install python-dotenv requests beautifulsoup4 google-generativeai dnspython aiohttp tenacity duckduckgo-search
 
       - name: Run 1 - Radar Scout
         env:
