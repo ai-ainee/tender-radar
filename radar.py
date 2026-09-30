@@ -165,6 +165,7 @@ DATA BATCH:
             "type": "OBJECT",
             "properties": {
                 "item_index": {"type": "INTEGER"},
+                "posted_date": {"type": "STRING", "description": "The exact date this article, tender, or lead was originally posted or published online (Format: YYYY-MM-DD). If it is a fresh lead, write today's date. If absolutely not visible, output 'Unknown'"},
                 "product_match_reasoning": {"type": "STRING", "description": "Explain interaction with Target Product."},
                 "is_valid": {"type": "BOOLEAN"},
                 "entity_role": {"type": "STRING", "description": "Must be exactly one of: BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT"},
@@ -290,6 +291,7 @@ def run():
                     "is_supplier": is_supplier,
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "posted_date": ai_data.get("posted_date", "Unknown"),
                     "source": source_tag,
                     "org": entity.get("org", "Unknown"),
                     "city": entity.get("city", "Unknown"),
