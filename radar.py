@@ -6,6 +6,8 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import google.generativeai as genai
+from duckduckgo_search import DDGS
+import time
 
 # ===================================================================
 # RADAR B2B CRM ENGINE - V12 (SERVICES SPLIT & POSTED DATE)
@@ -56,25 +58,29 @@ print(f"[*] Loaded {len(scraped_urls)} existing records into cache.")
 
 # 4. Search and Scrape Functions
 def search_duckduckgo(query):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    url = f"https://html.duckduckgo.com/html/?q={query}"
     links = []
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for a in soup.find_all('a', class_='result__snippet'):
-            link = a.get('href')
-            if link and link.startswith('//duckduckgo.com/l/?uddg='):
-                link = link.split('uddg=')[1].split('&')[0]
-                import urllib.parse
-                link = urllib.parse.unquote(link)
+        # Using the official API to bypass GitHub Actions IP blocks
+        with DDGS() as ddgs:
+            results = ddgs.text(query, max_results=10)
+            if not results:
+                return []
                 
-                # Check exclusions before even scraping
-                if any(b in link.lower() for b in banned_domains): continue
-                if link not in scraped_urls:
-                    links.append(link)
+            for r in results:
+                link = r.get('href')
+                if link:
+                    # Exclusions & Cache Filter
+                    if any(b in link.lower() for b in banned_domains): 
+                        continue
+                    if link not in scraped_urls:
+                        links.append(link)
+                        
+        print(f"       [Found {len(links)} fresh un-scraped links]")
+        time.sleep(2) # Slight pause to prevent rate-limiting
+        
     except Exception as e:
-        print(f"[-] Search error: {e}")
+        print(f"       [-] Search engine rate limit or error: {e}")
+        
     return links
 
 def extract_text_from_url(url):
