@@ -291,7 +291,7 @@ def run():
                     "is_supplier": is_supplier,
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_date": ai_data.get("posted_date", "Unknown"),
+                    "posted_date": entity.get("posted_date", "Unknown"),
                     "source": source_tag,
                     "org": entity.get("org", "Unknown"),
                     "city": entity.get("city", "Unknown"),
@@ -304,6 +304,7 @@ def run():
                     "email": "N/A",
                     "phone": "N/A",
                     "website": "N/A"
+}
                 }
                 for attempt in range(3):
                     try:
