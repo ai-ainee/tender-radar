@@ -1,65 +1,35 @@
-name: Radar Enterprise CRM Engine
+name: Radar B2B Autopilot
 
 on:
   schedule:
-    - cron: '0 3,5,7,9,11,13,15 * * 1-5'
-  workflow_dispatch:
-
-concurrency:
-  group: radar-pipeline
-  cancel-in-progress: false
+    # Runs every 2 hours automatically
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # 🚨 This adds a manual "Run workflow" button so you can test it anytime!
 
 jobs:
-  hunt:
+  run-radar-engine:
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: 📥 Checkout Code
+      - name: 📂 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 🐍 Set up Python 3.10
+      - name: 🐍 Setup Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
       - name: 📦 Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install python-dotenv requests beautifulsoup4 google-genai dnspython
 
-      - name: 📡 Phase 1 - Scout (radar.py)
+      - name: 📡 Run Radar Engine (radar.py)
         env:
+          # This securely pulls your hidden keys from GitHub Secrets
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python radar.py
-
-      - name: 🕵️‍♂️ Phase 2 - Detective (deep_hunter.py)
-        env:
-          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python deep_hunter.py
-
-      - name: 🧠 Phase 3 - Analyst (deal_intel.py)
-        env:
-          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python deal_intel.py
-
-      - name: 🚨 Alert on Failure
-        if: failure()
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-          -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-          -d text="🚨 <b>CRITICAL ALERT:</b> Radar CRM Engine encountered an error in GitHub Actions. Check logs." \
-          -d parse_mode="HTML"
