@@ -1,6 +1,7 @@
 import os
 import requests
 import time
+import random
 from dotenv import load_dotenv
 import google.generativeai as genai
 from duckduckgo_search import DDGS
@@ -8,16 +9,21 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 print(">>> 🧠 DEEP INTEL ACTIVE (Dossier Generation Engine)")
 
-# 1. Load Credentials
+# 1. Load Credentials & Handle Multiple API Keys
 load_dotenv()
 WEBHOOK_URL = os.getenv("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.getenv("WEBHOOK_SECRET", "RadarEngine2026_Secure!")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not WEBHOOK_URL or not GEMINI_API_KEY:
-    print("[-] ERROR: Missing .env credentials.")
+# API Key Rotation Logic
+raw_keys = os.getenv("GEMINI_API_KEY", "")
+all_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+
+if not WEBHOOK_URL or not all_keys:
+    print("[-] ERROR: Missing .env credentials or API keys.")
     exit(1)
 
+# Pick a random key for this run
+GEMINI_API_KEY = random.choice(all_keys)
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
@@ -36,7 +42,7 @@ def send_to_sheet(payload):
     except Exception as e:
         print(f"[-] Failed to send payload: {e}")
 
-# 3. Secure Web Scraper (Bypasses GitHub IP Blocks)
+# 3. Secure Web Scraper
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def web_scrape_context(query):
     text_data = ""
