@@ -28,15 +28,9 @@ if not WEBHOOK_URL or not all_keys:
 GEMINI_API_KEY = random.choice(all_keys)
 genai.configure(api_key=GEMINI_API_KEY)
 
-# 2. Dynamic Model Selector (Prevents 404 Deprecation Errors)
-try:
-    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    best_model_name = next((m for m in available_models if 'flash' in m.lower()), 'models/gemini-1.5-flash')
-except Exception:
-    best_model_name = 'models/gemini-1.5-flash' # Safe fallback
-
-print(f"[*] Using Gemini Model: {best_model_name}")
-model = genai.GenerativeModel(best_model_name)
+# 2. Setup Gemini Model (Forced to 3.8 to prevent 404 Deprecation)
+print("[*] Using Gemini Model: models/gemini-3.8-flash")
+model = genai.GenerativeModel('gemini-3.8-flash')
 
 # 3. Webhook Helpers
 def fetch_from_sheet(action):
@@ -61,7 +55,7 @@ print(f"[*] Loaded {len(scraped_urls)} existing records into cache.")
 
 banned_domains = ['amazon', 'flipkart', 'ebay', 'justdial', 'youtube', 'facebook', 'twitter', 'linkedin']
 
-# 4. Search & Scrape Engine (Bypasses GitHub IP Blocks)
+# 4. Search & Scrape Engine
 def search_duckduckgo(query):
     links = []
     try:
@@ -86,9 +80,18 @@ def search_duckduckgo(query):
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def scrape_page(url):
+    # We use Google Cache to bypass sites like Indiamart that block bots
+    cache_url = f"http://webcache.googleusercontent.com/search?q=cache:{url}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    response = requests.get(url, headers=headers, timeout=10)
-    response.raise_for_status()
+    
+    # Try the cache first. If it fails, try the direct URL.
+    try:
+        response = requests.get(cache_url, headers=headers, timeout=10)
+        response.raise_for_status()
+    except:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
     soup = BeautifulSoup(response.text, 'html.parser')
     for script in soup(["script", "style", "nav", "footer"]):
         script.decompose()
