@@ -6,7 +6,7 @@ import random
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import google.generativeai as genai
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 print(">>> 📡 RADAR SCOUT ACTIVE (V12 Master Engine)")
