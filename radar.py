@@ -16,7 +16,7 @@ load_dotenv()
 WEBHOOK_URL = os.getenv("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.getenv("WEBHOOK_SECRET", "RadarEngine2026_Secure!")
 
-# API Key Rotation Logic
+# Read all keys into a list
 raw_keys = os.getenv("GEMINI_API_KEY", "")
 all_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 
@@ -24,15 +24,7 @@ if not WEBHOOK_URL or not all_keys:
     print("[-] ERROR: Missing .env credentials or API keys.")
     exit(1)
 
-# Pick a random key for this run
-GEMINI_API_KEY = random.choice(all_keys)
-genai.configure(api_key=GEMINI_API_KEY)
-
-# 2. Setup Gemini Model (Forced to 3.8 to prevent 404 Deprecation)
-print("[*] Using Gemini Model: models/gemini-3.8-flash")
-model = genai.GenerativeModel('gemini-3.8-flash')
-
-# 3. Webhook Helpers
+# 2. Webhook Helpers
 def fetch_from_sheet(action):
     try:
         response = requests.post(WEBHOOK_URL, json={"secret": SECRET, "action": action}, timeout=15)
@@ -55,7 +47,7 @@ print(f"[*] Loaded {len(scraped_urls)} existing records into cache.")
 
 banned_domains = ['amazon', 'flipkart', 'ebay', 'justdial', 'youtube', 'facebook', 'twitter', 'linkedin']
 
-# 4. Search & Scrape Engine
+# 3. Search & Scrape Engine
 def search_duckduckgo(query):
     links = []
     try:
@@ -73,18 +65,16 @@ def search_duckduckgo(query):
                         links.append(link)
                         
         print(f"       [Found {len(links)} fresh un-scraped links]")
-        time.sleep(2) # Slight pause to prevent rate-limiting
+        time.sleep(2) 
     except Exception as e:
         print(f"       [-] Search engine rate limit or error: {e}")
     return links
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def scrape_page(url):
-    # We use Google Cache to bypass sites like Indiamart that block bots
     cache_url = f"http://webcache.googleusercontent.com/search?q=cache:{url}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
-    # Try the cache first. If it fails, try the direct URL.
     try:
         response = requests.get(cache_url, headers=headers, timeout=10)
         response.raise_for_status()
@@ -96,10 +86,15 @@ def scrape_page(url):
     for script in soup(["script", "style", "nav", "footer"]):
         script.decompose()
     text = soup.get_text(separator=' ', strip=True)
-    return text[:4000] # Give Gemini the first 4000 characters
+    return text[:4000]
 
-# 5. AI Evaluation Engine
+# 4. AI Evaluation Engine (NOW WITH KEY ROTATION)
 def evaluate_lead(url, text, target):
+    # Swap to a random API key for EVERY SINGLE EVALUATION
+    current_key = random.choice(all_keys)
+    genai.configure(api_key=current_key)
+    model = genai.GenerativeModel('gemini-3.8-flash')
+    
     prompt = f"""
     You are a B2B lead qualifier. Analyze this web text to see if it is a genuine commercial opportunity (Tender, RFQ, active project, or buyer requirement) related to {target}.
     
@@ -125,7 +120,7 @@ def evaluate_lead(url, text, target):
         print(f"       [-] Gemini evaluation failed: {e}")
         return None
 
-# 6. Main Radar Sequence
+# 5. Main Radar Sequence
 targets = [
     "Autodesk", "Advance Steel", "Architecture, Engineering & Construction Collection", 
     "AutoCAD", "Civil 3D", "Forma", "Autodesk Construction Cloud", "Inventor", 
@@ -175,7 +170,10 @@ def run_radar():
                         "action": "log_scraped_url", 
                         "url": link
                     })
-                    time.sleep(2) # Prevent rate limits
+                    
+                    # MANDATORY 15-SECOND COOLDOWN TO PREVENT 429 ERRORS
+                    print("       [Waiting 15 seconds to respect Gemini API limits...]")
+                    time.sleep(15) 
                     
                 except Exception as e:
                     print(f"       [-] Failed to process {link}: {e}")
