@@ -26,7 +26,7 @@ if not WEBHOOK_URL or not all_keys:
 # Pick a random key for this run
 GEMINI_API_KEY = random.choice(all_keys)
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-3.8-flash')
 
 # 2. Webhook Helpers
 def fetch_from_sheet(action):
