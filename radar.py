@@ -7,10 +7,10 @@ import urllib.parse
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import google.generativeai as genai
-from googlesearch import search as google_search
+from ddgs import DDGS
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-print(">>> 📡 RADAR SCOUT ACTIVE (V13 Geo-Bypass Engine)")
+print(">>> 📡 RADAR SCOUT ACTIVE (V14 Master Engine)")
 
 # 1. Load Credentials
 load_dotenv()
@@ -24,7 +24,7 @@ if not WEBHOOK_URL or not all_keys:
     print("[-] ERROR: Missing .env credentials or API keys.")
     exit(1)
 
-# 2. Webhook Helpers (Timeout increased to 30s to prevent 'Read timed out' errors)
+# 2. Webhook Helpers
 def fetch_from_sheet(action):
     try:
         response = requests.post(WEBHOOK_URL, json={"secret": SECRET, "action": action}, timeout=30)
@@ -42,39 +42,43 @@ def send_to_sheet(payload):
 print("[*] Syncing with Google Sheets CRM...")
 cache_data = fetch_from_sheet("get_cache")
 scraped_urls = cache_data.get("scraped_urls", [])
-banned_domains = ['amazon', 'flipkart', 'ebay', 'justdial', 'youtube', 'facebook', 'twitter', 'linkedin']
+banned_domains = ['amazon', 'flipkart', 'ebay', 'justdial', 'youtube', 'facebook', 'twitter', 'linkedin', 'sebi.gov.in']
 
-# 3. Search Engine (Switched back to Google Search)
-def search_web(query):
+# 3. Search Engine (Switched BACK to DuckDuckGo - it works perfectly on GitHub)
+def search_ddgs(query):
     links = []
     try:
-        results = google_search(query, num_results=10, sleep_interval=3)
-        for link in results:
-            if link:
-                if any(b in link.lower() for b in banned_domains): 
-                    continue
-                if link not in scraped_urls:
-                    links.append(link)
+        with DDGS() as ddgs:
+            results = ddgs.text(query, max_results=10)
+            if results:
+                for r in results:
+                    link = r.get('href')
+                    if link:
+                        if any(b in link.lower() for b in banned_domains): 
+                            continue
+                        if link not in scraped_urls:
+                            links.append(link)
+                            
         print(f"       [Found {len(links)} fresh un-scraped links]")
+        time.sleep(2) 
     except Exception as e:
         print(f"       [-] Search engine rate limit or error: {e}")
     return links
 
-# 4. Geo-Bypass Scraper
+# 4. Geo-Bypass Scraper (To penetrate Indiamart & Gov.in blocks)
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def scrape_page(url):
-    # This bypasses the GitHub Actions US-IP block for Indian gov/indiamart sites
     encoded_url = urllib.parse.quote(url, safe='')
     proxy_url = f"https://api.allorigins.win/get?url={encoded_url}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
     try:
-        # Try proxy first to bypass blocks
+        # 1st attempt: Try proxy to bypass geoblocks
         response = requests.get(proxy_url, timeout=20)
         response.raise_for_status()
         html = response.json().get('contents', '')
     except:
-        # Fallback to direct connection
+        # 2nd attempt: Direct connection if proxy fails
         response = requests.get(url, headers=headers, timeout=20)
         response.raise_for_status()
         html = response.text
@@ -84,7 +88,7 @@ def scrape_page(url):
         script.decompose()
     return soup.get_text(separator=' ', strip=True)[:4000]
 
-# 5. AI Evaluation Engine (With API Key Rotation)
+# 5. AI Evaluation Engine
 def evaluate_lead(url, text, target):
     current_key = random.choice(all_keys)
     genai.configure(api_key=current_key)
@@ -133,7 +137,7 @@ def run_radar():
         
         for q in queries:
             print(f"\n[*] Scanning: {q} (Target: {target})")
-            links = search_web(q)
+            links = search_ddgs(q)
             
             for link in links:
                 print(f"    -> Scraping: {link}")
@@ -161,8 +165,8 @@ def run_radar():
                     scraped_urls.append(link)
                     send_to_sheet({"secret": SECRET, "action": "log_scraped_url", "url": link})
                     
-                    # MANDATORY 15-SECOND COOLDOWN TO PREVENT 429 API BANS
-                    print("       [Waiting 15 seconds to respect Gemini API limits...]")
+                    # MANDATORY 15-SECOND COOLDOWN TO PREVENT API BANS
+                    print("       [Waiting 15 seconds to respect Gemini limits...]")
                     time.sleep(15) 
                     
                 except Exception as e:
