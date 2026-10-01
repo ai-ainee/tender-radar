@@ -5,7 +5,7 @@ from datetime import datetime
 # Import your three CRM engines
 import radar
 import deep_hunter
-import deal_intel
+import deep_intel
 
 def run_crm_cycle():
     print(f"\n=======================================================", flush=True)
