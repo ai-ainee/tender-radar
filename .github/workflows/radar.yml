@@ -23,43 +23,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install python-dotenv requests beautifulsoup4 google-genai dnspython aiohttp tenacity ddgs
           
-      - name: Run 1 - Radar Scout
+      - name: Run Master Autopilot Engine
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python radar.py
-
-      - name: Run 2 - Deep Hunter
-        env:
-          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python deep_hunter.py
-
-      - name: Run 3 - Deep Intel
-        env:
-          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python deep_intel.py
-
-      - name: Run 4 - Autopilot Logic
-        env:
-          GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          if [ -f "autopilot.py" ]; then
-            python autopilot.py
-          else
-            echo "No autopilot.py found, skipping."
-          fi
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}  # <-- Added missing Serper Key!
+        run: python autopilot.py
