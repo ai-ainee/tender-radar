@@ -34,23 +34,13 @@ def run_crm_cycle():
     except Exception as e:
         print(f"⚠️ Analyst Error: {e}")
         
-    print(f"\n🏁 CYCLE COMPLETE. Waiting for next window...", flush=True)
+    print(f"\n🏁 ALL 3 CYCLES COMPLETE.", flush=True)
 
 if __name__ == "__main__":
-    print("🤖 CRM AUTOPILOT ENGAGED")
-    print("⏰ Operating Hours: 08:00 to 20:00 (Running every 2 hours)")
+    print("🤖 CRM AUTOPILOT ENGAGED (Cloud Mode)")
     
-    while True:
-        current_hour = datetime.now().hour
-        
-        # Check if the time is between 8:00 AM (8) and 7:59 PM (19)
-        if 8 <= current_hour < 20:
-            run_crm_cycle()
-            
-            # Sleep for exactly 2 hours (7200 seconds) before running the next sweep
-            print("\n💤 Sleeping for 120 minutes...", flush=True)
-            time.sleep(7200) 
-        else:
-            print(f"🌙 Current Time: {datetime.now().strftime('%H:%M')}. Outside operating hours. Resting...", flush=True)
-            # Sleep for 30 minutes, then wake up and check the clock again
-            time.sleep(1800)
+    # Run exactly ONCE and then exit. 
+    # GitHub Actions will handle scheduling the next run.
+    run_crm_cycle()
+    
+    print("✅ Shutting down script to save GitHub Actions minutes.")
