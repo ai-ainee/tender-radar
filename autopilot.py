@@ -30,7 +30,7 @@ def run_crm_cycle():
     
     # 3. Run The Analyst
     try:
-        asyncio.run(deal_intel.run_intel())
+        asyncio.run(deep_intel.run_intel())
     except Exception as e:
         print(f"⚠️ Analyst Error: {e}")
         
