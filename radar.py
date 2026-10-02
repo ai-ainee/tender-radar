@@ -94,7 +94,12 @@ def get_search_results(query):
             response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=25)
             if response.status_code == 200:
                 for r in response.json().get("organic", []):
-                    results.append({"title": r.get("title", ""), "link": r.get("link", ""), "summary": r.get("snippet", "")})
+                    results.append({
+                        "title": r.get("title", ""), 
+                        "link": r.get("link", ""), 
+                        "summary": r.get("snippet", ""),
+                        "date": r.get("date", "") # Extracted Date from organic search snippets
+                    })
         except Exception: pass
 
     if DDGS and not results:
@@ -103,7 +108,7 @@ def get_search_results(query):
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 res = executor.submit(ddgs_search).result(timeout=15)
             for r in res:
-                results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", "")})
+                results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", ""), "date": ""})
         except Exception: pass
     return results
 
@@ -128,7 +133,8 @@ def ai_analyze_batch(batch, exclusions):
     
     items_block = ""
     for i, x in enumerate(batch):
-        items_block += f"\n--- ITEM {i} ---\nTarget Product: {x.get('target', 'Unknown')}\nQuery Type: {x.get('query_type', 'Direct')}\nTitle: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
+        date_str = f"Date Posted: {x['date']}\n" if x.get("date") else ""
+        items_block += f"\n--- ITEM {i} ---\nTarget Product: {x.get('target', 'Unknown')}\nQuery Type: {x.get('query_type', 'Direct')}\n{date_str}Title: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
         
     exclusion_rule = ""
     if exclusions:
@@ -173,10 +179,11 @@ DATA BATCH:
                 "state": {"type": "STRING", "description": "Normalized Indian State/UT"},
                 "industry": {"type": "STRING"},
                 "intent_summary": {"type": "STRING", "description": "Summary of opportunity"},
+                "posted_date": {"type": "STRING", "description": "Extract the exact Date of posted from the snippet or text (e.g., '10 Oct 2026'). Output 'N/A' if unknown."},
                 "dm_name": {"type": "STRING", "nullable": True},
                 "dm_title": {"type": "STRING", "nullable": True}
             },
-            "required": ["item_index", "product_match_reasoning", "is_valid", "entity_role", "org", "city", "state", "industry", "intent_summary"]
+            "required": ["item_index", "product_match_reasoning", "is_valid", "entity_role", "org", "city", "state", "industry", "intent_summary", "posted_date"]
         }
     }
 
@@ -211,7 +218,7 @@ def build_vector_matrix(target):
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V7 Master Engine)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (V8 Master Engine with Dates & Custom Routing)", flush=True)
     if not WEBHOOK or not SECRET: return
     
     load_existing_urls_cache()
@@ -276,10 +283,17 @@ def run():
             if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
                 
-                if role == "PROJECT_BUYER": target_sheet, source_tag = "Projects & MOUs", "Project-Radar"
-                elif role == "SERVICE_USER": target_sheet, source_tag = "Inbox", "Ecosystem-Scout"
-                elif is_supplier: target_sheet, source_tag = "Suppliers", "Supplier-Radar"
-                else: target_sheet, source_tag = "Inbox", "Radar Scout"
+                # --- NEW ROUTING LOGIC ---
+                if role == "BUYER": 
+                    target_sheet, source_tag = "Inbox", "Buyer-Radar"
+                elif role == "SERVICE_USER": 
+                    target_sheet, source_tag = "Services", "Service-Radar"
+                elif role == "PROJECT_BUYER": 
+                    target_sheet, source_tag = "Projects & MOUs", "Project-Radar"
+                elif is_supplier: 
+                    target_sheet, source_tag = "Suppliers", "Supplier-Radar"
+                else: 
+                    target_sheet, source_tag = "Inbox", "Radar Scout"
                 
                 intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
                 
@@ -290,6 +304,7 @@ def run():
                     "is_supplier": is_supplier,
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "posted_date": entity.get("posted_date", "N/A"), # --- NEW DATE FIELD ---
                     "source": source_tag,
                     "org": entity.get("org", "Unknown"),
                     "city": entity.get("city", "Unknown"),
@@ -307,7 +322,7 @@ def run():
                     try:
                         requests.post(WEBHOOK, json=payload, timeout=30)
                         EXISTING_URLS_CACHE.add(fresh_leads[idx]['link'].strip().lower())
-                        print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']}", flush=True)
+                        print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']} (Date: {entity.get('posted_date', 'N/A')})", flush=True)
                         break
                     except Exception: time.sleep(2)
             else:
