@@ -6,6 +6,7 @@ import asyncio
 import aiohttp
 import requests
 import re
+import urllib.parse
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -60,7 +61,7 @@ async def async_serper_search(session, query, num=3):
     except Exception: pass
     return []
 
-# --- NEW FEATURE: HTML Regex Cleaner for Telegram ---
+# --- HTML Regex Cleaner for Telegram ---
 def convert_markdown_to_html(text):
     """Converts Gemini Markdown (**bold**, *italic*) to Telegram-safe HTML (<b>bold</b>, <i>italic</i>)"""
     if not text: return ""
@@ -129,6 +130,42 @@ async def process_lead_intel(session, lead, sem):
         
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
             d_text = dossier[:3200] + "\n\n... [Truncated]" if len(dossier) > 3200 else dossier
+            
+            # --- Extract Cold Pitch for the 1-Click Buttons ---
+            pitch_text = f"Hi {lead.get('dm_name', 'Team')}, I saw your update regarding {lead['org']}'s requirements. Would love to connect and share details on how we can support your project."
+            # Search for the "Ready-to-Send Cold Pitch" in the generated dossier
+            pitch_match = re.search(r'Ready-to-Send Cold Pitch.*?:?\s*(.*?)(?=\n\n|$)', raw_dossier, re.IGNORECASE | re.DOTALL)
+            if pitch_match and pitch_match.group(1):
+                pitch_text = pitch_match.group(1).strip()
+            
+            # Clean any HTML or bold tags out of the pitch so WhatsApp/Email renders plain text
+            pitch_text = re.sub(r'<[^>]+>', '', pitch_text)
+            pitch_text = pitch_text.replace('**', '').replace('__', '')
+            
+            buttons = []
+            
+            # 1-Click WhatsApp Button Logic
+            phone = str(lead.get('phone', '')).strip()
+            clean_phone = "".join(filter(str.isdigit, phone))
+            if len(clean_phone) == 10:
+                clean_phone = "91" + clean_phone
+                
+            if len(clean_phone) >= 10:
+                wa_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(pitch_text)}"
+                buttons.append([{"text": "💬 WhatsApp DM", "url": wa_url}])
+                
+            # 1-Click Mailto Button Logic
+            email = str(lead.get('email', '')).strip()
+            if email and email.lower() != "n/a" and "@" in email:
+                subject = urllib.parse.quote(f"Partnership regarding {lead.get('org', 'your requirements')}")
+                body = urllib.parse.quote(pitch_text)
+                mailto_url = f"mailto:{email}?subject={subject}&body={body}"
+                buttons.append([{"text": "📧 Send Email", "url": mailto_url}])
+            
+            # Append standard CRM workflow buttons
+            buttons.append([{"text": "🚀 Move to Pipeline", "callback_data": f"topipeline_{lead['lead_id']}"}])
+            buttons.append([{"text": "🗑️ Drop Lead", "callback_data": f"droplead_{lead['lead_id']}"}])
+            
             msg = (
                 f"📊 <b>LEAD INTEL BRIEF READY</b>\n\n"
                 f"🏢 <b>Target:</b> {lead['org']}\n"
@@ -139,10 +176,11 @@ async def process_lead_intel(session, lead, sem):
             )
             payload = {
                 "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True,
-                "reply_markup": {"inline_keyboard": [ [{"text": "🚀 Move to Pipeline", "callback_data": f"topipeline_{lead['lead_id']}"}], [{"text": "🗑️ Drop Lead", "callback_data": f"droplead_{lead['lead_id']}"}] ] }
+                "reply_markup": {"inline_keyboard": buttons}
             }
             try:
-                async with session.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=30) as response: await response.read()
+                async with session.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json=payload, timeout=30) as response: 
+                    await response.read()
             except Exception: pass
 
 async def run_intel():
