@@ -53,13 +53,13 @@ def get_flash_model_stack(client):
                 valid_models.append(name)
         if valid_models:
             valid_models.sort(reverse=True)
-            for preferred in ["models/gemini-3.5-flash-lite", "models/gemini-1.5-flash"]:
+            for preferred in ["models/gemini-3.8-flash", "models/gemini-3.5-flash", "models/gemini-1.5-flash"]:
                 if preferred in valid_models:
                     valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-3.5-flash-lite", "gemini-1.5-flash"]
+    BEST_MODEL_STACK = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
 def get_buyer_industries(target, client):
@@ -69,7 +69,6 @@ def get_buyer_industries(target, client):
             f"What are 3 primary commercial or industrial sectors in India that purchase or deploy '{target}'? "
             f"Respond strictly with 3 space-separated or OR-separated single keywords (e.g. Architecture OR Engineering OR Infrastructure)."
         )
-        # --- NEW SDK FIX: Using Chat interface to silence the warning ---
         chat = client.chats.create(model="gemini-1.5-flash")
         res = chat.send_message(prompt)
         
@@ -80,7 +79,7 @@ def get_buyer_industries(target, client):
         pass
     return f'"{target}"'
 
-# --- NEW DOUBLE-BACKUP SAVE SYSTEM ---
+# --- DOUBLE-BACKUP SAVE SYSTEM ---
 def add_to_cache(link):
     """Adds a URL to the active memory AND saves it to the backup text file."""
     if not link: return
@@ -93,11 +92,10 @@ def add_to_cache(link):
         except Exception:
             pass
 
-# --- UPGRADED LOAD SYSTEM (TEXT FILE FIRST, GOOGLE SECOND) ---
+# --- LOAD SYSTEM (TEXT FILE FIRST, GOOGLE SECOND) ---
 def load_existing_urls_cache():
     global EXISTING_URLS_CACHE
     
-    # 1. First load from the local backup file if it exists
     if os.path.exists("seen_links.txt"):
         try:
             with open("seen_links.txt", "r", encoding="utf-8") as f:
@@ -109,7 +107,6 @@ def load_existing_urls_cache():
         except Exception as e:
             print(f"⚠️ Could not read seen_links.txt: {e}")
 
-    # 2. Try Google Sheets Webhook (5 attempts)
     if not WEBHOOK or not SECRET: 
         print("⚠️ Webhook credentials missing. Relying ONLY on seen_links.txt.", flush=True)
         return
@@ -213,11 +210,11 @@ You are an expert B2B Ecosystem Analyst.
 You evaluate news, tenders, contracts, MCA registry incorporations, and company profiles related to the 'Target Product'.
 
 CLASSIFICATION ROLES:
-1. 'BUYER': Organization directly procuring or issuing an RFQ/tender for the Target Product.
-2. 'PROJECT_BUYER': Organization winning a project, setting up a new plant, hiring surges, OR a newly incorporated company (MCA/ZaubaCorp) that REQUIRES the Target Product.
+1. 'BUYER': Direct procurement, GeM bids, CPPP eTenders, public tenders, VC funding announcements, Zauba import data, or general direct buyer.
+2. 'PROJECT_BUYER': Capex, Environmental Clearances (EC), Factory Setups, Land Allotments (MIDC/GIDC), RERA real estate projects, PLI scheme approvals, SEBI expansions, Credit Rating rationales, Pollution Control (CTE), IEM filings (Department for Promotion of Industry and Internal Trade), NCLT buyouts, or newly incorporated companies.
 3. 'SERVICE_USER': Company offering commercial services using the Target Product (e.g., AutoCAD drafting services).
 4. 'SELLER': Company manufacturing/supplying the Target Product or an alternative.
-5. 'IRRELEVANT': Unrelated products, job listings, generic articles.
+5. 'IRRELEVANT': Unrelated products, job listings, directory listings, or generic news.
 
 GEOGRAPHIC NORMALIZATION:
 - 'city': Specific Indian city (e.g., 'Bengaluru', 'Pune'). 
@@ -271,7 +268,11 @@ DATA BATCH:
 
 def build_vector_matrix(target, industry_keywords):
     current_year = datetime.now().year
-    return [
+    
+    # =================================================================
+    # BASE OSINT QUERIES (Keeps existing MCA and Tender lead flow)
+    # =================================================================
+    base_queries = [
         {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in'},
         {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
         {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" ({industry_keywords})'},
@@ -284,8 +285,35 @@ def build_vector_matrix(target, industry_keywords):
         {"type": "Project", "query": f'site:naukri.com/job-listings "{target}" ("urgent opening" OR "walk-in") India'}
     ]
 
+    # =================================================================
+    # 14-VECTOR ENTERPRISE INTELLIGENCE MATRIX (Early Warning Signals)
+    # =================================================================
+    new_vectors = [
+        # Phase 1: Blueprint Stage (12-24 Months Out)
+        {"type": "Project", "query": f'"{target}" (site:parivesh.nic.in OR site:environmentclearance.nic.in)'},
+        {"type": "Project", "query": f'"{target}" "allotment" (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
+        {"type": "Project", "query": f'"{target}" "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
+        {"type": "Project", "query": f'"{target}" "project cost" site:indiainvestmentgrid.gov.in'},
+        {"type": "Project", "query": f'"{target}" "IEM acknowledged" site:dpiit.gov.in'},
+        
+        # Phase 2: Capital Injection Stage (6-12 Months Out)
+        {"type": "Project", "query": f'"{target}" "Regulation 30" "capex" (site:bseindia.com OR site:nseindia.com)'},
+        {"type": "Project", "query": f'"{target}" "rating rationale" "capex" (site:crisilratings.com OR site:icra.in OR site:careratings.com)'},
+        {"type": "Project", "query": f'"{target}" "PLI scheme" "approved" (site:gov.in OR site:pib.gov.in)'},
+        {"type": "Project", "query": f'"{target}" "resolution plan approved" (site:ibbi.gov.in OR site:nclt.gov.in)'},
+        {"type": "Direct", "query": f'"{target}" ("raised" OR "Series A") (site:inc42.com OR site:vccircle.com)'},
+
+        # Phase 3: Execution Stage (0-6 Months Out)
+        {"type": "Project", "query": f'"{target}" "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
+        {"type": "Direct", "query": f'"{target}" site:bidplus.gem.gov.in'},
+        {"type": "Direct", "query": f'"{target}" "Tender Documents" (site:eprocure.gov.in OR site:etenders.gov.in)'},
+        {"type": "Direct", "query": f'"{target}" site:zauba.com/import-'}
+    ]
+
+    return base_queries + new_vectors
+
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V14 Master Engine with Fail-Safe Backup)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (V14 Master Engine with 14-Vector Intel Matrix)", flush=True)
     
     # 🚨 RELIABLE HYBRID MEMORY LOAD
     load_existing_urls_cache()
