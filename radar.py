@@ -149,7 +149,8 @@ def get_search_results(query):
     results = []
     if SERPER_KEY:
         try:
-            payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:y", "num": 10})
+            # Changed "qdr:y" to "qdr:m" for past 1 month data
+            payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:m", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=25)
             if response.status_code == 200:
@@ -164,7 +165,8 @@ def get_search_results(query):
 
     if DDGS and not results:
         try:
-            def ddgs_search(): return list(DDGS().text(query, timelimit="y", max_results=10, backend="lite"))
+            # Changed timelimit="y" to timelimit="m" for past 1 month data
+            def ddgs_search(): return list(DDGS().text(query, timelimit="m", max_results=10, backend="lite"))
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 res = executor.submit(ddgs_search).result(timeout=15)
             for r in res:
