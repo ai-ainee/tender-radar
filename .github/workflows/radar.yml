@@ -2,7 +2,9 @@ name: Radar B2B Autopilot
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    # Runs at minute 30 past hours 2, 4, 6, 8, 10, 12, and 14 (UTC)
+    # This perfectly matches 8:00 AM to 8:00 PM IST every two hours.
+    - cron: '30 2,4,6,8,10,12,14 * * *'
   workflow_dispatch:
 
 jobs:
@@ -30,5 +32,5 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}  # <-- Added missing Serper Key!
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
         run: python autopilot.py
