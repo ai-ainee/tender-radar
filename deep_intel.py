@@ -5,6 +5,7 @@ import warnings
 import asyncio
 import aiohttp
 import requests
+import re
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -59,12 +60,23 @@ async def async_serper_search(session, query, num=3):
     except Exception: pass
     return []
 
+# --- NEW FEATURE: HTML Regex Cleaner for Telegram ---
+def convert_markdown_to_html(text):
+    """Converts Gemini Markdown (**bold**, *italic*) to Telegram-safe HTML (<b>bold</b>, <i>italic</i>)"""
+    if not text: return ""
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
+    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+    text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
+    return text
+
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def generate_deal_dossier(lead, context_data):
     client = get_next_gemini_client()
     if not client: return "AI Unavailable."
     model_stack = get_flash_model_stack(client)
     
+    # --- UPGRADED PROMPT: Added 3-Sentence Cold Pitch Generation ---
     prompt = f"""
 Write an Executive Deal Brief for sales outreach:
 Target: {lead['org']} (Location: {lead.get('city')}, {lead.get('state')})
@@ -76,6 +88,9 @@ Output JSON with key 'dossier' containing:
 1. Executive Profile & Core Operations
 2. Current Capex, Project Signals & Recent Milestones
 3. Tactical Value Proposition & Entry Pitch
+4. [NEW SECTION] "Ready-to-Send Cold Pitch": Write a highly personalized 3-sentence message (Observation, Value Bridge, Call-to-Action) addressed to the Decision Maker. DO NOT use placeholders like [Your Name].
+
+Keep the formatting clean and professional.
 """
     schema = {"type": "OBJECT", "properties": {"dossier": {"type": "STRING"}}}
     
@@ -97,11 +112,15 @@ async def process_lead_intel(session, lead, sem):
             async_serper_search(session, f'"{lead["org"]}" ("contract awarded" OR "expansion" OR "orders" OR "capex")'), 
             async_serper_search(session, f'"{lead["dm_name"]}" "{lead["org"]}" LinkedIn')
         )
-        dossier = await asyncio.to_thread(generate_deal_dossier, lead, {"profile": results[0], "news": results[1], "dm_info": results[2]})
+        
+        raw_dossier = await asyncio.to_thread(generate_deal_dossier, lead, {"profile": results[0], "news": results[1], "dm_info": results[2]})
+        
+        # --- Apply Regex HTML Cleaner to prevent Telegram Crashes ---
+        dossier = convert_markdown_to_html(raw_dossier)
         
         for attempt in range(3):
             try:
-                # IMPORTANT UPDATE: Updates the dossier in the LEADS tab instead of forcing it to Pipeline
+                # Updates the dossier in the LEADS tab instead of forcing it to Pipeline
                 async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead_dossier", "lead_id": lead['lead_id'], "dossier": dossier}, timeout=30) as response: 
                     await response.read()
                     print(f"    ✅ Dossier Stored in Leads Tab: {lead['org']}", flush=True)
@@ -127,7 +146,7 @@ async def process_lead_intel(session, lead, sem):
             except Exception: pass
 
 async def run_intel():
-    print(">>> 🧠 DEAL ANALYST ACTIVE (Manual Pipeline Promotion)", flush=True)
+    print(">>> 🧠 DEAL ANALYST ACTIVE (Auto-Pitch & Safe-HTML Edition)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_leads_intel"}, timeout=30).json().get("pending_leads", [])
