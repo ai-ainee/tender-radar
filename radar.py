@@ -69,7 +69,10 @@ def get_buyer_industries(target, client):
             f"What are 3 primary commercial or industrial sectors in India that purchase or deploy '{target}'? "
             f"Respond strictly with 3 space-separated or OR-separated single keywords (e.g. Architecture OR Engineering OR Infrastructure)."
         )
-        res = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
+        # --- NEW SDK FIX: Using Chat interface to silence the warning ---
+        chat = client.chats.create(model="gemini-1.5-flash")
+        res = chat.send_message(prompt)
+        
         cleaned = re.sub(r'[^a-zA-Z\s]', '', res.text).strip().split()
         if cleaned:
             return " OR ".join(cleaned[:3])
