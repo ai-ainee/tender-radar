@@ -2,10 +2,13 @@ name: Radar B2B Autopilot
 
 on:
   schedule:
-    # Runs at minute 30 past hours 2, 4, 6, 8, 10, 12, and 14 (UTC)
-    # This perfectly matches 8:00 AM to 8:00 PM IST every two hours.
+    # 8:00 AM to 8:00 PM IST every two hours
     - cron: '30 2,4,6,8,10,12,14 * * *'
   workflow_dispatch:
+
+# CRITICAL: This gives the server permission to save seen_links.txt back to your repo
+permissions:
+  contents: write
 
 jobs:
   run-crm-engine:
@@ -34,3 +37,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
         run: python autopilot.py
+
+      # NEW: The Auto-Save system! Commits the text file before destroying the server.
+      - name: Save Backup (seen_links.txt) to GitHub
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_links.txt || true
+          git commit -m "Auto-update seen_links.txt (Backup System)" || true
+          git push
