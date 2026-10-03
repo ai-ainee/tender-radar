@@ -62,16 +62,46 @@ def get_flash_model_stack(client):
     BEST_MODEL_STACK = ["gemini-3.5-flash-lite", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
+# --- NEW FEATURE: DYNAMIC INDUSTRY MAPPER ---
+def get_buyer_industries(target, client):
+    """Dynamically identifies macro buyer industries to query MCA / ZaubaCorp registries."""
+    try:
+        prompt = (
+            f"What are 3 primary commercial or industrial sectors in India that purchase or deploy '{target}'? "
+            f"Respond strictly with 3 space-separated or OR-separated single keywords (e.g. Architecture OR Engineering OR Infrastructure)."
+        )
+        res = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
+        cleaned = re.sub(r'[^a-zA-Z\s]', '', res.text).strip().split()
+        if cleaned:
+            return " OR ".join(cleaned[:3])
+    except Exception:
+        pass
+    return f'"{target}"'
+
+# --- UPGRADED FEATURE: 5-ATTEMPT CACHE RETRY ---
 def load_existing_urls_cache():
     global EXISTING_URLS_CACHE
-    if not WEBHOOK or not SECRET: return
-    try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_all_urls"}, timeout=30).json()
-        raw_urls = res.get("urls", [])
-        EXISTING_URLS_CACHE = {u.strip().lower() for u in raw_urls if u.strip()}
-        print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} existing records into cache.", flush=True)
-    except Exception as e:
-        print(f"⚠️ Cache load failed: {e}. Proceeding with clean cache.", flush=True)
+    if not WEBHOOK or not SECRET: 
+        print("⚠️ Webhook credentials missing. Cannot load cache.", flush=True)
+        return False
+        
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_all_urls"}, timeout=30)
+            res.raise_for_status() # Forces an error if Google returns a 500/404 HTML page
+            data = res.json()
+            raw_urls = data.get("urls", [])
+            EXISTING_URLS_CACHE = {u.strip().lower() for u in raw_urls if u.strip()}
+            print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} existing records into cache.", flush=True)
+            return True
+        except Exception as e:
+            print(f"⚠️ Cache load failed (Attempt {attempt + 1}/{max_retries}): {e}", flush=True)
+            if attempt < max_retries - 1:
+                time.sleep(10) # Wait 10 seconds before trying again
+                
+    print("❌ CRITICAL: Failed to load cache after 5 attempts. Aborting run to prevent duplicate leads.", flush=True)
+    return False
 
 def is_duplicate_cached(link):
     if not link: return False
@@ -79,7 +109,8 @@ def is_duplicate_cached(link):
     if clean in EXISTING_URLS_CACHE: return True
     parsed = urlparse(clean)
     netloc = parsed.netloc.replace("www.", "")
-    directory_domains = ["indiamart.com", "tradeindia.com", "linkedin.com", "gem.gov.in", "eprocure.gov.in", "bseindia.com"]
+    # --- UPGRADED: Added ZaubaCorp to directories to ignore exact URL matching ---
+    directory_domains = ["indiamart.com", "tradeindia.com", "linkedin.com", "gem.gov.in", "eprocure.gov.in", "bseindia.com", "zaubacorp.com", "thecompanycheck.com"]
     if not any(d in netloc for d in directory_domains):
         if any(netloc in cached for cached in EXISTING_URLS_CACHE if cached):
             return True
@@ -147,11 +178,11 @@ Banned Intents/Keywords: {json.dumps(exclusions)}
 
     prompt = f"""
 You are an expert B2B Ecosystem Analyst.
-You evaluate news, tenders, contracts, and company profiles related to the 'Target Product'.
+You evaluate news, tenders, contracts, MCA registry incorporations, and company profiles related to the 'Target Product'.
 
 CLASSIFICATION ROLES:
 1. 'BUYER': Organization directly procuring or issuing an RFQ/tender for the Target Product.
-2. 'PROJECT_BUYER': Organization winning a project/MOU that REQUIRES the Target Product.
+2. 'PROJECT_BUYER': Organization winning a project, setting up a new plant, hiring surges, OR a newly incorporated company (MCA/ZaubaCorp) that REQUIRES the Target Product.
 3. 'SERVICE_USER': Company offering commercial services using the Target Product (e.g., AutoCAD drafting services).
 4. 'SELLER': Company manufacturing/supplying the Target Product or an alternative.
 5. 'IRRELEVANT': Unrelated products, job listings, generic articles.
@@ -178,7 +209,7 @@ DATA BATCH:
                 "city": {"type": "STRING", "description": "Normalized Indian City"},
                 "state": {"type": "STRING", "description": "Normalized Indian State/UT"},
                 "industry": {"type": "STRING"},
-                "intent_summary": {"type": "STRING", "description": "Summary of opportunity"},
+                "intent_summary": {"type": "STRING", "description": "Summary of opportunity or newly incorporated status"},
                 "posted_date": {"type": "STRING", "description": "Extract the exact Date of posted from the snippet or text (e.g., '10 Oct 2026'). Output 'N/A' if unknown."},
                 "dm_name": {"type": "STRING", "nullable": True},
                 "dm_title": {"type": "STRING", "nullable": True}
@@ -206,22 +237,35 @@ DATA BATCH:
             raise e
     raise Exception("All Gemini models unavailable.")
 
-def build_vector_matrix(target):
+# --- UPGRADED FEATURE: MCA & SOCIAL VECTORS ---
+def build_vector_matrix(target, industry_keywords):
     current_year = datetime.now().year
     return [
         {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in'},
         {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
+        
+        # MCA Incorporation Vectors
+        {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" ({industry_keywords})'},
+        {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" ({industry_keywords})'},
+        
+        # Standard Project Vectors
         {"type": "Project", "query": f'"{target}" ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
         {"type": "Project", "query": f'"{target}" ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'},
         {"type": "Project", "query": f'site:bseindia.com/xml-data/corpfiling/ "{target}" ("bagged order" OR "contract worth" OR "LoA")'},
-        {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'}
+        
+        # Social & Hiring Vectors
+        {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'},
+        {"type": "Direct", "query": f'site:facebook.com/groups "{target}" ("urgent requirement" OR "need supplier" OR "vendor needed") India'},
+        {"type": "Project", "query": f'site:naukri.com/job-listings "{target}" ("urgent opening" OR "walk-in") India'}
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V8 Master Engine with Dates & Custom Routing)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (V13 Master Engine with MCA & 5-Way Routing)", flush=True)
     if not WEBHOOK or not SECRET: return
     
-    load_existing_urls_cache()
+    # 🚨 ABORT RUN IF CACHE FAILS (Duplicate Protection)
+    if not load_existing_urls_cache():
+        return
 
     cloud_targets, cloud_exclusions, cloud_domains = [], [], []
     try:
@@ -239,8 +283,16 @@ def run():
     if not cloud_targets: return print("    -> No targets found.", flush=True)
 
     search_matrix = []
+    
+    # --- GET GEMINI CLIENT EARLY FOR INDUSTRY MAPPER ---
+    client = get_next_gemini_client()
+    
     for t in cloud_targets:
-        for v in build_vector_matrix(t):
+        # Generate industry keywords dynamically
+        industry_keywords = get_buyer_industries(t, client) if client else f'"{t}"'
+        print(f"[*] Target: '{t}' mapped to macro industries: [{industry_keywords}]", flush=True)
+        
+        for v in build_vector_matrix(t, industry_keywords):
             search_matrix.append({"target": t, "query": v["query"], "query_type": v["type"]})
 
     for item in search_matrix:
@@ -282,9 +334,14 @@ def run():
             
             if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
+                link_url = fresh_leads[idx]['link'].lower()
                 
-                # --- NEW ROUTING LOGIC ---
-                if role == "BUYER": 
+                # --- UPGRADED FEATURE: 5-WAY ROUTING LOGIC ---
+                is_mca_registry = "zaubacorp.com" in link_url or "thecompanycheck.com" in link_url or query_type == "MCA"
+                
+                if is_mca_registry:
+                    target_sheet, source_tag = "MCA", "MCA-Registry"
+                elif role == "BUYER": 
                     target_sheet, source_tag = "Inbox", "Buyer-Radar"
                 elif role == "SERVICE_USER": 
                     target_sheet, source_tag = "Services", "Service-Radar"
@@ -304,7 +361,7 @@ def run():
                     "is_supplier": is_supplier,
                     "lead_id": str(uuid.uuid4())[:8],
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_date": entity.get("posted_date", "N/A"), # --- NEW DATE FIELD ---
+                    "posted_date": entity.get("posted_date", "N/A"), 
                     "source": source_tag,
                     "org": entity.get("org", "Unknown"),
                     "city": entity.get("city", "Unknown"),
