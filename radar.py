@@ -62,7 +62,6 @@ def get_flash_model_stack(client):
     BEST_MODEL_STACK = ["gemini-3.5-flash-lite", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
-# --- NEW FEATURE: DYNAMIC INDUSTRY MAPPER ---
 def get_buyer_industries(target, client):
     """Dynamically identifies macro buyer industries to query MCA / ZaubaCorp registries."""
     try:
@@ -78,30 +77,61 @@ def get_buyer_industries(target, client):
         pass
     return f'"{target}"'
 
-# --- UPGRADED FEATURE: 5-ATTEMPT CACHE RETRY ---
+# --- NEW DOUBLE-BACKUP SAVE SYSTEM ---
+def add_to_cache(link):
+    """Adds a URL to the active memory AND saves it to the backup text file."""
+    if not link: return
+    clean_link = link.strip().lower()
+    if clean_link not in EXISTING_URLS_CACHE:
+        EXISTING_URLS_CACHE.add(clean_link)
+        try:
+            with open("seen_links.txt", "a", encoding="utf-8") as f:
+                f.write(clean_link + "\n")
+        except Exception:
+            pass
+
+# --- UPGRADED LOAD SYSTEM (TEXT FILE FIRST, GOOGLE SECOND) ---
 def load_existing_urls_cache():
     global EXISTING_URLS_CACHE
+    
+    # 1. First load from the local backup file if it exists
+    if os.path.exists("seen_links.txt"):
+        try:
+            with open("seen_links.txt", "r", encoding="utf-8") as f:
+                for line in f:
+                    val = line.strip().lower()
+                    if val:
+                        EXISTING_URLS_CACHE.add(val)
+            print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} records from seen_links.txt backup.", flush=True)
+        except Exception as e:
+            print(f"⚠️ Could not read seen_links.txt: {e}")
+
+    # 2. Try Google Sheets Webhook (5 attempts)
     if not WEBHOOK or not SECRET: 
-        print("⚠️ Webhook credentials missing. Cannot load cache.", flush=True)
-        return False
+        print("⚠️ Webhook credentials missing. Relying ONLY on seen_links.txt.", flush=True)
+        return
         
     max_retries = 5
+    webhook_success = False
     for attempt in range(max_retries):
         try:
             res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_all_urls"}, timeout=30)
-            res.raise_for_status() # Forces an error if Google returns a 500/404 HTML page
+            res.raise_for_status() 
             data = res.json()
             raw_urls = data.get("urls", [])
-            EXISTING_URLS_CACHE = {u.strip().lower() for u in raw_urls if u.strip()}
-            print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} existing records into cache.", flush=True)
-            return True
+            for u in raw_urls:
+                if u.strip():
+                    EXISTING_URLS_CACHE.add(u.strip().lower())
+            print(f"[*] Synced cache with Google Sheets. Total cache size: {len(EXISTING_URLS_CACHE)}", flush=True)
+            webhook_success = True
+            break
         except Exception as e:
             print(f"⚠️ Cache load failed (Attempt {attempt + 1}/{max_retries}): {e}", flush=True)
             if attempt < max_retries - 1:
-                time.sleep(10) # Wait 10 seconds before trying again
+                time.sleep(10)
                 
-    print("❌ CRITICAL: Failed to load cache after 5 attempts. Aborting run to prevent duplicate leads.", flush=True)
-    return False
+    if not webhook_success:
+        print("⚠️ WARNING: Failed to load from Google Sheets. Relying entirely on seen_links.txt as backup.", flush=True)
 
 def is_duplicate_cached(link):
     if not link: return False
@@ -109,7 +139,6 @@ def is_duplicate_cached(link):
     if clean in EXISTING_URLS_CACHE: return True
     parsed = urlparse(clean)
     netloc = parsed.netloc.replace("www.", "")
-    # --- UPGRADED: Added ZaubaCorp to directories to ignore exact URL matching ---
     directory_domains = ["indiamart.com", "tradeindia.com", "linkedin.com", "gem.gov.in", "eprocure.gov.in", "bseindia.com", "zaubacorp.com", "thecompanycheck.com"]
     if not any(d in netloc for d in directory_domains):
         if any(netloc in cached for cached in EXISTING_URLS_CACHE if cached):
@@ -129,7 +158,7 @@ def get_search_results(query):
                         "title": r.get("title", ""), 
                         "link": r.get("link", ""), 
                         "summary": r.get("snippet", ""),
-                        "date": r.get("date", "") # Extracted Date from organic search snippets
+                        "date": r.get("date", "")
                     })
         except Exception: pass
 
@@ -237,35 +266,26 @@ DATA BATCH:
             raise e
     raise Exception("All Gemini models unavailable.")
 
-# --- UPGRADED FEATURE: MCA & SOCIAL VECTORS ---
 def build_vector_matrix(target, industry_keywords):
     current_year = datetime.now().year
     return [
         {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in'},
         {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
-        
-        # MCA Incorporation Vectors
         {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" ({industry_keywords})'},
         {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" ({industry_keywords})'},
-        
-        # Standard Project Vectors
         {"type": "Project", "query": f'"{target}" ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
         {"type": "Project", "query": f'"{target}" ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'},
         {"type": "Project", "query": f'site:bseindia.com/xml-data/corpfiling/ "{target}" ("bagged order" OR "contract worth" OR "LoA")'},
-        
-        # Social & Hiring Vectors
         {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'},
         {"type": "Direct", "query": f'site:facebook.com/groups "{target}" ("urgent requirement" OR "need supplier" OR "vendor needed") India'},
         {"type": "Project", "query": f'site:naukri.com/job-listings "{target}" ("urgent opening" OR "walk-in") India'}
     ]
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V13 Master Engine with MCA & 5-Way Routing)", flush=True)
-    if not WEBHOOK or not SECRET: return
+    print(">>> 📡 RADAR SCOUT ACTIVE (V14 Master Engine with Fail-Safe Backup)", flush=True)
     
-    # 🚨 ABORT RUN IF CACHE FAILS (Duplicate Protection)
-    if not load_existing_urls_cache():
-        return
+    # 🚨 RELIABLE HYBRID MEMORY LOAD
+    load_existing_urls_cache()
 
     cloud_targets, cloud_exclusions, cloud_domains = [], [], []
     try:
@@ -283,15 +303,11 @@ def run():
     if not cloud_targets: return print("    -> No targets found.", flush=True)
 
     search_matrix = []
-    
-    # --- GET GEMINI CLIENT EARLY FOR INDUSTRY MAPPER ---
     client = get_next_gemini_client()
     
     for t in cloud_targets:
-        # Generate industry keywords dynamically
         industry_keywords = get_buyer_industries(t, client) if client else f'"{t}"'
         print(f"[*] Target: '{t}' mapped to macro industries: [{industry_keywords}]", flush=True)
-        
         for v in build_vector_matrix(t, industry_keywords):
             search_matrix.append({"target": t, "query": v["query"], "query_type": v["type"]})
 
@@ -335,10 +351,9 @@ def run():
             if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
                 link_url = fresh_leads[idx]['link'].lower()
-                
-                # --- UPGRADED FEATURE: 5-WAY ROUTING LOGIC ---
                 is_mca_registry = "zaubacorp.com" in link_url or "thecompanycheck.com" in link_url or query_type == "MCA"
                 
+                # --- DYNAMIC 5-WAY ROUTING LOGIC ---
                 if is_mca_registry:
                     target_sheet, source_tag = "MCA", "MCA-Registry"
                 elif role == "BUYER": 
@@ -378,13 +393,15 @@ def run():
                 for attempt in range(3):
                     try:
                         requests.post(WEBHOOK, json=payload, timeout=30)
-                        EXISTING_URLS_CACHE.add(fresh_leads[idx]['link'].strip().lower())
+                        # DOUBLE-BACKUP: Saves to RAM and seen_links.txt simultaneously
+                        add_to_cache(fresh_leads[idx]['link'])
                         print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']} (Date: {entity.get('posted_date', 'N/A')})", flush=True)
                         break
                     except Exception: time.sleep(2)
             else:
                 ai_trash_log.append({"url": fresh_leads[idx]['link'], "reason": f"[{role}] {reason}"})
-                EXISTING_URLS_CACHE.add(fresh_leads[idx]['link'].strip().lower())
+                # DOUBLE-BACKUP: Prevents AI from scanning trash links twice
+                add_to_cache(fresh_leads[idx]['link'])
         
         if ai_trash_log:
             payload = {
