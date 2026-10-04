@@ -18,6 +18,12 @@ from tenacity import retry, wait_exponential, stop_after_attempt
 warnings.filterwarnings("ignore")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 
+# ==========================================
+# INJECT TODAY'S DATE FOR TIME-AWARE AI & REGEX
+# ==========================================
+TODAY = datetime.now()
+CURRENT_DATE_STR = TODAY.strftime("%d %B %Y")
+
 try:
     from ddgs import DDGS
 except ImportError:
@@ -149,7 +155,6 @@ def get_search_results(query):
     results = []
     if SERPER_KEY:
         try:
-            # Changed "qdr:y" to "qdr:m" for past 1 month data
             payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:m", "num": 10})
             headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
             response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=25)
@@ -165,7 +170,6 @@ def get_search_results(query):
 
     if DDGS and not results:
         try:
-            # Changed timelimit="y" to timelimit="m" for past 1 month data
             def ddgs_search(): return list(DDGS().text(query, timelimit="m", max_results=10, backend="lite"))
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 res = executor.submit(ddgs_search).result(timeout=15)
@@ -186,6 +190,41 @@ def fetch_deep_text(url):
             return soup.get_text(separator=" ", strip=True)[:4000]
     except Exception: pass
     return ""
+
+def is_tender_active(raw_text):
+    """
+    ZERO-RISK REGEX PRE-PROCESSOR (Layer 3)
+    Extracts all dates. If ANY is future, approves. If ALL are past, drops.
+    """
+    if not raw_text: return True
+    
+    date_patterns = [
+        r"(?:Bid End Date|Closing Date|Submission End Date)\s*[:\-]?\s*(\d{2}[-/][A-Za-z]{3}[-/]\d{4})", 
+        r"(?:Bid End Date|Closing Date|Submission End Date)\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})"
+    ]
+    
+    found_dates = []
+    for pattern in date_patterns:
+        matches = re.findall(pattern, raw_text, re.IGNORECASE)
+        for date_str in matches:
+            date_clean = date_str.replace("/", "-")
+            try:
+                if date_clean[3].isalpha():
+                    found_dates.append(datetime.strptime(date_clean, "%d-%b-%Y"))
+                else:
+                    found_dates.append(datetime.strptime(date_clean, "%d-%m-%Y"))
+            except ValueError:
+                continue
+
+    if not found_dates:
+        return True 
+
+    for tender_date in found_dates:
+        if tender_date >= TODAY:
+            return True
+
+    print("    🚫 Regex Bouncer: All tender deadlines on this page have expired. Dropping.")
+    return False
 
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def ai_analyze_batch(batch, exclusions):
@@ -209,7 +248,7 @@ Banned Intents/Keywords: {json.dumps(exclusions)}
 
     prompt = f"""
 You are an expert B2B Ecosystem Analyst.
-You evaluate news, tenders, contracts, MCA registry incorporations, and company profiles related to the 'Target Product'.
+CRITICAL CONTEXT: Today's date is {CURRENT_DATE_STR}.
 
 CLASSIFICATION ROLES:
 1. 'BUYER': Direct procurement, GeM bids, CPPP eTenders, public tenders, VC funding announcements, Zauba import data, or general direct buyer.
@@ -223,6 +262,12 @@ GEOGRAPHIC NORMALIZATION:
 - 'state': Standard Indian State/UT (e.g., 'Karnataka', 'Maharashtra').
 
 {exclusion_rule}
+
+DEADLINE ENFORCEMENT RULE (Layer 4 Guardrail):
+1. Scan the text for keywords like "Bid Submission End Date", "Closing Date", "Deadline", or "Valid Upto".
+2. Compare that exact date to today's date ({CURRENT_DATE_STR}).
+3. If the submission deadline has already passed, you MUST return is_valid=False and set entity_role to IRRELEVANT.
+4. Only classify leads as valid if the deadline is active or if no deadline is specified.
 
 DATA BATCH:
 {items_block}
@@ -271,11 +316,14 @@ DATA BATCH:
 def build_vector_matrix(target, industry_keywords):
     current_year = datetime.now().year
     
+    # Layer 1: Google Dorking Exclusions to strip out expired/awarded contracts
+    exclusions = ' -"Award of Contract" -"AOC" -"Status: Closed" -"Cancelled" -"Corrigendum"'
+    
     # =================================================================
-    # BASE OSINT QUERIES (Keeps existing MCA and Tender lead flow)
+    # BASE OSINT QUERIES
     # =================================================================
     base_queries = [
-        {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in'},
+        {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in{exclusions}'},
         {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
         {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" ({industry_keywords})'},
         {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" ({industry_keywords})'},
@@ -288,34 +336,29 @@ def build_vector_matrix(target, industry_keywords):
     ]
 
     # =================================================================
-    # 14-VECTOR ENTERPRISE INTELLIGENCE MATRIX (Early Warning Signals)
+    # 14-VECTOR ENTERPRISE INTELLIGENCE MATRIX
     # =================================================================
     new_vectors = [
-        # Phase 1: Blueprint Stage (12-24 Months Out)
-        {"type": "Project", "query": f'"{target}" (site:parivesh.nic.in OR site:environmentclearance.nic.in)'},
+        {"type": "Project", "query": f'"{target}" (site:parivesh.nic.in OR site:environmentclearance.nic.in){exclusions}'},
         {"type": "Project", "query": f'"{target}" "allotment" (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
         {"type": "Project", "query": f'"{target}" "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
         {"type": "Project", "query": f'"{target}" "project cost" site:indiainvestmentgrid.gov.in'},
         {"type": "Project", "query": f'"{target}" "IEM acknowledged" site:dpiit.gov.in'},
-        
-        # Phase 2: Capital Injection Stage (6-12 Months Out)
         {"type": "Project", "query": f'"{target}" "Regulation 30" "capex" (site:bseindia.com OR site:nseindia.com)'},
         {"type": "Project", "query": f'"{target}" "rating rationale" "capex" (site:crisilratings.com OR site:icra.in OR site:careratings.com)'},
         {"type": "Project", "query": f'"{target}" "PLI scheme" "approved" (site:gov.in OR site:pib.gov.in)'},
         {"type": "Project", "query": f'"{target}" "resolution plan approved" (site:ibbi.gov.in OR site:nclt.gov.in)'},
         {"type": "Direct", "query": f'"{target}" ("raised" OR "Series A") (site:inc42.com OR site:vccircle.com)'},
-
-        # Phase 3: Execution Stage (0-6 Months Out)
         {"type": "Project", "query": f'"{target}" "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
-        {"type": "Direct", "query": f'"{target}" site:bidplus.gem.gov.in'},
-        {"type": "Direct", "query": f'"{target}" "Tender Documents" (site:eprocure.gov.in OR site:etenders.gov.in)'},
+        {"type": "Direct", "query": f'"{target}" site:bidplus.gem.gov.in{exclusions}'},
+        {"type": "Direct", "query": f'"{target}" "Tender Documents" (site:eprocure.gov.in OR site:etenders.gov.in){exclusions}'},
         {"type": "Direct", "query": f'"{target}" site:zauba.com/import-'}
     ]
 
     return base_queries + new_vectors
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V14 Master Engine with 14-Vector Intel Matrix)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (V14 Master Engine with 14-Vector Intel Matrix & Expired Lead Filtering)", flush=True)
     
     # 🚨 RELIABLE HYBRID MEMORY LOAD
     load_existing_urls_cache()
@@ -358,7 +401,14 @@ def run():
             if any(b_dom in link_lower for b_dom in cloud_domains):
                 continue
             if not is_duplicate_cached(r['link']):
-                r['deep_text'] = fetch_deep_text(r['link'])
+                raw_deep_text = fetch_deep_text(r['link'])
+                
+                # --- Layer 3: Regex Bouncer (Pre-AI Expiry Check) ---
+                if not is_tender_active(raw_deep_text or r['summary']):
+                    add_to_cache(r['link']) # Prevent AI from checking it again
+                    continue
+                
+                r['deep_text'] = raw_deep_text
                 r['target'] = target_product
                 r['query_type'] = query_type
                 fresh_leads.append(r)
@@ -446,7 +496,7 @@ def run():
             for attempt in range(3):
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=30)
-                    print(f"    🗑️ Swept {len(ai_trash_log)} rejected links into AI_Trash.", flush=True)
+                    print(f"    🗑️️ Swept {len(ai_trash_log)} rejected links into AI_Trash.", flush=True)
                     break
                 except Exception: time.sleep(2)
         time.sleep(4)
