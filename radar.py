@@ -270,10 +270,10 @@ GEOGRAPHIC NORMALIZATION:
 {exclusion_rule}
 
 DEADLINE ENFORCEMENT RULE (Layer 4 Guardrail):
-1. Scan the text for keywords like "Bid Submission End Date", "Closing Date", "Deadline", or "Valid Upto".
-2. Compare that exact date to today's date ({CURRENT_DATE_STR}).
-3. If the submission deadline has already passed, you MUST return is_valid=False and set entity_role to IRRELEVANT.
-4. Only classify leads as valid if the deadline is active or if no deadline is specified.
+1. FOR TENDERS / BIDS / RFQs ONLY: Scan for "Bid Submission End Date", "Closing Date", "Deadline", or "Valid Upto".
+   If that deadline has passed relative to {CURRENT_DATE_STR}, return is_valid=False.
+2. FOR PRIVATE CAPEX / NEWS / MCA: DO NOT reject based on past publication, incorporation, or announcement dates. 
+   Past dates in news articles or company registries are valid historical signals.
 
 DATA BATCH:
 {items_block}
@@ -409,10 +409,15 @@ def run():
             if not is_duplicate_cached(r['link']):
                 raw_deep_text = fetch_deep_text(r['link'])
                 
-                # --- Layer 3: Regex Bouncer (Pre-AI Expiry Check) ---
-                if not is_tender_active(raw_deep_text or r['summary']):
-                    add_to_cache(r['link']) # Prevent AI from checking it again
-                    continue
+                # Check if this is a tender/RFQ source vs private registry
+                is_tender_source = any(k in r['link'].lower() for k in ["gem.gov.in", "eprocure.gov.in", "tender", "bidplus"]) or query_type == "Direct"
+                is_registry = any(k in r['link'].lower() for k in ["zaubacorp.com", "thecompanycheck.com", "linkedin.com"]) or query_type == "MCA"
+
+                # --- Layer 3: ONLY run Regex Bouncer on tender sources, NEVER on MCA or company registries ---
+                if is_tender_source and not is_registry:
+                    if not is_tender_active(raw_deep_text or r['summary']):
+                        add_to_cache(r['link']) # Prevent AI from checking it again
+                        continue
                 
                 r['deep_text'] = raw_deep_text
                 r['target'] = target_product
@@ -502,7 +507,7 @@ def run():
             for attempt in range(3):
                 try:
                     requests.post(WEBHOOK, json=payload, timeout=30)
-                    print(f"    🗑️️ Swept {len(ai_trash_log)} rejected links into AI_Trash.", flush=True)
+                    print(f"    🗑 Swept {len(ai_trash_log)} rejected links into AI_Trash.", flush=True)
                     break
                 except Exception: time.sleep(2)
         time.sleep(4)
