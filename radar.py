@@ -225,7 +225,14 @@ GEOGRAPHIC NORMALIZATION:
 DEADLINE ENFORCEMENT RULE (Layer 4 Guardrail):
 1. FOR TENDERS / BIDS / RFQs ONLY: Scan for "Bid Submission End Date", "Deadline", or "Valid Upto".
    If that deadline has passed relative to {CURRENT_DATE_STR}, return is_valid=False.
-2. FOR PRIVATE CAPEX / NEWS / MCA / HIRING SIGNALS: DO NOT reject based on past publication or job posting dates. Active hiring indicates expanding requirements.
+2. FOR PRIVATE CAPEX / NEWS / HIRING SIGNALS: DO NOT reject based on past publication or job posting dates. Active hiring indicates expanding requirements.
+3. FOR MCA & REGISTRY PAGES (Query Type: MCA or Registry URLs):
+   - Scan for the official "Date of Incorporation".
+   - IF INCORPORATED IN {TODAY.year}: Classify as 'BUYER' or 'PROJECT_BUYER', set intent to "New Incorporation", and set posted_date to the incorporation date.
+   - IF INCORPORATED BEFORE {TODAY.year} (Legacy/Established Enterprise):
+     * Check if there is an active {TODAY.year} development (e.g., plant expansion, capex, modernization, board induction, new facility, authorized capital hike).
+     * If an active development exists: Keep valid (is_valid=True), set entity_role='PROJECT_BUYER', buyer_segment='CORPORATE', and summarize the specific new development in 'intent_summary'.
+     * If NO active development exists (routine directory profile only): Set is_valid=False and role='IRRELEVANT'.
 
 DATA BATCH:
 {items_block}
@@ -245,7 +252,7 @@ DATA BATCH:
                 "state": {"type": "STRING"},
                 "industry": {"type": "STRING"},
                 "intent_summary": {"type": "STRING"},
-                "posted_date": {"type": "STRING", "description": "Output 'N/A' if unknown."},
+                "posted_date": {"type": "STRING", "description": "Output exact Date of Incorporation for MCA URLs. Otherwise 'N/A' if unknown."},
                 "dm_name": {"type": "STRING", "nullable": True},
                 "dm_title": {"type": "STRING", "nullable": True}
             },
@@ -315,10 +322,16 @@ def build_vector_matrix(target, industry_keywords):
         {"type": "Direct", "query": f'"{target}" ("need agency" OR "looking for agency" OR "hiring") India (site:upwork.com OR site:freelancer.in)'}
     ]
 
-    return base_queries + new_vectors + govt_state_vectors + local_trade_vectors + event_startup_vectors
+    enterprise_capex_vectors = [
+        {"type": "Project", "query": f'"{target}" ("capacity expansion" OR "modernization" OR "brownfield") India {current_year}'},
+        {"type": "Project", "query": f'"{target}" ("Regulation 30" OR "outcome of board meeting") "capex" (site:bseindia.com OR site:nseindia.com)'},
+        {"type": "Project", "query": f'"{target}" "rating rationale" ("enhancement in capacity" OR "capex plan") (site:crisilratings.com OR site:icra.in OR site:careratings.com OR site:infomerics.com)'}
+    ]
+
+    return base_queries + new_vectors + govt_state_vectors + local_trade_vectors + event_startup_vectors + enterprise_capex_vectors
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (Tri-Buyer Multi-Engine: Govt, Corporate, Local MSME)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (Dual-Track Enterprise & MCA Intel Engine)", flush=True)
     load_existing_urls_cache()
 
     cloud_targets, cloud_exclusions, cloud_domains = [], [], []
@@ -391,12 +404,14 @@ def run():
             if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 is_supplier = (role == "SELLER")
                 link_url = fresh_leads[idx]['link'].lower()
-                is_mca_registry = "zaubacorp.com" in link_url or "thecompanycheck.com" in link_url or query_type == "MCA"
                 
-                if is_mca_registry: target_sheet, source_tag = "MCA", "MCA-Registry"
+                is_mca_url = "zaubacorp.com" in link_url or "thecompanycheck.com" in link_url or query_type == "MCA"
+                is_fresh_incorporation = is_mca_url and str(TODAY.year) in str(entity.get("posted_date", ""))
+
+                if is_fresh_incorporation: target_sheet, source_tag = "MCA", "MCA-Registry"
+                elif role == "PROJECT_BUYER" or (is_mca_url and not is_fresh_incorporation): target_sheet, source_tag = "Projects & MOUs", "Enterprise-Capex"
                 elif role == "BUYER": target_sheet, source_tag = "Inbox", f"{segment}-Buyer"
                 elif role == "SERVICE_USER": target_sheet, source_tag = "Services", "Service-Radar"
-                elif role == "PROJECT_BUYER": target_sheet, source_tag = "Projects & MOUs", "Project-Radar"
                 elif is_supplier: target_sheet, source_tag = "Suppliers", "Supplier-Radar"
                 else: target_sheet, source_tag = "Inbox", "Radar Scout"
                 
