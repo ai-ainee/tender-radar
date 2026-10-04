@@ -6,7 +6,6 @@ on:
     - cron: '30 2,4,6,8,10,12,14 * * *'
   workflow_dispatch:
 
-# CRITICAL: This gives the server permission to save seen_links.txt back to your repo
 permissions:
   contents: write
 
@@ -26,7 +25,7 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install python-dotenv requests beautifulsoup4 google-genai dnspython aiohttp tenacity ddgs
+          pip install python-dotenv requests beautifulsoup4 google-genai dnspython aiohttp tenacity duckduckgo-search
           
       - name: Run Master Autopilot Engine
         env:
