@@ -76,7 +76,6 @@ async def verify_domain_mx(domain):
     except Exception: return False
 
 async def is_valid_contact_email(email, allow_freemail=False):
-    """Corporate domains are MX verified. Local MSME leads allow freemails."""
     if not email: return False
     try:
         domain = email.split('@')[-1].lower()
