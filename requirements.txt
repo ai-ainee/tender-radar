@@ -5,3 +5,5 @@ dnspython
 aiohttp
 tenacity
 ddgs
+duckduckgo-search
+python-dotenv
