@@ -16,7 +16,7 @@ warnings.filterwarnings("ignore")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 
 try:
-    from duckduckgo_search import AsyncDDGS
+    from ddgs import AsyncDDGS
 except ImportError:
     AsyncDDGS = None
 
