@@ -116,8 +116,13 @@ async def process_lead_intel(session, lead, sem):
         
         raw_dossier = await asyncio.to_thread(generate_deal_dossier, lead, {"profile": results[0], "news": results[1], "dm_info": results[2]})
         
-        # --- Apply Regex HTML Cleaner to prevent Telegram Crashes ---
+        # TRUNCATE FIRST to prevent snapping HTML tags in half
+        if len(raw_dossier) > 3200:
+            raw_dossier = raw_dossier[:3200] + "\n\n... [Truncated]"
+            
+        # CONVERT SECOND to ensure Telegram renders it safely
         dossier = convert_markdown_to_html(raw_dossier)
+        d_text = dossier # d_text is now safely formatted
         
         for attempt in range(3):
             try:
