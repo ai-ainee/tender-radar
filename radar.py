@@ -142,14 +142,7 @@ def load_existing_urls_cache():
 def is_duplicate_cached(link):
     if not link: return False
     clean = link.strip().lower()
-    if clean in EXISTING_URLS_CACHE: return True
-    parsed = urlparse(clean)
-    netloc = parsed.netloc.replace("www.", "")
-    directory_domains = ["indiamart.com", "tradeindia.com", "linkedin.com", "gem.gov.in", "eprocure.gov.in", "bseindia.com", "zaubacorp.com", "thecompanycheck.com"]
-    if not any(d in netloc for d in directory_domains):
-        if any(netloc in cached for cached in EXISTING_URLS_CACHE if cached):
-            return True
-    return False
+    return clean in EXISTING_URLS_CACHE
 
 def get_search_results(query):
     results = []
@@ -194,36 +187,49 @@ def fetch_deep_text(url):
 def is_tender_active(raw_text):
     """
     ZERO-RISK REGEX PRE-PROCESSOR (Layer 3)
-    Extracts all dates. If ANY is future, approves. If ALL are past, drops.
+    1. Handles GeM ('Bid End Date/Time') and eProcure ('Last Date of Submission').
+    2. Handles dots, slashes, dashes, and word-months (17-Sep-2026, 17/09/2026, 17.09.2026).
+    3. Uses .date() comparison to prevent dropping tenders that close TODAY.
+    4. If ANY date is future/today, approves. If ALL are past, drops.
     """
-    if not raw_text: return True
+    if not raw_text: 
+        return True
     
-    date_patterns = [
-        r"(?:Bid End Date|Closing Date|Submission End Date)\s*[:\-]?\s*(\d{2}[-/][A-Za-z]{3}[-/]\d{4})", 
-        r"(?:Bid End Date|Closing Date|Submission End Date)\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})"
-    ]
+    # Matches: Bid End Date, Bid End Date/Time, Submission End Date, Due Date, Last Date of Submission
+    pattern = (
+        r"(?:Bid\s+End(?:\s+Date)?(?:/\s*Time)?|"
+        r"Submission\s+(?:End\s+Date|Deadline|Closing\s+Date)|"
+        r"Closing\s+Date|Due\s+Date|Last\s+Date(?:\s+of\s+Submission)?)"
+        r"\s*[:\-]?\s*"
+        r"(\d{1,2}[-/\.\s](?:[A-Za-z]{3,9}|\d{1,2})[-/\.\s]\d{4})"
+    )
     
+    matches = re.findall(pattern, raw_text, re.IGNORECASE)
     found_dates = []
-    for pattern in date_patterns:
-        matches = re.findall(pattern, raw_text, re.IGNORECASE)
-        for date_str in matches:
-            date_clean = date_str.replace("/", "-")
+    
+    for date_str in matches:
+        # Normalize separators to hyphens
+        clean_str = re.sub(r"[/\\.\s]+", "-", date_str.strip())
+        
+        # Try different date formats
+        for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y"):
             try:
-                if date_clean[3].isalpha():
-                    found_dates.append(datetime.strptime(date_clean, "%d-%b-%Y"))
-                else:
-                    found_dates.append(datetime.strptime(date_clean, "%d-%m-%Y"))
+                found_dates.append(datetime.strptime(clean_str, fmt))
+                break
             except ValueError:
                 continue
 
+    # If no standard tender deadline is detected, pass to Gemini safely
     if not found_dates:
         return True 
 
+    # If even ONE deadline is today or in the future, approve it
     for tender_date in found_dates:
-        if tender_date >= TODAY:
+        if tender_date.date() >= TODAY.date():
             return True
 
-    print("    🚫 Regex Bouncer: All tender deadlines on this page have expired. Dropping.")
+    # If all extracted dates are in the past, drop immediately
+    print(f"    🚫 Regex Bouncer: All tender deadlines on this page have expired. Dropping.", flush=True)
     return False
 
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
