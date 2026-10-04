@@ -18,11 +18,8 @@ from tenacity import retry, wait_exponential, stop_after_attempt
 warnings.filterwarnings("ignore")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 
-TODAY = datetime.now()
-CURRENT_DATE_STR = TODAY.strftime("%d %B %Y")
-
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 except ImportError:
     DDGS = None
 
