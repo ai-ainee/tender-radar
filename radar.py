@@ -7,10 +7,12 @@ import uuid
 import logging
 import warnings
 import requests
+import io
 import concurrent.futures
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from datetime import datetime
+from pypdf import PdfReader
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -27,7 +29,10 @@ CURRENT_DATE_STR = TODAY.strftime("%d %B %Y")
 try:
     from ddgs import DDGS
 except ImportError:
-    DDGS = None
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        DDGS = None
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
@@ -175,13 +180,33 @@ def fetch_deep_text(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
         session = requests.Session()
-        r = session.get(url, headers=headers, timeout=(5, 10), verify=False)
-        if r.status_code == 200:
-            if 'text/html' not in r.headers.get('Content-Type', '').lower(): return ""
+        r = session.get(url, headers=headers, timeout=(5, 12), verify=False)
+        if r.status_code != 200:
+            return ""
+            
+        content_type = r.headers.get('Content-Type', '').lower()
+        clean_url = url.lower().split('?')[0]
+
+        if 'application/pdf' in content_type or clean_url.endswith('.pdf'):
+            try:
+                reader = PdfReader(io.BytesIO(r.content))
+                extracted_pages = []
+                for page in reader.pages[:8]:
+                    text = page.extract_text()
+                    if text:
+                        extracted_pages.append(text)
+                pdf_text = " ".join(extracted_pages)
+                return re.sub(r'\s+', ' ', pdf_text).strip()[:4000]
+            except Exception:
+                return ""
+
+        if 'text/html' in content_type:
             soup = BeautifulSoup(r.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]): tag.decompose()
+            for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
+                tag.decompose()
             return soup.get_text(separator=" ", strip=True)[:4000]
-    except Exception: pass
+    except Exception:
+        pass
     return ""
 
 def is_tender_active(raw_text):
@@ -263,6 +288,11 @@ CLASSIFICATION ROLES:
 4. 'SELLER': Company manufacturing/supplying the Target Product or an alternative.
 5. 'IRRELEVANT': Unrelated products, job listings, directory listings, or generic news.
 
+BUYER SEGMENT CLASSIFICATION:
+- 'GOVT': Central/State Government, GeM, CPPP, State eProcurement, PSUs, Municipal bodies.
+- 'CORPORATE': Private/Public Limited enterprises, listed companies, funded startups, Hiring signals on Naukri/LinkedIn.
+- 'LOCAL_MSME': Small businesses, contractors, dealers, trade marketplace RFQs.
+
 GEOGRAPHIC NORMALIZATION:
 - 'city': Specific Indian city (e.g., 'Bengaluru', 'Pune'). 
 - 'state': Standard Indian State/UT (e.g., 'Karnataka', 'Maharashtra').
@@ -286,7 +316,9 @@ DATA BATCH:
                 "item_index": {"type": "INTEGER"},
                 "product_match_reasoning": {"type": "STRING", "description": "Explain interaction with Target Product."},
                 "is_valid": {"type": "BOOLEAN"},
+                "confidence_score": {"type": "STRING", "description": "HIGH, MEDIUM, or LOW based on snippet completeness"},
                 "entity_role": {"type": "STRING", "description": "Must be exactly one of: BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT"},
+                "buyer_segment": {"type": "STRING", "description": "Must be exactly one of: GOVT, CORPORATE, LOCAL_MSME"},
                 "org": {"type": "STRING", "description": "Entity name"},
                 "city": {"type": "STRING", "description": "Normalized Indian City"},
                 "state": {"type": "STRING", "description": "Normalized Indian State/UT"},
@@ -296,7 +328,7 @@ DATA BATCH:
                 "dm_name": {"type": "STRING", "nullable": True},
                 "dm_title": {"type": "STRING", "nullable": True}
             },
-            "required": ["item_index", "product_match_reasoning", "is_valid", "entity_role", "org", "city", "state", "industry", "intent_summary", "posted_date"]
+            "required": ["item_index", "product_match_reasoning", "is_valid", "confidence_score", "entity_role", "buyer_segment", "org", "city", "state", "industry", "intent_summary", "posted_date"]
         }
     }
 
@@ -321,50 +353,76 @@ DATA BATCH:
 
 def build_vector_matrix(target, industry_keywords):
     current_year = datetime.now().year
-    
-    # Layer 1: Google Dorking Exclusions to strip out expired/awarded contracts
     exclusions = ' -"Award of Contract" -"AOC" -"Status: Closed" -"Cancelled" -"Corrigendum"'
-    
-    # =================================================================
-    # BASE OSINT QUERIES
-    # =================================================================
-    base_queries = [
-        {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in{exclusions}'},
-        {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
-        {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" ({industry_keywords})'},
-        {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" ({industry_keywords})'},
-        {"type": "Project", "query": f'"{target}" ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
-        {"type": "Project", "query": f'"{target}" ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'},
-        {"type": "Project", "query": f'site:bseindia.com/xml-data/corpfiling/ "{target}" ("bagged order" OR "contract worth" OR "LoA")'},
-        {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'},
-        {"type": "Direct", "query": f'site:facebook.com/groups "{target}" ("urgent requirement" OR "need supplier" OR "vendor needed") India'},
-        {"type": "Project", "query": f'site:naukri.com/job-listings "{target}" ("urgent opening" OR "walk-in") India'}
-    ]
 
-    # =================================================================
-    # 14-VECTOR ENTERPRISE INTELLIGENCE MATRIX
-    # =================================================================
-    new_vectors = [
-        {"type": "Project", "query": f'"{target}" (site:parivesh.nic.in OR site:environmentclearance.nic.in){exclusions}'},
-        {"type": "Project", "query": f'"{target}" "allotment" (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
-        {"type": "Project", "query": f'"{target}" "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
-        {"type": "Project", "query": f'"{target}" "project cost" site:indiainvestmentgrid.gov.in'},
-        {"type": "Project", "query": f'"{target}" "IEM acknowledged" site:dpiit.gov.in'},
-        {"type": "Project", "query": f'"{target}" "Regulation 30" "capex" (site:bseindia.com OR site:nseindia.com)'},
-        {"type": "Project", "query": f'"{target}" "rating rationale" "capex" (site:crisilratings.com OR site:icra.in OR site:careratings.com)'},
-        {"type": "Project", "query": f'"{target}" "PLI scheme" "approved" (site:gov.in OR site:pib.gov.in)'},
-        {"type": "Project", "query": f'"{target}" "resolution plan approved" (site:ibbi.gov.in OR site:nclt.gov.in)'},
-        {"type": "Direct", "query": f'"{target}" ("raised" OR "Series A") (site:inc42.com OR site:vccircle.com)'},
-        {"type": "Project", "query": f'"{target}" "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
+    tier1_direct_tenders = [
         {"type": "Direct", "query": f'"{target}" site:bidplus.gem.gov.in{exclusions}'},
         {"type": "Direct", "query": f'"{target}" "Tender Documents" (site:eprocure.gov.in OR site:etenders.gov.in){exclusions}'},
+        {"type": "Direct", "query": f'"{target}" tender (site:mahatenders.gov.in OR site:wbtenders.gov.in OR site:etenders.kerala.gov.in OR site:eproc.rajasthan.gov.in OR site:tender.up.gov.in){exclusions}'},
+        {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in{exclusions}'},
         {"type": "Direct", "query": f'"{target}" site:zauba.com/import-'}
     ]
 
-    return base_queries + new_vectors
+    tier2_gem_defense = [
+        {"type": "Direct", "query": f'"{target}" "Bid Details" "Total Quantity" site:bidplus.gem.gov.in{exclusions}'},
+        {"type": "Direct", "query": f'"{target}" "Custom Bid for Services" site:gem.gov.in{exclusions}'},
+        {"type": "Direct", "query": f'"{target}" ("Tender Notice" OR "Notice Inviting Tender") (site:isro.gov.in OR site:drdo.gov.in OR site:cpwd.gov.in){exclusions}'},
+        {"type": "Project", "query": f'"{target}" ("winner" OR "grant approved" OR "contract signed") site:idex.gov.in'},
+        {"type": "Direct", "query": f'"{target}" ("vendor registration" OR "expression of interest") (site:hal-india.co.in OR site:bel-india.in OR site:bdl-india.in)'}
+    ]
+
+    tier3_statutory = [
+        {"type": "Project", "query": f'"{target}" (site:parivesh.nic.in OR site:environmentclearance.nic.in){exclusions}'},
+        {"type": "Project", "query": f'"{target}" "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
+        {"type": "Project", "query": f'"{target}" "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
+        {"type": "Project", "query": f'"{target}" "IEM acknowledged" site:dpiit.gov.in'},
+        {"type": "Project", "query": f'"{target}" "project cost" site:indiainvestmentgrid.gov.in'}
+    ]
+
+    tier4_corridors = [
+        {"type": "Project", "query": f'"{target}" "allotment" (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
+        {"type": "Project", "query": f'"{target}" ("plot allotment" OR "possession letter" OR "building plan approved") (site:yamunaexpresswayauthority.com OR site:dholera.go.gov.in OR site:kiadb.in OR site:sipcot.tn.gov.in)'},
+        {"type": "Project", "query": f'"{target}" ("allotment of industrial land" OR "ground breaking") (Tamil Nadu OR Karnataka OR Uttar Pradesh) {current_year}'}
+    ]
+
+    tier5_epc = [
+        {"type": "Project", "query": f'"{target}" ("Vendor Empanelment" OR "Expression of Interest" OR "Notice Inviting EOI") (site:larsentoubro.com OR site:tataprojects.com OR site:afcons.com OR site:ncc.co.in)'},
+        {"type": "Project", "query": f'"{target}" ("sub-contractor required" OR "sub-package" OR "invited for empanelment") India {current_year}'}
+    ]
+
+    tier6_mdbs = [
+        {"type": "Direct", "query": f'"{target}" "Procurement Notice" India (site:projects.worldbank.org OR site:adb.org OR site:aiib.org)'},
+        {"type": "Direct", "query": f'"{target}" "General Procurement Notice" (site:dgmarket.com OR site:devbusiness.com) India'}
+    ]
+
+    tier7_capex = [
+        {"type": "Project", "query": f'"{target}" ("concall transcript" OR "earnings conference call") "capex" (site:trendlyne.com OR site:researchbytes.com OR site:screener.in) India'},
+        {"type": "Project", "query": f'"{target}" "investor presentation" ("capacity addition" OR "new facility" OR "capital outlay") India {current_year}'},
+        {"type": "Project", "query": f'"{target}" ("Regulation 30" OR "outcome of board meeting") "capex" (site:bseindia.com OR site:nseindia.com)'},
+        {"type": "Project", "query": f'"{target}" "rating rationale" ("enhancement in capacity" OR "capex plan") (site:crisilratings.com OR site:icra.in OR site:careratings.com OR site:infomerics.com)'},
+        {"type": "Project", "query": f'"{target}" ("capacity expansion" OR "modernization" OR "brownfield") India {current_year}'}
+    ]
+
+    tier8_growth_private = [
+        {"type": "Project", "query": f'site:naukri.com/job-listings "{target}" ("urgent opening" OR "walk-in") India'},
+        {"type": "Direct", "query": f'"{target}" ("raised" OR "funding" OR "seed" OR "series") (site:yourstory.com OR site:entrackr.com)'},
+        {"type": "Direct", "query": f'"{target}" ("buying requirement" OR "urgent order") (site:connect2india.com OR site:exportersindia.com)'},
+        {"type": "Direct", "query": f'"{target}" ("need agency" OR "looking for agency" OR "hiring") India (site:upwork.com OR site:freelancer.in)'},
+        {"type": "Project", "query": f'"{target}" ("exhibitor list" OR "participating in" OR "stall booked") India {current_year}'},
+        {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
+        {"type": "Direct", "query": f'"{target}" ("authorized dealer" OR "stockist") "contact number" site:justdial.com'},
+        {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'},
+        {"type": "Direct", "query": f'site:facebook.com/groups "{target}" ("urgent requirement" OR "need supplier" OR "vendor needed") India'},
+        {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" ({industry_keywords})'},
+        {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" ({industry_keywords})'},
+        {"type": "Project", "query": f'"{target}" ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
+        {"type": "Project", "query": f'"{target}" ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'}
+    ]
+
+    return tier1_direct_tenders + tier2_gem_defense + tier3_statutory + tier4_corridors + tier5_epc + tier6_mdbs + tier7_capex + tier8_growth_private
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V14 Master Engine with 14-Vector Intel Matrix & Expired Lead Filtering)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (V14 Master Engine with PDF parsing & 8-Tier Intel Matrix)", flush=True)
     
     # 🚨 RELIABLE HYBRID MEMORY LOAD
     load_existing_urls_cache()
@@ -410,8 +468,8 @@ def run():
                 raw_deep_text = fetch_deep_text(r['link'])
                 
                 # Check if this is a tender/RFQ source vs private registry
-                is_tender_source = any(k in r['link'].lower() for k in ["gem.gov.in", "eprocure.gov.in", "tender", "bidplus"]) or query_type == "Direct"
-                is_registry = any(k in r['link'].lower() for k in ["zaubacorp.com", "thecompanycheck.com", "linkedin.com"]) or query_type == "MCA"
+                is_tender_source = any(k in link_lower for k in ["gem.gov.in", "eprocure.gov.in", "tender", "bidplus", "etenders"]) or query_type == "Direct"
+                is_registry = any(k in link_lower for k in ["zaubacorp.com", "thecompanycheck.com", "linkedin.com", "indiamart.com", "tradeindia.com"]) or query_type == "MCA"
 
                 # --- Layer 3: ONLY run Regex Bouncer on tender sources, NEVER on MCA or company registries ---
                 if is_tender_source and not is_registry:
@@ -438,30 +496,43 @@ def run():
             idx = entity.get("item_index")
             if idx is None or idx >= len(fresh_leads) or idx < 0: continue
             
+            is_valid = entity.get("is_valid")
             role = entity.get('entity_role')
+            segment = entity.get('buyer_segment', 'CORPORATE')
+            confidence = entity.get('confidence_score', 'HIGH')
             reason = entity.get("product_match_reasoning", "No reasoning provided")
-            print(f"       [Vote] Valid: {entity.get('is_valid')} | Role: {role} | Org: {entity.get('org')}", flush=True)
+            link_url = fresh_leads[idx]['link'].lower()
             
-            if entity.get("is_valid") and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
-                is_supplier = (role == "SELLER")
-                link_url = fresh_leads[idx]['link'].lower()
-                is_mca_registry = "zaubacorp.com" in link_url or "thecompanycheck.com" in link_url or query_type == "MCA"
-                
-                # --- DYNAMIC 5-WAY ROUTING LOGIC ---
-                if is_mca_registry:
+            is_supplier = (role == "SELLER")
+            is_mca_registry = "zaubacorp.com" in link_url or "thecompanycheck.com" in link_url or query_type == "MCA"
+            is_fresh_incorporation = is_mca_registry and str(TODAY.year) in str(entity.get("posted_date", ""))
+
+            print(f"       [Vote] Valid: {is_valid} | Role: {role} | Conf: {confidence} | Org: {entity.get('org')}", flush=True)
+            
+            needs_review = (role in ["BUYER", "PROJECT_BUYER"] and confidence in ["LOW", "MEDIUM"])
+
+            if is_valid and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
+                # --- DYNAMIC 5-WAY ROUTING LOGIC WITH SAFETY VALVE ---
+                if needs_review:
+                    target_sheet, source_tag = "Needs Review", f"Review-{segment}"
+                elif is_fresh_incorporation:
                     target_sheet, source_tag = "MCA", "MCA-Registry"
+                elif role == "PROJECT_BUYER" or (is_mca_registry and not is_fresh_incorporation): 
+                    target_sheet, source_tag = "Projects & MOUs", "Enterprise-Capex"
                 elif role == "BUYER": 
-                    target_sheet, source_tag = "Inbox", "Buyer-Radar"
+                    target_sheet, source_tag = "Inbox", f"{segment}-Buyer"
                 elif role == "SERVICE_USER": 
                     target_sheet, source_tag = "Services", "Service-Radar"
-                elif role == "PROJECT_BUYER": 
-                    target_sheet, source_tag = "Projects & MOUs", "Project-Radar"
                 elif is_supplier: 
                     target_sheet, source_tag = "Suppliers", "Supplier-Radar"
                 else: 
                     target_sheet, source_tag = "Inbox", "Radar Scout"
                 
-                intent_label = f"Supplier ({entity.get('intent_summary')})" if is_supplier else entity.get("intent_summary")
+                intent_base = entity.get("intent_summary") or "Identified Requirement"
+                intent_label = f"[{segment}] Supplier ({intent_base})" if is_supplier else f"[{segment}] {intent_base}"
+                
+                if needs_review:
+                    intent_label = f"[LOW CONFIDENCE] {intent_label}"
                 
                 payload = {
                     "secret": SECRET,
@@ -487,14 +558,47 @@ def run():
                 for attempt in range(3):
                     try:
                         requests.post(WEBHOOK, json=payload, timeout=30)
-                        # DOUBLE-BACKUP: Saves to RAM and seen_links.txt simultaneously
                         add_to_cache(fresh_leads[idx]['link'])
                         print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']} (Date: {entity.get('posted_date', 'N/A')})", flush=True)
                         break
                     except Exception: time.sleep(2)
+                    
+            elif not is_valid and needs_review:
+                # OVERRIDE: The lead was rejected by AI, but it flagged it as a buyer with low confidence text (marginal data)
+                target_sheet, source_tag = "Needs Review", f"LowConfidence-{segment}"
+                intent_base = entity.get("intent_summary") or "Marginal Intent Detected"
+                intent_label = f"[AI REJECTED - REVIEW] [{segment}] {intent_base}"
+                
+                payload = {
+                    "secret": SECRET,
+                    "action": "add_lead",
+                    "target_sheet": target_sheet,
+                    "is_supplier": False,
+                    "lead_id": str(uuid.uuid4())[:8],
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "posted_date": entity.get("posted_date", "N/A"), 
+                    "source": source_tag,
+                    "org": entity.get("org", "Unknown"),
+                    "city": entity.get("city", "Unknown"),
+                    "state": entity.get("state", "Pan-India"),
+                    "industry": target_product,
+                    "intent": intent_label,
+                    "dm_name": entity.get("dm_name") or "N/A",
+                    "dm_title": entity.get("dm_title") or "N/A",
+                    "link": fresh_leads[idx]['link'],
+                    "email": "N/A",
+                    "phone": "N/A",
+                    "website": "N/A"
+                }
+                for attempt in range(3):
+                    try:
+                        requests.post(WEBHOOK, json=payload, timeout=30)
+                        add_to_cache(fresh_leads[idx]['link'])
+                        print(f"    ⚠️ [SAVED FROM TRASH] -> {target_sheet}: {entity['org']}", flush=True)
+                        break
+                    except Exception: time.sleep(2)
             else:
                 ai_trash_log.append({"url": fresh_leads[idx]['link'], "reason": f"[{role}] {reason}"})
-                # DOUBLE-BACKUP: Prevents AI from scanning trash links twice
                 add_to_cache(fresh_leads[idx]['link'])
         
         if ai_trash_log:
