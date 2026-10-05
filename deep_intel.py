@@ -44,13 +44,13 @@ def get_flash_model_stack(client):
                 valid_models.append(name)
         if valid_models:
             valid_models.sort(reverse=True)
-            for preferred in ["models/gemini-3.8-flash", "models/gemini-3.5-flash", "models/gemini-1.5-flash"]:
+            for preferred in ["models/gemini-3.5-flash-lite", "models/gemini-1.5-flash"]:
                 if preferred in valid_models:
                     valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+    BEST_MODEL_STACK = ["gemini-3.5-flash-lite", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
 async def async_serper_search(session, query, num=3):
@@ -61,7 +61,9 @@ async def async_serper_search(session, query, num=3):
     except Exception: pass
     return []
 
+# --- HTML Regex Cleaner for Telegram ---
 def convert_markdown_to_html(text):
+    """Converts Gemini Markdown (**bold**, *italic*) to Telegram-safe HTML (<b>bold</b>, <i>italic</i>)"""
     if not text: return ""
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
@@ -75,6 +77,7 @@ def generate_deal_dossier(lead, context_data):
     if not client: return "AI Unavailable."
     model_stack = get_flash_model_stack(client)
     
+    # --- UPGRADED PROMPT: Added 3-Sentence Cold Pitch Generation ---
     prompt = f"""
 Write an Executive Deal Brief for sales outreach:
 Target: {lead['org']} (Location: {lead.get('city')}, {lead.get('state')})
@@ -86,7 +89,9 @@ Output JSON with key 'dossier' containing:
 1. Executive Profile & Core Operations
 2. Current Capex, Project Signals & Recent Milestones
 3. Tactical Value Proposition & Entry Pitch
-4. "Ready-to-Send Cold Pitch": Write a highly personalized 3-sentence message addressed to the Decision Maker.
+4. [NEW SECTION] "Ready-to-Send Cold Pitch": Write a highly personalized 3-sentence message (Observation, Value Bridge, Call-to-Action) addressed to the Decision Maker. DO NOT use placeholders like [Your Name].
+
+Keep the formatting clean and professional.
 """
     schema = {"type": "OBJECT", "properties": {"dossier": {"type": "STRING"}}}
     
@@ -102,6 +107,7 @@ Output JSON with key 'dossier' containing:
 
 async def process_lead_intel(session, lead, sem):
     async with sem:
+        print(f"[*] Deep Intel Synthesis: {lead['org']}", flush=True)
         results = await asyncio.gather(
             async_serper_search(session, f'"{lead["org"]}" company profile India turnover'), 
             async_serper_search(session, f'"{lead["org"]}" ("contract awarded" OR "expansion" OR "orders" OR "capex")'), 
@@ -110,46 +116,58 @@ async def process_lead_intel(session, lead, sem):
         
         raw_dossier = await asyncio.to_thread(generate_deal_dossier, lead, {"profile": results[0], "news": results[1], "dm_info": results[2]})
         
+        # TRUNCATE FIRST to prevent snapping HTML tags in half
         if len(raw_dossier) > 3200:
-            display_dossier_text = raw_dossier[:3200] + "\n\n... [Truncated]"
-        else:
-            display_dossier_text = raw_dossier
+            raw_dossier = raw_dossier[:3200] + "\n\n... [Truncated]"
             
-        dossier = convert_markdown_to_html(display_dossier_text)
+        # CONVERT SECOND to ensure Telegram renders it safely
+        dossier = convert_markdown_to_html(raw_dossier)
+        d_text = dossier # d_text is now safely formatted
         
         for attempt in range(3):
             try:
+                # Updates the dossier in the LEADS tab instead of forcing it to Pipeline
                 async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead_dossier", "lead_id": lead['lead_id'], "dossier": dossier}, timeout=30) as response: 
                     await response.read()
+                    print(f"    ✅ Dossier Stored in Leads Tab: {lead['org']}", flush=True)
                     break
             except Exception: await asyncio.sleep(2)
         
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+            d_text = dossier[:3200] + "\n\n... [Truncated]" if len(dossier) > 3200 else dossier
+            
+            # --- Extract Cold Pitch for the 1-Click Buttons ---
             pitch_text = f"Hi {lead.get('dm_name', 'Team')}, I saw your update regarding {lead['org']}'s requirements. Would love to connect and share details on how we can support your project."
+            # Search for the "Ready-to-Send Cold Pitch" in the generated dossier
             pitch_match = re.search(r'Ready-to-Send Cold Pitch.*?:?\s*(.*?)(?=\n\n|$)', raw_dossier, re.IGNORECASE | re.DOTALL)
             if pitch_match and pitch_match.group(1):
                 pitch_text = pitch_match.group(1).strip()
             
+            # Clean any HTML or bold tags out of the pitch so WhatsApp/Email renders plain text
             pitch_text = re.sub(r'<[^>]+>', '', pitch_text)
             pitch_text = pitch_text.replace('**', '').replace('__', '')
             
             buttons = []
             
+            # 1-Click WhatsApp Button Logic
             phone = str(lead.get('phone', '')).strip()
             clean_phone = "".join(filter(str.isdigit, phone))
-            if len(clean_phone) == 10: clean_phone = "91" + clean_phone
+            if len(clean_phone) == 10:
+                clean_phone = "91" + clean_phone
                 
             if len(clean_phone) >= 10:
                 wa_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(pitch_text)}"
                 buttons.append([{"text": "💬 WhatsApp DM", "url": wa_url}])
                 
+            # 1-Click Mailto Button Logic
             email = str(lead.get('email', '')).strip()
             if email and email.lower() != "n/a" and "@" in email:
-                subject = urllib.parse.quote(f"Requirement Inquiry regarding {lead.get('org', 'your project')}")
+                subject = urllib.parse.quote(f"Partnership regarding {lead.get('org', 'your requirements')}")
                 body = urllib.parse.quote(pitch_text)
                 mailto_url = f"mailto:{email}?subject={subject}&body={body}"
                 buttons.append([{"text": "📧 Send Email", "url": mailto_url}])
             
+            # Append standard CRM workflow buttons
             buttons.append([{"text": "🚀 Move to Pipeline", "callback_data": f"topipeline_{lead['lead_id']}"}])
             buttons.append([{"text": "🗑️ Drop Lead", "callback_data": f"droplead_{lead['lead_id']}"}])
             
@@ -159,7 +177,7 @@ async def process_lead_intel(session, lead, sem):
                 f"📍 <b>Location:</b> {lead.get('city')}, {lead.get('state')}\n"
                 f"👤 <b>DM:</b> {lead.get('dm_name')} ({lead.get('dm_title')})\n"
                 f"📞 <b>Contact:</b> {lead.get('phone', 'N/A')} | {lead.get('email', 'N/A')}\n\n"
-                f"<b>--- DOSSIER ---</b>\n{dossier}"
+                f"<b>--- DOSSIER ---</b>\n{d_text}"
             )
             payload = {
                 "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True,
