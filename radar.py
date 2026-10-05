@@ -39,7 +39,9 @@ except ImportError:
 
 WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
 SECRET = os.environ.get("WEBHOOK_SECRET")
-SERPER_KEY = os.environ.get("SERPER_API_KEY")
+raw_serper_keys = os.environ.get("SERPER_API_KEY", "")
+SERPER_KEYS = [k.strip() for k in raw_serper_keys.split(",") if k.strip()]
+current_serper_index = 0
 
 raw_keys = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
@@ -153,12 +155,16 @@ def is_duplicate_cached(link):
     return clean in EXISTING_URLS_CACHE
 
 def get_search_results(query):
+    global current_serper_index
     results = []
-    if SERPER_KEY:
+    
+    while current_serper_index < len(SERPER_KEYS):
+        api_key = SERPER_KEYS[current_serper_index]
         try:
             payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:m", "num": 10})
-            headers = {'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}
+            headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
             response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=25)
+            
             if response.status_code == 200:
                 for r in response.json().get("organic", []):
                     results.append({
@@ -167,7 +173,14 @@ def get_search_results(query):
                         "summary": r.get("snippet", ""),
                         "date": r.get("date", "")
                     })
-        except Exception: pass
+                return results
+            elif response.status_code in [403, 429]:
+                print(f"    ⚠️ Serper key {current_serper_index + 1} exhausted. Switching to next key...", flush=True)
+                current_serper_index += 1
+            else:
+                break
+        except Exception:
+            break
 
     if DDGS and not results:
         try:
