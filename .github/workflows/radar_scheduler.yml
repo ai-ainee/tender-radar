@@ -1,0 +1,41 @@
+name: Radar Scout Automation Engine
+
+on:
+  schedule:
+    # Runs radar.py at 2:30 AM UTC (8:00 AM IST) daily
+    - cron: '30 2 * * *'
+    # Runs enrichment_worker.py at 5:30 AM UTC (11:00 AM IST) daily
+    - cron: '30 5 * * *'
+  workflow_dispatch: # Allows you to click a "Run Now" button manually
+
+jobs:
+  run-radar-scout:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Harvester (8:00 AM IST)
+        if: github.event.schedule == '30 2 * * *' || github.event_name == 'workflow_dispatch'
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: python radar.py
+
+      - name: Run Enrichment Worker (11:00 AM IST)
+        if: github.event.schedule == '30 5 * * *' || github.event_name == 'workflow_dispatch'
+        env:
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: python enrichment_worker.py
