@@ -88,16 +88,26 @@ async def is_valid_contact_email(email, allow_freemail=False):
     except Exception: return False
 
 async def async_get_search_results(session, query, num=5):
+    global current_serper_index
     results = []
-    if SERPER_KEY:
+    
+    while current_serper_index < len(SERPER_KEYS):
+        api_key = SERPER_KEYS[current_serper_index]
         try:
             url = "https://google.serper.dev/search"
-            async with session.post(url, headers={'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}, data=json.dumps({"q": query, "gl": "in", "num": num}), timeout=25) as response:
+            async with session.post(url, headers={'X-API-KEY': api_key, 'Content-Type': 'application/json'}, data=json.dumps({"q": query, "gl": "in", "num": num}), timeout=25) as response:
                 if response.status == 200:
                     for r in (await response.json()).get("organic", []):
                         results.append({"title": r.get("title", ""), "link": r.get("link", ""), "snippet": r.get("snippet", "")})
                     if results: return results
-        except Exception: pass
+                elif response.status in [403, 429]:
+                    print(f"    ⚠️ Serper key {current_serper_index + 1} exhausted. Switching...", flush=True)
+                    current_serper_index += 1
+                else:
+                    break
+        except Exception: 
+            break
+            
     if AsyncDDGS:
         try:
             async def fetch_ddgs(): return await AsyncDDGS().text(query, max_results=num, backend="lite")
