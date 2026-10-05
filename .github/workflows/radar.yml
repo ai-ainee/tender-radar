@@ -2,8 +2,7 @@ name: Radar B2B Autopilot
 
 on:
   schedule:
-    # 8:00 AM to 8:00 PM IST every two hours
-    - cron: '30 2,4,6,8,10,12,14 * * *'
+    - cron: '15 1 * * *'
   workflow_dispatch:
 
 permissions:
