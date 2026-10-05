@@ -54,11 +54,22 @@ def get_flash_model_stack(client):
     return BEST_MODEL_STACK
 
 async def async_serper_search(session, query, num=3):
-    if not SERPER_KEY: return []
-    try:
-        async with session.post("https://google.serper.dev/search", headers={'X-API-KEY': SERPER_KEY, 'Content-Type': 'application/json'}, data=json.dumps({"q": query, "gl": "in", "num": num}), timeout=25) as response:
-            if response.status == 200: return [r.get("snippet", "") for r in (await response.json()).get("organic", [])]
-    except Exception: pass
+    global current_serper_index
+    
+    while current_serper_index < len(SERPER_KEYS):
+        api_key = SERPER_KEYS[current_serper_index]
+        try:
+            url = "https://google.serper.dev/search"
+            async with session.post(url, headers={'X-API-KEY': api_key, 'Content-Type': 'application/json'}, data=json.dumps({"q": query, "gl": "in", "num": num}), timeout=25) as response:
+                if response.status == 200:
+                    return [r.get("snippet", "") for r in (await response.json()).get("organic", [])]
+                elif response.status in [403, 429]:
+                    print(f"    ⚠️ Serper key {current_serper_index + 1} exhausted. Switching...", flush=True)
+                    current_serper_index += 1
+                else:
+                    break
+        except Exception:
+            break
     return []
 
 # --- HTML Regex Cleaner for Telegram ---
