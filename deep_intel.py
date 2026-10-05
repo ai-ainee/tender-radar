@@ -116,36 +116,35 @@ async def process_lead_intel(session, lead, sem):
         
         raw_dossier = await asyncio.to_thread(generate_deal_dossier, lead, {"profile": results[0], "news": results[1], "dm_info": results[2]})
         
-        # TRUNCATE FIRST to prevent snapping HTML tags in half
+        # --- HTML CRASH PROTECTION ---
+        # Truncate BEFORE HTML conversion to prevent slicing a <b> or <i> tag in half
         if len(raw_dossier) > 3200:
             raw_dossier = raw_dossier[:3200] + "\n\n... [Truncated]"
             
-        # CONVERT SECOND to ensure Telegram renders it safely
+        # Convert to Telegram-safe HTML
         dossier = convert_markdown_to_html(raw_dossier)
-        d_text = dossier # d_text is now safely formatted
         
         for attempt in range(3):
             try:
-                # Updates the dossier in the LEADS tab instead of forcing it to Pipeline
+                # Updates the dossier in the LEADS tab
                 async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead_dossier", "lead_id": lead['lead_id'], "dossier": dossier}, timeout=30) as response: 
                     await response.read()
                     print(f"    ✅ Dossier Stored in Leads Tab: {lead['org']}", flush=True)
                     break
             except Exception: await asyncio.sleep(2)
         
+        # --- TELEGRAM OUTREACH & PIPELINE DISPATCH ---
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-            d_text = dossier[:3200] + "\n\n... [Truncated]" if len(dossier) > 3200 else dossier
-            
-            # --- Extract Cold Pitch for the 1-Click Buttons ---
+            # Extract Cold Pitch for the 1-Click Buttons
             pitch_text = f"Hi {lead.get('dm_name', 'Team')}, I saw your update regarding {lead['org']}'s requirements. Would love to connect and share details on how we can support your project."
-            # Search for the "Ready-to-Send Cold Pitch" in the generated dossier
+            
+            # Search for the generated pitch inside the dossier
             pitch_match = re.search(r'Ready-to-Send Cold Pitch.*?:?\s*(.*?)(?=\n\n|$)', raw_dossier, re.IGNORECASE | re.DOTALL)
             if pitch_match and pitch_match.group(1):
                 pitch_text = pitch_match.group(1).strip()
             
-            # Clean any HTML or bold tags out of the pitch so WhatsApp/Email renders plain text
-            pitch_text = re.sub(r'<[^>]+>', '', pitch_text)
-            pitch_text = pitch_text.replace('**', '').replace('__', '')
+            # Clean HTML and markdown out of the pitch for the URL payload
+            pitch_text = re.sub(r'<[^>]+>', '', pitch_text).replace('**', '').replace('__', '')
             
             buttons = []
             
@@ -167,7 +166,7 @@ async def process_lead_intel(session, lead, sem):
                 mailto_url = f"mailto:{email}?subject={subject}&body={body}"
                 buttons.append([{"text": "📧 Send Email", "url": mailto_url}])
             
-            # Append standard CRM workflow buttons
+            # Standard CRM Workflow Buttons
             buttons.append([{"text": "🚀 Move to Pipeline", "callback_data": f"topipeline_{lead['lead_id']}"}])
             buttons.append([{"text": "🗑️ Drop Lead", "callback_data": f"droplead_{lead['lead_id']}"}])
             
@@ -177,8 +176,9 @@ async def process_lead_intel(session, lead, sem):
                 f"📍 <b>Location:</b> {lead.get('city')}, {lead.get('state')}\n"
                 f"👤 <b>DM:</b> {lead.get('dm_name')} ({lead.get('dm_title')})\n"
                 f"📞 <b>Contact:</b> {lead.get('phone', 'N/A')} | {lead.get('email', 'N/A')}\n\n"
-                f"<b>--- DOSSIER ---</b>\n{d_text}"
+                f"<b>--- DOSSIER ---</b>\n{dossier}"
             )
+            
             payload = {
                 "chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": True,
                 "reply_markup": {"inline_keyboard": buttons}
