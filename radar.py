@@ -358,44 +358,109 @@ Banned Intents/Keywords: {json.dumps(exclusions)}
 - If the primary intent of the organization/lead is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False).
 """
 
-    prompt = f"""
-You are an expert B2B Procurement, B2G Tender, and Corporate Capex Analyst.
-CRITICAL TEMPORAL CONTEXT: Today's date is {CURRENT_DATE_STR}.
+prompt = f"""
+You are the Chief Intelligence Analyst for an Enterprise B2B/B2G Market Radar.
+Your mandate: Extract, qualify, and score high-intent commercial procurement signals across India's public and private industrial ecosystems.
 
-1. ORGANIZATION EXTRACTION (STRICT ANTI-PORTAL RULE):
-- You MUST extract the ACTUAL buying entity, ministry, department, PSU, or enterprise (e.g., 'Military Engineer Services', 'NTPC Limited', 'Godrej Industries', 'MIDC').
-- NEVER set 'org' to portal names like 'Government e-Marketplace', 'GeM', 'eProcure', 'ZaubaCorp', 'TenderTiger', or 'BSE'. Look at the buyer/consignee block. If unknown, output 'Unknown Buyer'.
+ANCHOR DATE: {CURRENT_DATE_STR}. All temporal calculations must be evaluated relative to this date.
 
-2. DEADLINE & STATUS ENFORCEMENT (FOR TENDERS ONLY):
-- If the text mentions an expired Bid End Date, Submission Closing Date, or Due Date before {CURRENT_DATE_STR}, return is_valid=False.
-- If the status is 'Closed', 'Awarded', 'Cancelled', or 'Corrigendum', return is_valid=False.
-- NOTE: Do NOT apply this time-expiry rule to Corporate Capex, MCA Incorporations, or Land Allotments. Historical expansion announcements remain valid sales triggers.
+================================================================================
+SECTION 1: DUAL-TRACK TEMPORAL & DEADLINE ENGINE (ZERO-LEAK GUARANTEE)
+================================================================================
+Apply strictly separated evaluation tracks based on the lead's operational vector:
 
-3. PROJECT, CAPEX & MCA LEAD EVALUATION (DERIVED DEMAND OVERRIDE - CRITICAL):
-- For queries involving Industrial Land, Environmental Clearances, Corporate Capex, or MCA Incorporations, the exact 'Target Product' may NOT be explicitly named.
-- STRICT CAPEX RULE: ANY company announcing Capital Expenditure (Capex), new manufacturing plants, factory setups, facility expansions, infrastructure projects, or industrial land allotments MUST be classified as is_valid=True and entity_role='PROJECT_BUYER'.
-- DO NOT reject manufacturing (e.g., forgings, automotive, heavy machinery, chemicals), real estate, or large-scale retail/commercial expansions. Large expansions inherently require engineering, IT, design, and infrastructure products.
-- Only mark is_valid=False if the snippet is a consumer B2C advertisement, a generic news article completely lacking business expansion intent, or a low-level job posting unrelated to the industry.
+TRACK A: LIVE TENDERS, BIDS & RFQs (GeM, CPPP, State Portals, Defense, PSUs)
+- SCAN FOR CLOSING DEADLINES: Keywords: "Bid End Date/Time", "Submission Deadline", "Due Date", "Closing Date", "Last Date of Submission", "Bid Opening Date".
+- If ANY extracted closing/submission date has passed relative to {CURRENT_DATE_STR}:
+  -> Set is_valid = False, entity_role = 'IRRELEVANT', product_match_reasoning = 'EXPIRED_TENDER: Closed on [Date]'.
+- If the status is explicitly 'Closed', 'Awarded', 'AOC', 'Cancelled', 'Evaluation', or 'Retendered':
+  -> Set is_valid = False, entity_role = 'IRRELEVANT'.
+- Only approve bids where the deadline is explicitly on or after {CURRENT_DATE_STR}, or where active submission is clearly ongoing.
 
-4. UNIQUE FINGERPRINT EXTRACTION:
-- 'ref_id': Extract any official Bid Number, Tender ID, GeM ID, RERA Project ID, EC File No, or CIN (e.g., 'GEM/2026/B/89123', 'U72900KA2026PTC123456'). If not found, return 'N/A'.
-- 'project_scope_key': If 'ref_id' is 'N/A', generate a lowercase 3-to-5 word hyphen-separated slug of the specific project, site, and work scope (e.g., 'pune-metro-line-signaling', 'godrej-chemical-plant-expansion'). DO NOT use generic phrases like 'buying-product'.
+TRACK B: DERIVED DEMAND SIGNALS (Capex, Land Allotments, EC/Clearances, MCA, EPC, Concalls)
+- NEVER reject Track B leads due to past announcement or publication dates.
+- A factory setup approved 6 months ago, an MCA incorporation from earlier this year, or an environmental clearance granted last quarter represents an ACTIVE CAPEX CYCLE where procurement of software, equipment, and consulting is actively underway.
+- Set is_valid = True and entity_role = 'PROJECT_BUYER' for valid industrial projects regardless of announcement age.
 
-5. CLASSIFICATION ROLES:
-- 'BUYER': Active direct procurement, live tender, or live RFQ.
-- 'PROJECT_BUYER': Capex, Environmental Clearances, Factory Setups, Land Allotments, RERA projects, MCA Incorporations.
-- 'SERVICE_USER': Company offering commercial services using the Target Product.
-- 'SELLER': Company manufacturing/supplying the Target Product.
-- 'IRRELEVANT': Expired bids, unrelated products, or generic news.
+================================================================================
+SECTION 2: STRICT ANTI-PORTAL & BUYER DISAMBIGUATION (CRITICAL)
+================================================================================
+Extract the real commercial or institutional entity with the budget, NEVER the pipeline intermediary or hosting platform:
 
-6. BUYER SEGMENT CLASSIFICATION:
-- 'GOVT': Central/State Government, GeM, PSUs, Defense, Municipal.
-- 'CORPORATE': Private/Public Limited enterprises, Listed Companies, Funded Startups.
-- 'LOCAL_MSME': Small businesses, localized contractors.
+BANNED 'org' ENTITIES (NEVER output these as the buyer organization):
+- Aggregators & Portals: "Government e-Marketplace", "GeM", "eProcure", "CPPP", "TenderTiger", "BidPlus", "ZaubaCorp", "The Company Check", "IndiaMART", "TradeIndia", "JustDial".
+- Exchanges & Financial Sites: "BSE", "NSE", "Trendlyne", "Screener", "ResearchBytes", "Crisil", "ICRA", "CareEdge".
+- Authorities when acting only as registry hosts: Do not label MIDC or GIDC as the buyer if they are merely granting land to an enterprise.
+
+ENTITY EXTRACTION HEURISTIC:
+- Tenders: Identify the Department, Directorate, PSU, Municipal Corporation, or Military Unit (e.g., 'Military Engineer Services', 'NTPC Ltd', 'Mumbai Metropolitan Region Development Authority', 'South Western Railway').
+- Statutory Clearances (Parivesh/MPCB): Extract the 'Project Proponent' (the firm investing capital).
+- Land Allotments (MIDC/GIDC/UPSIDA): Extract the Allottee / Manufacturing Company taking possession.
+- Corporate Capex: Extract the Listed Enterprise or Industrial Conglomerate deploying capital.
+- MCA Registrations: Extract the newly incorporated Legal Entity Name (excluding 'Pvt Ltd' / 'LLP' suffixes in analysis).
+
+================================================================================
+SECTION 3: DERIVED DEMAND INFERENCE (CROSS-INDUSTRY EXPANSION)
+================================================================================
+The Target Product ('{batch[0].get('target', 'Target Product') if batch else 'Target Product'}') will rarely be named verbatim in private expansion signals. You must apply derived procurement mapping:
+
+1. INDUSTRIAL & MANUFACTURING CAPEX:
+   - If an entity in automotive, forging, defense, aerospace, electronics, heavy engineering, plastics, pharmaceuticals, chemicals, or consumer durables announces:
+     * Greenfield/Brownfield plant construction
+     * Capacity expansion, modernization, or tooling capex
+     * Land allotment in state industrial corridors (MIDC, GIDC, KIADB, SIPCOT)
+     * "Consent to Establish" (CTE) or Environmental Clearance (EC)
+   -> MANDATORY CLASSIFICATION: entity_role = 'PROJECT_BUYER', buyer_segment = 'CORPORATE', is_valid = True.
+
+2. INFRASTRUCTURE, REAL ESTATE & EPC:
+   - RERA project registrations, Metro rail packages, highway tenders, industrial warehouse setups, or Tier-1 EPC vendor empanelments (L&T, Tata Projects, Afcons).
+   -> MANDATORY CLASSIFICATION: entity_role = 'PROJECT_BUYER', is_valid = True.
+
+3. REJECTION BOUNDARY (STRICT FALSE-POSITIVE FILTER):
+   - Reject ONLY if the entity is completely incompatible with technical/industrial infrastructure (e.g., standalone local retail bakeries, personal lifestyle blogs, B2C consumer promotions, non-technical coaching classes, or generic macroeconomic op-eds).
+
+================================================================================
+SECTION 4: DECISION MAKER (DM) MINING & GEOGRAPHY NORMALIZATION
+================================================================================
+1. DECISION MAKER EXTRACTION:
+   - For Tenders: Look for Tender Inviting Authority (TIA), Chief Engineer (CE), Superintending Engineer (SE), General Manager (Procurement), or Consignee details.
+   - For MCA: Extract the primary Director, Managing Director, or Designated Partner.
+   - For Capex/Corporate: Extract MD, CEO, Head of Projects, Chief Operating Officer, or Plant Head mentioned in releases or concalls.
+   - Output 'N/A' if no specific human authority is identified.
+
+2. GEOGRAPHY:
+   - 'city': Standard Indian commercial/industrial hub (e.g., 'Pune', 'Bengaluru', 'Ahmedabad', 'Sri City', 'Manesar'). Output 'Pan-India' or state capital if unmentioned.
+   - 'state': Normalized Indian State or Union Territory (e.g., 'Maharashtra', 'Gujarat', 'Tamil Nadu', 'Haryana').
+
+================================================================================
+SECTION 5: ENTERPRISE FINGERPRINTING
+================================================================================
+- 'ref_id': Extract the official regulatory/procurement identifier:
+  * GeM Bid Number (e.g., 'GEM/2026/B/8912345')
+  * Tender ID / Tender Reference Number (e.g., 'NIT-54/EE/2026', '2026_CPWD_89412')
+  * Corporate Identification Number / CIN / LLPIN (e.g., 'U72900KA2026PTC198421')
+  * Statutory Application No / EC File No / RERA Reg No.
+  * If none exists, output 'N/A'.
+- 'project_scope_key': If 'ref_id' is 'N/A', construct a 3-to-6 word lowercase, hyphen-separated slug summarizing the specific company, site, and scope (e.g., 'godrej-valia-chemical-capacity-expansion', 'lnt-chennai-metro-underground-tunnels'). Never output generic text like 'procurement-order'.
+
+================================================================================
+SECTION 6: CLASSIFICATION ROLES & SEGMENTS
+================================================================================
+- entity_role (MUST be one of):
+  * 'BUYER': Direct public tender, active commercial RFQ, or explicit purchase notice.
+  * 'PROJECT_BUYER': Capex investments, factory expansions, land allotments, statutory clearances, new company setups.
+  * 'SERVICE_USER': Service providers or agencies utilizing the product class to deliver services.
+  * 'SELLER': Manufacturers, distributors, or channel partners selling the product.
+  * 'IRRELEVANT': Expired bids, consumer news, unrelated entities, or directories.
+
+- buyer_segment (MUST be one of):
+  * 'GOVT': Central/State ministries, PSUs, Defense, Railways, Municipal authorities.
+  * 'CORPORATE': Private/Public limited companies, MNCs, funded industrial enterprises.
+  * 'LOCAL_MSME': Small local enterprises, proprietary contractors, individual dealers.
 
 {exclusion_rule}
 
-DATA BATCH:
+DATA BATCH FOR ANALYSIS:
 {items_block}
 """
     schema = {
