@@ -1,853 +1,391 @@
 import os
-import re
-import ssl
 import json
-import time
-import uuid
-import logging
-import warnings
-import requests
-import io
 import hashlib
-import concurrent.futures
-from urllib.parse import urlparse, urlunparse
+import requests
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
+from io import BytesIO
 from datetime import datetime
-try:
-    from pypdf import PdfReader
-except ImportError:
-    PdfReader = None
-from google import genai
-from google.genai import types
-from tenacity import retry, wait_exponential, stop_after_attempt
-
-warnings.filterwarnings("ignore")
-logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 
 # ==========================================
-# INJECT TODAY'S DATE FOR TIME-AWARE AI & REGEX
+# CONFIGURATION & API KEYS
 # ==========================================
-TODAY = datetime.now()
-CURRENT_DATE_STR = TODAY.strftime("%d %B %Y")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "YOUR_SERPER_KEY")
+CACHE_FILE = "seen_links.txt"
 
-try:
-    from ddgs import DDGS
-except ImportError:
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        DDGS = None
+# Ensure cache file exists
+if not os.path.exists(CACHE_FILE):
+    open(CACHE_FILE, 'w').close()
 
-WEBHOOK = os.environ.get("GOOGLE_SHEET_WEBHOOK")
-SECRET = os.environ.get("WEBHOOK_SECRET")
-raw_serper_keys = os.environ.get("SERPER_API_KEY", "")
-SERPER_KEYS = [k.strip() for k in raw_serper_keys.split(",") if k.strip()]
-current_serper_index = 0
+def get_cached_links():
+    with open(CACHE_FILE, 'r') as f:
+        return set(line.strip() for line in f)
 
-raw_keys = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
-current_key_index = 0
+def cache_link(link):
+    with open(CACHE_FILE, 'a') as f:
+        f.write(link + '\n')
 
-EXISTING_URLS_CACHE = set()
-EXISTING_FINGERPRINTS_CACHE = {}  
-FINGERPRINT_TTL_SECONDS = 30 * 86400  
+# ==========================================
+# 1. QUERY GENERATOR (THE 8 TIERS -> 4 TRACKS)
+# ==========================================
+class QueryGenerator:
+    def __init__(self, target_product, industry_keywords=""):
+        self.target = target_product
+        self.industry = industry_keywords
+        self.year = datetime.now().year
 
-def get_next_gemini_client():
-    global current_key_index
-    if not GEMINI_KEYS: return None
-    key = GEMINI_KEYS[current_key_index]
-    current_key_index = (current_key_index + 1) % len(GEMINI_KEYS)
-    return genai.Client(api_key=key)
-
-BEST_MODEL_STACK = []
-def get_flash_model_stack(client):
-    global BEST_MODEL_STACK
-    if BEST_MODEL_STACK: return BEST_MODEL_STACK
-    try:
-        valid_models = []
-        for m in client.models.list():
-            name = m.name.lower()
-            banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
-            if "flash" in name and not any(bad in name for bad in banned_keywords):
-                valid_models.append(name)
-        if valid_models:
-            valid_models.sort(reverse=True)
-            for preferred in ["models/gemini-3.8-flash", "models/gemini-3.5-flash", "models/gemini-1.5-flash"]:
-                if preferred in valid_models:
-                    valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
-            BEST_MODEL_STACK = valid_models
-            return BEST_MODEL_STACK
-    except Exception: pass
-    BEST_MODEL_STACK = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
-    return BEST_MODEL_STACK
-
-def extract_cin_incorporation_year(text_or_ref):
-    """Extracts the true incorporation year from Indian Corporate Identification Numbers (CIN/LLPIN)."""
-    if not text_or_ref:
-        return None
-    match = re.search(r'\b[UL]\d{5}[A-Z]{2}(\d{4})[A-Z]{3}\d{6}\b', str(text_or_ref).upper())
-    if match:
-        return int(match.group(1))
-    return None
-
-def get_buyer_industries(target, client):
-    """Dynamically identifies macro buyer industries without breaking Google Search syntax."""
-    if client:
-        try:
-            model_name = get_flash_model_stack(client)[0]
-            chat = client.chats.create(model=model_name)
-            prompt = (
-                f"Name 3 broad industries in India that buy '{target}'. "
-                f"Reply ONLY with 3 single-word industries separated by commas (e.g., Automotive, Aviation, Construction). No extra text."
-            )
-            res = chat.send_message(prompt)
-            # Cleanly split by comma, remove non-alphanumeric characters, and format safely
-            words = [re.sub(r'[^a-zA-Z0-9]', '', w.strip()) for w in res.text.split(',')]
-            valid_words = [w for w in words if len(w) > 2][:3]
-            if valid_words:
-                return " OR ".join(valid_words)
-        except Exception as e:
-            print(f"    ⚠️ AI Industry mapping failed for {target}: {e}", flush=True)
-
-    # Ultimate safe fallback if API times out
-    return "Engineering OR Manufacturing OR Infrastructure OR Corporate"
-
-# --- URL & FINGERPRINT HELPERS ---
-def canonicalize_url(url):
-    if not url: return ""
-    try:
-        parsed = urlparse(url.strip())
-        clean_netloc = parsed.netloc.lower().replace("www.", "")
-        clean_path = parsed.path.rstrip('/')
-        return urlunparse((parsed.scheme.lower(), clean_netloc, clean_path, '', '', ''))
-    except Exception:
-        return url.strip().lower()
-
-def normalize_text_key(text):
-    if not text or text.lower() == "unknown": return ""
-    clean = text.lower()
-    clean = re.sub(r'\b(pvt|private|ltd|limited|llp|inc|corp|corporation|co|enterprises)\b\.?', '', clean)
-    clean = re.sub(r'[^a-z0-9\s]', '', clean)
-    return " ".join(clean.split())
-
-def make_lead_fingerprint(entity, target_product):
-    ref_id = str(entity.get("ref_id", "")).strip().upper()
-    org = normalize_text_key(entity.get("org", "Unknown"))
-    
-    if ref_id and ref_id != "N/A" and len(ref_id) > 4:
-        return f"REF::{ref_id}"
-    
-    if "MCA" in str(entity.get("intent_summary", "")) or "Incorporation" in str(entity.get("intent_summary", "")):
-        return f"MCA::{org}"
-        
-    scope = normalize_text_key(entity.get("project_scope_key", "general-procurement")).replace(" ", "-")
-    city = normalize_text_key(entity.get("city", "pan-india")).replace(" ", "-")
-    target = normalize_text_key(target_product).replace(" ", "-")
-    
-    return f"SCOPE::{org}::{city}::{target}::{scope}"
-
-def add_to_cache(link, fingerprint=None):
-    if not link: return
-    clean_link = canonicalize_url(link)
-    
-    if clean_link not in EXISTING_URLS_CACHE:
-        EXISTING_URLS_CACHE.add(clean_link)
-        try:
-            with open("seen_links.txt", "a", encoding="utf-8") as f:
-                f.write(clean_link + "\n")
-        except Exception: pass
-        
-    if fingerprint:
-        now = time.time()
-        EXISTING_FINGERPRINTS_CACHE[fingerprint] = now
-        try:
-            with open("seen_fingerprints.txt", "a", encoding="utf-8") as f:
-                f.write(f"{fingerprint}::{int(now)}\n")
-        except Exception: pass
-
-def load_existing_urls_cache():
-    global EXISTING_URLS_CACHE, EXISTING_FINGERPRINTS_CACHE
-    
-    if os.path.exists("seen_links.txt"):
-        try:
-            with open("seen_links.txt", "r", encoding="utf-8") as f:
-                for line in f:
-                    val = line.strip()
-                    if val: EXISTING_URLS_CACHE.add(canonicalize_url(val))
-            print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} URLs from seen_links.txt", flush=True)
-        except Exception as e: print(f"⚠️ Error reading seen_links.txt: {e}")
-
-    now = time.time()
-    if os.path.exists("seen_fingerprints.txt"):
-        try:
-            with open("seen_fingerprints.txt", "r", encoding="utf-8") as f:
-                for line in f:
-                    parts = line.strip().split("::")
-                    if len(parts) >= 2:
-                        fp, ts = "::".join(parts[:-1]), float(parts[-1])
-                        if now - ts < FINGERPRINT_TTL_SECONDS:
-                            EXISTING_FINGERPRINTS_CACHE[fp] = ts
-            print(f"[*] Loaded {len(EXISTING_FINGERPRINTS_CACHE)} active fingerprints.", flush=True)
-        except Exception as e: print(f"⚠️ Error reading seen_fingerprints.txt: {e}")
-
-    if not WEBHOOK or not SECRET: 
-        print("⚠️ Webhook credentials missing. Relying ONLY on text backups.", flush=True)
-        return
-        
-    for attempt in range(1, 4):
-        try:
-            res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_all_urls"}, timeout=(10, 60))
-            if res.status_code == 200:
-                data = res.json()
-                for u in data.get("urls", []):
-                    if u.strip(): EXISTING_URLS_CACHE.add(canonicalize_url(u))
-                for fp in data.get("fingerprints", []):
-                    if fp.strip(): EXISTING_FINGERPRINTS_CACHE[fp.strip()] = now
-                print(f"[*] Synced cache with Sheets. Total URLs: {len(EXISTING_URLS_CACHE)} | FPs: {len(EXISTING_FINGERPRINTS_CACHE)}", flush=True)
-                return
-            else:
-                print(f"⚠️ Sheet Sync HTTP {res.status_code}")
-        except Exception as e:
-            print(f"⚠️ Cache load failed (Attempt {attempt}/3): {e}", flush=True)
-            time.sleep(5)
-            
-    print("⚠️ WARNING: Failed to load from Google Sheets. Relying on local backups.", flush=True)
-
-def is_duplicate_cached(link):
-    if not link: return False
-    return canonicalize_url(link) in EXISTING_URLS_CACHE
-
-def get_search_results(query):
-    global current_serper_index
-    results = []
-    
-    while current_serper_index < len(SERPER_KEYS):
-        api_key = SERPER_KEYS[current_serper_index]
-        try:
-            is_live_tender_search = any(k in query for k in ["gem.gov.in", "eprocure", "tender", "bidplus"])
-            payload_dict = {"q": query, "gl": "in", "num": 10}
-            if is_live_tender_search:
-                payload_dict["tbs"] = "qdr:m"
-                
-            payload = json.dumps(payload_dict)
-            headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
-            response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=25)
-            
-            if response.status_code == 200:
-                for r in response.json().get("organic", []):
-                    results.append({
-                        "title": r.get("title", ""), 
-                        "link": r.get("link", ""), 
-                        "summary": r.get("snippet", ""),
-                        "date": r.get("date", "")
-                    })
-                return results
-            elif response.status_code in [403, 429]:
-                print(f"    ⚠️ Serper key {current_serper_index + 1} exhausted. Switching to next key...", flush=True)
-                current_serper_index += 1
-            else:
-                break
-        except Exception:
-            break
-
-    if DDGS and not results:
-        try:
-            def ddgs_search(): return list(DDGS().text(query, timelimit="m", max_results=10, backend="lite"))
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                res = executor.submit(ddgs_search).result(timeout=15)
-            for r in res:
-                results.append({"title": r.get("title", ""), "link": r.get("href", ""), "summary": r.get("body", ""), "date": ""})
-        except Exception: pass
-    return results
-
-def fetch_deep_text(url):
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Referer": "https://www.google.com/"
+    def build_tracks(self):
+        """Maps your 8 Intelligence Tiers into 4 isolated Serper Tracks"""
+        return {
+            "TRACK_1_TENDERS": [
+                f'"{self.target}" tender OR RFP OR "procurement notice" site:eprocure.gov.in',
+                f'"{self.target}" "bid document" site:gem.gov.in',
+                f'"{self.target}" {self.industry} tender site:mahatenders.gov.in'
+            ],
+            "TRACK_2_CAPEX": [
+                f'"{self.target}" "environmental clearance" OR "Terms of Reference" site:environmentclearance.nic.in',
+                f'"{self.target}" "land allotment" OR "industrial area" (MIDC OR GIDC OR SIPCOT)',
+                f'"{self.target}" "capacity expansion" OR "greenfield project" filetype:pdf'
+            ],
+            "TRACK_3_MCA": [
+                # Finds Zauba/TCC profiles for newly incorporated companies in your sector
+                f'"{self.industry}" "Incorporation Date" "{self.year}" site:zaubacorp.com'
+            ],
+            "TRACK_4_COMMERCIAL": [
+                f'hiring "CAD Draftsman" OR "{self.target} engineer" site:naukri.com OR site:linkedin.com',
+                # This will be routed to Google Maps Places API later, but web fallback here:
+                f'"{self.target}" service provider OR consultant "India"'
+            ]
         }
-        session = requests.Session()
-        session.headers.update(headers)
+
+# ==========================================
+# 2. SERPER HARVESTER (SEARCH & MAPS)
+# ==========================================
+class SerperHarvester:
+    def __init__(self, api_key):
+        self.headers = {
+            'X-API-KEY': api_key,
+            'Content-Type': 'application/json'
+        }
+
+    def search_web(self, query):
+        """Executes Google Web Search via Serper"""
+        print(f"[*] Executing Search: {query}")
+        payload = json.dumps({"q": query, "num": 10, "gl": "in"})
+        response = requests.post("https://google.serper.dev/search", headers=self.headers, data=payload)
         
-        r = session.get(url, timeout=(6, 14), verify=False)
-        if r.status_code != 200:
+        if response.status_code == 200:
+            return response.json().get("organic", [])
+        return []
+
+    def search_places(self, query, location="India"):
+        """Executes Google Maps Places Search for Track 4 MSMEs"""
+        print(f"[*] Executing Maps Search: {query} in {location}")
+        payload = json.dumps({"q": query, "location": location})
+        response = requests.post("https://google.serper.dev/places", headers=self.headers, data=payload)
+        
+        if response.status_code == 200:
+            return response.json().get("places", [])
+        return []
+
+# ==========================================
+# 3. DEEP CONTENT SCRAPER (HTML & PDF)
+# ==========================================
+class ContentScraper:
+    def __init__(self):
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+        }
+
+    def fetch_content(self, url):
+        """Detects if link is PDF or HTML and extracts text safely."""
+        try:
+            response = requests.get(url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+
+            # Handle PDF Documents (Crucial for Tenders & Capex Reports)
+            if 'application/pdf' in response.headers.get('Content-Type', '') or url.lower().endswith('.pdf'):
+                return self._parse_pdf(response.content)
+            
+            # Handle Standard HTML
+            return self._parse_html(response.text)
+
+        except Exception as e:
+            print(f"[!] Scraping failed for {url}: {e}")
+            return None
+
+    def _parse_pdf(self, pdf_bytes):
+        """Extracts text from PDF buffers"""
+        try:
+            reader = PdfReader(BytesIO(pdf_bytes))
+            text = ""
+            for page in reader.pages[:10]: # Limit to first 10 pages to save AI tokens
+                text += page.extract_text() + "\n"
+            return text.strip()
+        except Exception as e:
+            print(f"[!] PDF Parse Error: {e}")
             return ""
-            
-        content_type = r.headers.get('Content-Type', '').lower()
-        clean_url = url.lower().split('?')[0]
 
-        if 'application/pdf' in content_type or clean_url.endswith('.pdf') or 'showbiddocument' in clean_url:
-            if PdfReader:
-                try:
-                    reader = PdfReader(io.BytesIO(r.content))
-                    extracted_pages = []
-                    for page in reader.pages[:5]:
-                        t = page.extract_text()
-                        if t: extracted_pages.append(t)
-                    return re.sub(r'\s+', ' ', " ".join(extracted_pages)).strip()[:4000]
-                except Exception:
-                    pass
-
-        if 'text/html' in content_type or not content_type:
-            soup = BeautifulSoup(r.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
-                tag.decompose()
-            return soup.get_text(separator=" ", strip=True)[:4000]
-    except Exception:
-        pass
-    return ""
-
-def is_tender_active(raw_text):
-    if not raw_text:
-        return False 
-
-    text = raw_text.replace("\n", " ")
-    
-    pattern = (
-        r"(?:Bid\s+End(?:\s+Date)?(?:/\s*Time)?|"
-        r"Submission\s+(?:End\s+Date|Deadline|Closing\s+Date)|"
-        r"Closing\s+Date|Due\s+Date|Last\s+Date(?:\s+of\s+Submission)?)"
-        r"\s*[:\-]?\s*"
-        r"(\d{1,2}[-/\.\s](?:[A-Za-z]{3,9}|\d{1,2})[-/\.\s]\d{4})"
-    )
-    matches = re.findall(pattern, text, re.IGNORECASE)
-    
-    found_end_dates = []
-    for date_str in matches:
-        clean_str = re.sub(r"[/\\.\s]+", "-", date_str.strip())
-        for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%d-%m-%y"):
-            try:
-                found_end_dates.append(datetime.strptime(clean_str, fmt))
-                break
-            except ValueError:
-                continue
-
-    if found_end_dates:
-        for tender_date in found_end_dates:
-            if tender_date.date() >= TODAY.date():
-                return True
-        print("    🚫 Regex Bouncer: Bid end date has passed. Dropping.", flush=True)
-        return False
-
-    start_pattern = r"(?:Dated|Bid\s+Start\s+Date)\s*[:\-]?\s*(\d{1,2}[-/\.\s](?:[A-Za-z]{3,9}|\d{1,2})[-/\.\s]\d{4})"
-    start_matches = re.findall(start_pattern, text, re.IGNORECASE)
-    for s_date_str in start_matches:
-        clean_str = re.sub(r"[/\\.\s]+", "-", s_date_str.strip())
-        for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y"):
-            try:
-                start_dt = datetime.strptime(clean_str, fmt)
-                if (TODAY - start_dt).days > 25:
-                    print(f"    🚫 Regex Bouncer: Bid was posted >25 days ago ({start_dt.strftime('%d-%b-%Y')}) with no future extension. Dropping.", flush=True)
-                    return False
-            except ValueError:
-                continue
-
-    return True
-
-@retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
-def ai_analyze_batch(batch, exclusions):
-    client = get_next_gemini_client()
-    if not client: return []
-    model_stack = get_flash_model_stack(client)
-    
-    items_block = ""
-    for i, x in enumerate(batch):
-        date_str = f"Date Posted: {x['date']}\n" if x.get("date") else ""
-        items_block += f"\n--- ITEM {i} ---\nTarget Product: {x.get('target', 'Unknown')}\nQuery Type: {x.get('query_type', 'Direct')}\n{date_str}Title: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
+    def _parse_html(self, html_text):
+        """Strips scripts/styles and extracts readable text"""
+        soup = BeautifulSoup(html_text, 'html.parser')
         
-    exclusion_rule = ""
-    if exclusions:
-        exclusion_rule = f"""
-CRITICAL CONTEXTUAL EXCLUSIONS:
-Banned Intents/Keywords: {json.dumps(exclusions)}
-- If the primary intent of the organization/lead is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False).
-"""
+        # Remove noisy elements
+        for element in soup(["script", "style", "nav", "footer", "header"]):
+            element.decompose()
+            
+        text = soup.get_text(separator=" ", strip=True)
+        # Compress whitespace
+        return " ".join(text.split())[:15000] # Cap at 15k characters for Gemini context
 
-    prompt = f"""
-You are the Chief Intelligence Analyst for an Enterprise B2B/B2G Market Radar.
-Your mandate: Extract, qualify, and score high-intent commercial procurement signals across India's public and private industrial ecosystems.
-
-ANCHOR DATE: {CURRENT_DATE_STR}. All temporal calculations must be evaluated relative to this date.
-
-================================================================================
-SECTION 1: DUAL-TRACK TEMPORAL & DEADLINE ENGINE (ZERO-LEAK GUARANTEE)
-================================================================================
-Apply strictly separated evaluation tracks based on the lead's operational vector:
-
-TRACK A: LIVE TENDERS, BIDS & RFQs (GeM, CPPP, State Portals, Defense, PSUs)
-- SCAN FOR CLOSING DEADLINES: Keywords: "Bid End Date/Time", "Submission Deadline", "Due Date", "Closing Date", "Last Date of Submission", "Bid Opening Date".
-- If ANY extracted closing/submission date has passed relative to {CURRENT_DATE_STR}:
-  -> Set is_valid = False, entity_role = 'IRRELEVANT', product_match_reasoning = 'EXPIRED_TENDER: Closed on [Date]'.
-- If the status is explicitly 'Closed', 'Awarded', 'AOC', 'Cancelled', 'Evaluation', or 'Retendered':
-  -> Set is_valid = False, entity_role = 'IRRELEVANT'.
-- Only approve bids where the deadline is explicitly on or after {CURRENT_DATE_STR}, or where active submission is clearly ongoing.
-
-TRACK B: DERIVED DEMAND SIGNALS (Capex, Land Allotments, EC/Clearances, MCA, EPC, Concalls)
-- NEVER reject Track B leads due to past announcement or publication dates.
-- A factory setup approved 6 months ago, an environmental clearance, or an industrial allotment represents an ACTIVE CAPEX CYCLE where procurement is actively underway.
-- EXPLICIT MCA DATE RULE: If evaluating a ZaubaCorp or Company Check snippet, you MUST extract the 'Date of Incorporation' and place it EXACTLY in the 'posted_date' JSON field.
-- Set is_valid = True and entity_role = 'PROJECT_BUYER' for valid industrial projects regardless of announcement age.
-
-================================================================================
-SECTION 2: STRICT ANTI-PORTAL & BUYER DISAMBIGUATION (CRITICAL)
-================================================================================
-Extract the real commercial or institutional entity with the budget, NEVER the pipeline intermediary or hosting platform:
-
-BANNED 'org' ENTITIES (NEVER output these as the buyer organization):
-- Aggregators & Portals: "Government e-Marketplace", "GeM", "eProcure", "CPPP", "TenderTiger", "BidPlus", "ZaubaCorp", "The Company Check", "IndiaMART", "TradeIndia", "JustDial".
-- Exchanges & Financial Sites: "BSE", "NSE", "Trendlyne", "Screener", "ResearchBytes", "Crisil", "ICRA", "CareEdge".
-- Authorities when acting only as registry hosts: Do not label MIDC or GIDC as the buyer if they are merely granting land to an enterprise.
-
-ENTITY EXTRACTION HEURISTIC:
-- Tenders: Identify the Department, Directorate, PSU, Municipal Corporation, or Military Unit (e.g., 'Military Engineer Services', 'NTPC Ltd', 'Mumbai Metropolitan Region Development Authority', 'South Western Railway').
-- Statutory Clearances (Parivesh/MPCB): Extract the 'Project Proponent' (the firm investing capital).
-- Land Allotments (MIDC/GIDC/UPSIDA): Extract the Allottee / Manufacturing Company taking possession.
-- Corporate Capex: Extract the Listed Enterprise or Industrial Conglomerate deploying capital.
-- MCA Registrations: Extract the newly incorporated Legal Entity Name (excluding 'Pvt Ltd' / 'LLP' suffixes in analysis).
-
-================================================================================
-SECTION 3: DERIVED DEMAND & PROJECT EVALUATION (ZERO FALSE-NEGATIVE BIAS)
-================================================================================
-CRITICAL DIRECTIVE: You are qualifying sales pipelines. It is 100x worse to reject a real buyer than to flag a potential lead for human review.
-
-1. CAPEX, INDUSTRIAL & EXPANSION LEADS (MANDATORY APPROVAL):
-   If the snippet or deep text mentions ANY of the following:
-   - Factory, plant, or facility setup, expansion, or modernization
-   - Plot/land allotment or possession (MIDC, GIDC, UPSIDA, KIADB, SIPCOT, etc.)
-   - Environmental Clearance (EC), Consent to Establish (CTE)
-   - Corporate capital expenditure (Capex), funding rounds, or capacity addition
-   - Construction, EPC contracts, infrastructure packages, building approvals
-   -> MANDATORY: Set is_valid = True, entity_role = 'PROJECT_BUYER', confidence_score = 'HIGH'.
-   -> DO NOT require the Target Product name to be present. Industrial projects consume civil, electrical, software, and mechanical supplies by default.
-
-2. GOVERNMENT TENDERS & PROCUREMENT:
-   - If it is an active tender, RFP, or bid notice for services, equipment, or projects related to engineering, commercial, or public works:
-   -> MANDATORY: Set is_valid = True, entity_role = 'BUYER'.
-
-3. STRICT TRASH CRITERIA (ONLY REJECT THESE):
-   Mark is_valid = False and entity_role = 'IRRELEVANT' ONLY if the lead is:
-   - An expired tender with a submission deadline clearly before {CURRENT_DATE_STR}.
-   - A consumer retail promotion (e.g., shoe discount, food delivery, personal jewelry sale).
-   - An individual jobseeker resume or personal opinion blog.
-   - If unsure whether an entity is relevant, DO NOT set IRRELEVANT. Set entity_role = 'PROJECT_BUYER', confidence_score = 'LOW', and is_valid = True so human review can decide.
-   
-================================================================================
-SECTION 4: DECISION MAKER (DM) MINING & GEOGRAPHY NORMALIZATION
-================================================================================
-1. DECISION MAKER EXTRACTION:
-   - For Tenders: Look for Tender Inviting Authority (TIA), Chief Engineer (CE), Superintending Engineer (SE), General Manager (Procurement), or Consignee details.
-   - For MCA: Extract the primary Director, Managing Director, or Designated Partner.
-   - For Capex/Corporate: Extract MD, CEO, Head of Projects, Chief Operating Officer, or Plant Head mentioned in releases or concalls.
-   - Output 'N/A' if no specific human authority is identified.
-
-2. GEOGRAPHY:
-   - 'city': Standard Indian commercial/industrial hub (e.g., 'Pune', 'Bengaluru', 'Ahmedabad', 'Sri City', 'Manesar'). Output 'Pan-India' or state capital if unmentioned.
-   - 'state': Normalized Indian State or Union Territory (e.g., 'Maharashtra', 'Gujarat', 'Tamil Nadu', 'Haryana').
-
-================================================================================
-SECTION 5: ENTERPRISE FINGERPRINTING
-================================================================================
-- 'ref_id': Extract the official regulatory/procurement identifier:
-  * GeM Bid Number (e.g., 'GEM/2026/B/8912345')
-  * Tender ID / Tender Reference Number (e.g., 'NIT-54/EE/2026', '2026_CPWD_89412')
-  * Corporate Identification Number / CIN / LLPIN (e.g., 'U72900KA2026PTC198421')
-  * Statutory Application No / EC File No / RERA Reg No.
-  * If none exists, output 'N/A'.
-- 'project_scope_key': If 'ref_id' is 'N/A', construct a 3-to-6 word lowercase, hyphen-separated slug summarizing the specific company, site, and scope (e.g., 'godrej-valia-chemical-capacity-expansion', 'lnt-chennai-metro-underground-tunnels'). Never output generic text like 'procurement-order'.
-
-================================================================================
-SECTION 6: CLASSIFICATION ROLES & SEGMENTS
-================================================================================
-- entity_role (MUST be one of):
-  * 'BUYER': Direct public tender, active commercial RFQ, or explicit purchase notice.
-  * 'PROJECT_BUYER': Capex investments, factory expansions, land allotments, statutory clearances, new company setups.
-  * 'SERVICE_USER': Service providers or agencies utilizing the product class to deliver services.
-  * 'SELLER': Manufacturers, distributors, or channel partners selling the product.
-  * 'IRRELEVANT': Expired bids, consumer news, unrelated entities, or directories.
-
-- buyer_segment (MUST be one of):
-  * 'GOVT': Central/State ministries, PSUs, Defense, Railways, Municipal authorities.
-  * 'CORPORATE': Private/Public limited companies, MNCs, funded industrial enterprises.
-  * 'LOCAL_MSME': Small local enterprises, proprietary contractors, individual dealers.
-
-{exclusion_rule}
-
-DATA BATCH FOR ANALYSIS:
-{items_block}
-"""
-
-    schema = {
-        "type": "ARRAY",
-        "items": {
-            "type": "OBJECT",
-            "properties": {
-                "item_index": {"type": "INTEGER"},
-                "product_match_reasoning": {"type": "STRING"},
-                "is_valid": {"type": "BOOLEAN"},
-                "confidence_score": {
-                    "type": "STRING",
-                    "enum": ["HIGH", "MEDIUM", "LOW"],
-                    "description": "Must be exactly 'HIGH', 'MEDIUM', or 'LOW'."
-                },
-                "entity_role": {"type": "STRING"},
-                "buyer_segment": {"type": "STRING"},
-                "org": {"type": "STRING"},
-                "city": {"type": "STRING"},
-                "state": {"type": "STRING"},
-                "industry": {"type": "STRING"},
-                "intent_summary": {"type": "STRING"},
-                "posted_date": {"type": "STRING"},
-                "ref_id": {"type": "STRING", "description": "Unique Tender ID, Bid Number, or CIN. 'N/A' if not present."},
-                "project_scope_key": {"type": "STRING", "description": "Hyphenated slug of specific project scope."},
-                "dm_name": {"type": "STRING", "nullable": True},
-                "dm_title": {"type": "STRING", "nullable": True}
-            },
-            "required": ["item_index", "product_match_reasoning", "is_valid", "confidence_score", "entity_role", "buyer_segment", "org", "city", "state", "industry", "intent_summary", "posted_date", "ref_id", "project_scope_key"]
-        }
-    }
-
-    for model_name in model_stack:
-        try:
-            chat = client.chats.create(model=model_name)
-            res = chat.send_message(prompt, config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0))
-            raw_text = res.text.strip()
-            if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
-            return json.loads(raw_text)
-        except Exception as e:
-            if any(err in str(e) for err in ["NOT_FOUND", "404", "503", "500", "limit: 0", "limit: 20"]): continue
-            raise e
-    raise Exception("All Gemini models unavailable.")
-
-def build_vector_matrix(target, industry_keywords):
-    current_year = datetime.now().year
-    exclusions = ' -"Award of Contract" -"AOC" -"Status: Closed" -"Cancelled" -"Corrigendum"'
-
-    tier1_direct_tenders = [
-        {"type": "Direct", "query": f'"{target}" site:bidplus.gem.gov.in{exclusions}'},
-        {"type": "Direct", "query": f'"{target}" "Tender Documents" (site:eprocure.gov.in OR site:etenders.gov.in){exclusions}'},
-        {"type": "Direct", "query": f'"{target}" tender (site:mahatenders.gov.in OR site:wbtenders.gov.in OR site:etenders.kerala.gov.in OR site:eproc.rajasthan.gov.in OR site:tender.up.gov.in){exclusions}'},
-        {"type": "Direct", "query": f'"{target}" tender OR RFQ site:gov.in{exclusions}'},
-        {"type": "Direct", "query": f'"{target}" site:zauba.com/import-'}
-    ]
-
-    tier2_gem_defense = [
-        {"type": "Direct", "query": f'"{target}" "Bid Details" "Total Quantity" site:bidplus.gem.gov.in{exclusions}'},
-        {"type": "Direct", "query": f'"{target}" "Custom Bid for Services" site:gem.gov.in{exclusions}'},
-        {"type": "Direct", "query": f'"{target}" ("Tender Notice" OR "Notice Inviting Tender") (site:isro.gov.in OR site:drdo.gov.in OR site:cpwd.gov.in){exclusions}'},
-        {"type": "Project", "query": f'"{target}" ("winner" OR "grant approved" OR "contract signed") site:idex.gov.in'},
-        {"type": "Direct", "query": f'"{target}" ("vendor registration" OR "expression of interest") (site:hal-india.co.in OR site:bel-india.in OR site:bdl-india.in)'}
-    ]
-
-    tier3_statutory = [
-        {"type": "Project", "query": f'{industry_keywords} ("Environmental Clearance" OR "EC") (site:parivesh.nic.in OR site:environmentclearance.nic.in){exclusions}'},
-        {"type": "Project", "query": f'{industry_keywords} "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
-        {"type": "Project", "query": f'{industry_keywords} "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
-        {"type": "Project", "query": f'{industry_keywords} "IEM acknowledged" site:dpiit.gov.in'},
-        {"type": "Project", "query": f'{industry_keywords} "project cost" site:indiainvestmentgrid.gov.in'}
-    ]
-
-    tier4_corridors = [
-        {"type": "Project", "query": f'{industry_keywords} ("allotment" OR "plot allotment") (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
-        {"type": "Project", "query": f'{industry_keywords} ("plot allotment" OR "possession letter" OR "building plan approved") (site:yamunaexpresswayauthority.com OR site:dholera.go.gov.in OR site:kiadb.in OR site:sipcot.tn.gov.in)'},
-        {"type": "Project", "query": f'{industry_keywords} ("allotment of industrial land" OR "ground breaking") (Tamil Nadu OR Karnataka OR Uttar Pradesh) {current_year}'}
-    ]
-
-    tier5_epc = [
-        {"type": "Project", "query": f'{industry_keywords} ("Vendor Empanelment" OR "Expression of Interest" OR "Notice Inviting EOI") (site:larsentoubro.com OR site:tataprojects.com OR site:afcons.com OR site:ncc.co.in)'},
-        {"type": "Project", "query": f'{industry_keywords} ("sub-contractor required" OR "sub-package" OR "invited for empanelment") India {current_year}'}
-    ]
-
-    tier6_mdbs = [
-        {"type": "Direct", "query": f'"{target}" "Procurement Notice" India (site:projects.worldbank.org OR site:adb.org OR site:aiib.org)'},
-        {"type": "Direct", "query": f'"{target}" "General Procurement Notice" (site:dgmarket.com OR site:devbusiness.com) India'}
-    ]
-
-    tier7_capex = [
-        {"type": "Project", "query": f'{industry_keywords} ("concall transcript" OR "earnings conference call") "capex" (site:trendlyne.com OR site:researchbytes.com OR site:screener.in) India'},
-        {"type": "Project", "query": f'{industry_keywords} "investor presentation" ("capacity addition" OR "new facility" OR "capital outlay") India {current_year}'},
-        {"type": "Project", "query": f'{industry_keywords} ("Regulation 30" OR "outcome of board meeting") "capex" (site:bseindia.com OR site:nseindia.com)'},
-        {"type": "Project", "query": f'{industry_keywords} "rating rationale" ("enhancement in capacity" OR "capex plan") (site:crisilratings.com OR site:icra.in OR site:careratings.com OR site:infomerics.com)'},
-        {"type": "Project", "query": f'{industry_keywords} ("capacity expansion" OR "modernization" OR "brownfield") India {current_year}'}
-    ]
-
-    tier8_growth_private = [
-        {"type": "Project", "query": f'site:naukri.com/job-listings "{target}" ("urgent opening" OR "walk-in") India'},
-        {"type": "Project", "query": f'{industry_keywords} ("raised" OR "funding" OR "seed" OR "series") (site:yourstory.com OR site:entrackr.com)'},
-        {"type": "Direct", "query": f'"{target}" ("buying requirement" OR "urgent order") (site:connect2india.com OR site:exportersindia.com)'},
-        {"type": "Direct", "query": f'"{target}" ("need agency" OR "looking for agency" OR "hiring") India (site:upwork.com OR site:freelancer.in)'},
-        {"type": "Project", "query": f'{industry_keywords} ("exhibitor list" OR "participating in" OR "stall booked") India {current_year}'},
-        {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
-        {"type": "Direct", "query": f'"{target}" ("authorized dealer" OR "stockist") "contact number" site:justdial.com'},
-        {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'},
-        {"type": "Direct", "query": f'site:facebook.com/groups "{target}" ("urgent requirement" OR "need supplier" OR "vendor needed") India'},
-        {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" {industry_keywords}'},
-        {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" {industry_keywords}'},
-        {"type": "Project", "query": f'{industry_keywords} ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
-        {"type": "Project", "query": f'{industry_keywords} ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'}
-    ]
-
-    return tier1_direct_tenders + tier2_gem_defense + tier3_statutory + tier4_corridors + tier5_epc + tier6_mdbs + tier7_capex + tier8_growth_private
-
-def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V16 Master Enterprise Engine)", flush=True)
-    load_existing_urls_cache()
-
-    cloud_targets, cloud_exclusions, cloud_domains = [], [], []
-    try:
-        res = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_targets"}, timeout=30)
-        cloud_targets = res.json().get("targets", [])
-    except Exception: pass
-
-    try:
-        res_ex = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_exclusions"}, timeout=30)
-        data = res_ex.json()
-        cloud_exclusions = [e.strip() for e in data.get("exclusions", []) if e.strip()]
-        cloud_domains = [d.strip().lower() for d in data.get("blocked_domains", []) if d.strip()]
-    except Exception: pass
-
-    if not cloud_targets: return print("    -> No targets found.", flush=True)
-
-    search_matrix = []
-    client = get_next_gemini_client()
+# ==========================================
+# 4. MAIN HARVESTER EXECUTION FLOW
+# ==========================================
+def run_harvester(target_product, industry_keywords):
+    generator = QueryGenerator(target_product, industry_keywords)
+    harvester = SerperHarvester(SERPER_API_KEY)
+    scraper = ContentScraper()
+    seen_links = get_cached_links()
     
-    for t_obj in cloud_targets:
-        if isinstance(t_obj, dict):
-            t = t_obj.get("target")
-            sheet_keywords = t_obj.get("keywords", "")
-        else:
-            t = t_obj
-            sheet_keywords = ""
+    tracks = generator.build_tracks()
+    harvested_data = []
 
-        if sheet_keywords:
-            industry_keywords = f"({sheet_keywords})"
-            print(f"[*] Target: '{t}' using Sheet overrides: [{industry_keywords}]", flush=True)
-        else:
-            ai_keywords = get_buyer_industries(t, client)
-            industry_keywords = f"({ai_keywords})"
-            print(f"[*] Target: '{t}' mapped dynamically by AI to: [{industry_keywords}]", flush=True)
-            
-        for v in build_vector_matrix(t, industry_keywords):
-            search_matrix.append({"target": t, "query": v["query"], "query_type": v["type"]})
-
-    for item in search_matrix:
-        target_product = item["target"]
-        query = item["query"]
-        query_type = item["query_type"]
+    for track_name, queries in tracks.items():
+        print(f"\n=== Initiating {track_name} ===")
         
-        print(f"\n[*] Scanning: {query} (Target: {target_product})", flush=True)
-        results = get_search_results(query)
-        fresh_leads = []
-        
-        for r in results:
-            link_lower = r['link'].lower()
-            if any(b_dom in link_lower for b_dom in cloud_domains):
-                continue
-            if not is_duplicate_cached(r['link']):
-                raw_deep_text = fetch_deep_text(r['link'])
-                
-                is_tender_source = any(k in link_lower for k in ["gem.gov.in", "eprocure.gov.in", "tender", "bidplus", "etenders"]) or query_type == "Direct"
-                is_registry = any(k in link_lower for k in ["zaubacorp.com", "thecompanycheck.com", "linkedin.com", "indiamart.com", "tradeindia.com"]) or query_type == "MCA"
-
-                if is_tender_source and not is_registry:
-                    if not is_tender_active(raw_deep_text or r['summary']):
-                        add_to_cache(r['link']) 
-                        continue
-                
-                r['deep_text'] = raw_deep_text
-                r['target'] = target_product
-                r['query_type'] = query_type
-                fresh_leads.append(r)
-                
-        if not fresh_leads: continue
+        for query in queries:
+            results = harvester.search_web(query)
             
-        print(f"    -> AI Analyzing {len(fresh_leads)} links...", flush=True)
-        try: ai_data = ai_analyze_batch(fresh_leads, cloud_exclusions)
-        except Exception as e: 
-            print(f"    -> AI Error: {e}", flush=True)
-            continue
-            
-        ai_trash_log = []
-            
-        for entity in ai_data:
-            idx = entity.get("item_index")
-            if idx is None or idx >= len(fresh_leads) or idx < 0: continue
-            
-            lead_fp = make_lead_fingerprint(entity, target_product)
-            now = time.time()
-            
-            if lead_fp in EXISTING_FINGERPRINTS_CACHE:
-                last_seen = EXISTING_FINGERPRINTS_CACHE[lead_fp]
-                if now - last_seen < FINGERPRINT_TTL_SECONDS:
-                    print(f"    🔁 Duplicate Lead Detected ({lead_fp}). Skipping.", flush=True)
-                    add_to_cache(fresh_leads[idx]['link'])  
+            for res in results:
+                link = res.get("link")
+                if not link or link in seen_links:
                     continue
-            
-          is_valid = bool(entity.get("is_valid", False))
-            role = str(entity.get('entity_role', 'IRRELEVANT')).upper().strip()
-            segment = str(entity.get('buyer_segment', 'CORPORATE')).upper().strip()
-            
-            # Normalize confidence score whether Gemini outputs string ('HIGH') or float ('0.85')
-            raw_conf = str(entity.get('confidence_score', 'HIGH')).upper().strip()
-            if any(num in raw_conf for num in ["0.", "1."]):
-                try:
-                    f_val = float(raw_conf)
-                    confidence = "HIGH" if f_val >= 0.75 else ("MEDIUM" if f_val >= 0.40 else "LOW")
-                except Exception:
-                    confidence = "MEDIUM"
-            elif raw_conf in ["HIGH", "MEDIUM", "LOW"]:
-                confidence = raw_conf
-            else:
-                confidence = "MEDIUM"
-
-            reason = entity.get("product_match_reasoning", "No reasoning provided")
-            link_url = fresh_leads[idx]['link'].lower()
-            raw_deep_text = fresh_leads[idx].get('deep_text', '')
-            
-            is_supplier = (role == "SELLER")
-            is_mca_registry = "zaubacorp.com" in link_url or "thecompanycheck.com" in link_url or query_type == "MCA"
-
-            # Smart CIN Date Override
-            cin_year = extract_cin_incorporation_year(entity.get("ref_id")) or extract_cin_incorporation_year(raw_deep_text)
-            if cin_year:
-                is_fresh_incorporation = (cin_year == TODAY.year)
-                if cin_year < TODAY.year:
-                    role = "PROJECT_BUYER"
-                    is_valid = True
-            else:
-                is_fresh_incorporation = is_mca_registry and str(TODAY.year) in str(entity.get("posted_date", ""))
-
-            # RECOVERY GUARD: If the search query came from Capex, Corridors, Statutory, or EPC,
-            # never allow Gemini to throw it in the trash as IRRELEVANT.
-            is_expansion_tier = query_type in ["Project", "MCA"] or any(k in link_url for k in ["midc", "gidc", "upsida", "kiadb", "sipcot", "parivesh", "screener", "trendlyne", "bseindia"])
-            if is_expansion_tier and not is_valid:
-                # Force into Needs Review instead of AI Trash
-                role = "PROJECT_BUYER"
-                confidence = "LOW"
-                is_valid = False
-
-            print(f"       [Vote] Valid: {is_valid} | Role: {role} | Conf: {confidence} | Org: {entity.get('org')}", flush=True)
-            
-            needs_review = (confidence in ["LOW", "MEDIUM"]) or (not is_valid and is_expansion_tier)
-
-            if is_valid and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
-                if needs_review:
-                    target_sheet, source_tag = "Needs Review", f"Review-{segment}"
-                elif is_fresh_incorporation:
-                    target_sheet, source_tag = "MCA", "MCA-Registry"
-                elif role == "PROJECT_BUYER" or (is_mca_registry and not is_fresh_incorporation): 
-                    target_sheet, source_tag = "Projects & MOUs", "Enterprise-Capex"
-                elif role == "BUYER": 
-                    target_sheet, source_tag = "Inbox", f"{segment}-Buyer"
-                elif role == "SERVICE_USER": 
-                    target_sheet, source_tag = "Services", "Service-Radar"
-                elif is_supplier: 
-                    target_sheet, source_tag = "Suppliers", "Supplier-Radar"
-                else: 
-                    target_sheet, source_tag = "Inbox", "Radar Scout"
                 
-                intent_base = entity.get("intent_summary") or "Identified Requirement"
-                intent_label = f"[{segment}] Supplier ({intent_base})" if is_supplier else f"[{segment}] {intent_base}"
+                print(f"[+] Found new lead source: {link}")
+                content = scraper.fetch_content(link)
                 
-                if needs_review:
-                    intent_label = f"[LOW CONFIDENCE] {intent_label}"
-                
-                payload = {
-                    "secret": SECRET,
-                    "action": "add_lead",
-                    "target_sheet": target_sheet,
-                    "is_supplier": is_supplier,
-                    "lead_id": str(uuid.uuid4())[:8],
-                    "fingerprint": lead_fp, 
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_date": entity.get("posted_date", "N/A"), 
-                    "source": source_tag,
-                    "org": entity.get("org", "Unknown"),
-                    "city": entity.get("city", "Unknown"),
-                    "state": entity.get("state", "Pan-India"),
-                    "industry": target_product,
-                    "intent": intent_label,
-                    "dm_name": entity.get("dm_name") or "N/A",
-                    "dm_title": entity.get("dm_title") or "N/A",
-                    "link": fresh_leads[idx]['link'],
-                    "email": "N/A",
-                    "phone": "N/A",
-                    "website": "N/A"
-                }
-                for attempt in range(3):
-                    try:
-                        requests.post(WEBHOOK, json=payload, timeout=30)
-                        add_to_cache(fresh_leads[idx]['link'], lead_fp)
-                        print(f"    ✅ [{role}] -> {target_sheet}: {entity['org']} (FP: {lead_fp})", flush=True)
-                        break
-                    except Exception: time.sleep(2)
-                    
-            elif not is_valid and needs_review:
-                target_sheet, source_tag = "Needs Review", f"LowConfidence-{segment}"
-                intent_base = entity.get("intent_summary") or "Marginal Intent Detected"
-                intent_label = f"[AI REJECTED - REVIEW] [{segment}] {intent_base}"
-                
-                payload = {
-                    "secret": SECRET,
-                    "action": "add_lead",
-                    "target_sheet": target_sheet,
-                    "is_supplier": False,
-                    "lead_id": str(uuid.uuid4())[:8],
-                    "fingerprint": lead_fp,
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "posted_date": entity.get("posted_date", "N/A"), 
-                    "source": source_tag,
-                    "org": entity.get("org", "Unknown"),
-                    "city": entity.get("city", "Unknown"),
-                    "state": entity.get("state", "Pan-India"),
-                    "industry": target_product,
-                    "intent": intent_label,
-                    "dm_name": entity.get("dm_name") or "N/A",
-                    "dm_title": entity.get("dm_title") or "N/A",
-                    "link": fresh_leads[idx]['link'],
-                    "email": "N/A",
-                    "phone": "N/A",
-                    "website": "N/A"
-                }
-                for attempt in range(3):
-                    try:
-                        requests.post(WEBHOOK, json=payload, timeout=30)
-                        add_to_cache(fresh_leads[idx]['link'], lead_fp)
-                        print(f"    ⚠ [SAVED FROM TRASH] -> {target_sheet}: {entity['org']}", flush=True)
-                        break
-                    except Exception: time.sleep(2)
-            else:
-                ai_trash_log.append({
-                    "url": fresh_leads[idx]['link'],
-                    "org": entity.get("org", "Unknown"),
-                    "reason": f"[{role}] {reason}",
-                    "city": entity.get("city", "Unknown"),
-                    "state": entity.get("state", "Pan-India"),
-                    "industry": target_product,
-                    "intent": entity.get("intent_summary") or "Identified Requirement",
-                    "posted_date": entity.get("posted_date", "N/A"),
-                    "ref_id": entity.get("ref_id", "N/A"),
-                    "fingerprint": lead_fp,
-                    "dm_name": entity.get("dm_name") or "N/A",
-                    "dm_title": entity.get("dm_title") or "N/A"
-                })
-                add_to_cache(fresh_leads[idx]['link'])
-        
-        if ai_trash_log:
-            payload = {
-                "secret": SECRET,
-                "action": "log_trash_batch",
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "trash_data": ai_trash_log
-            }
-            for attempt in range(3):
-                try:
-                    requests.post(WEBHOOK, json=payload, timeout=30)
-                    print(f"    🗑 Swept {len(ai_trash_log)} rejected links into AI_Trash.", flush=True)
-                    break
-                except Exception: time.sleep(2)
-        time.sleep(4)
+                if content:
+                    harvested_data.append({
+                        "track": track_name,
+                        "url": link,
+                        "title": res.get("title", ""),
+                        "snippet": res.get("snippet", ""),
+                        "raw_text": content
+                    })
+                    cache_link(link)
+                    seen_links.add(link)
+
+    return harvested_data
 
 if __name__ == "__main__":
-    run()
+    # Test the Harvester
+    print("Starting Radar Scout Phase 1...")
+    # Example input - this will eventually be pulled from your ⚙️ Settings tab
+    results = run_harvester(target_product="AutoCAD", industry_keywords="Architecture OR Fabrication")
+    print(f"\n[✓] Harvest Complete. Extracted {len(results)} new raw documents ready for AI Evaluation.")
+
+import google.generativeai as genai
+import re
+import uuid
+import json
+
+# ==========================================
+# CONFIGURATION
+# ==========================================
+# Get your API key from Google AI Studio
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+
+# The Web App URL you got from Google Apps Script in Milestone 1
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "YOUR_GOOGLE_SCRIPT_WEBHOOK_URL")
+
+# ==========================================
+# PHASE 2: SPLIT-BRAIN AI EVALUATOR
+# ==========================================
+class SplitBrainEvaluator:
+    def __init__(self):
+        # We use Gemini 1.5 Flash - it is incredibly fast and cheap for large text parsing
+        self.model = genai.GenerativeModel(
+            'gemini-1.5-flash',
+            generation_config={"response_mime_type": "application/json"}
+        )
+
+    def evaluate(self, doc, target_product):
+        """Routes the document to the correct AI track based on Phase 1"""
+        track = doc['track']
+        raw_text = doc['raw_text']
+        
+        # TRACK 3 (MCA) bypasses AI for strict Python regex
+        if track == "TRACK_3_MCA":
+            return self._evaluate_mca(raw_text)
+
+        # Build the track-specific prompt
+        prompt = self._get_prompt_for_track(track, target_product)
+        full_prompt = f"{prompt}\n\nDOCUMENT TEXT:\n{raw_text[:15000]}"
+        
+        try:
+            print(f"[*] Sending to Gemini ({track})...")
+            response = self.model.generate_content(full_prompt)
+            result = json.loads(response.text)
+            return result
+        except Exception as e:
+            print(f"[!] AI Evaluation Failed: {e}")
+            return {"is_valid": False, "confidence": "LOW", "reason": "AI_PARSE_ERROR"}
+
+    def _evaluate_mca(self, text):
+        """Strict Regex for Indian Corporate Identity Numbers (CIN)"""
+        # Matches formats like U74999DL2026PTC123456
+        cin_match = re.search(r'[L|U]\d{5}[A-Z]{2}(\d{4})[A-Z]{3}\d{6}', text)
+        if cin_match:
+            year = cin_match.group(1)
+            if year == "2026": # Ensures it's a current-year registration
+                return {
+                    "is_valid": True,
+                    "confidence": "HIGH",
+                    "entity_role": "NEW_INCORPORATION",
+                    "organization": "Unknown (Review Link)", # Requires manual glance
+                    "city": "Unknown",
+                    "state": "Unknown",
+                    "intent_brief": f"New Company incorporated in 2026. Verified via CIN.",
+                    "deadline": "N/A"
+                }
+        return {"is_valid": False, "confidence": "LOW", "reason": "NOT_2026_OR_NO_CIN"}
+
+    def _get_prompt_for_track(self, track, target_product):
+        """Returns JSON-enforced prompts based on the specific intelligence track"""
+        
+        base_schema = """
+        Respond STRICTLY in this JSON format:
+        {
+            "is_valid": true/false,
+            "confidence": "HIGH" or "LOW",
+            "entity_role": "(BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT)",
+            "organization": "Name of Company or Dept",
+            "city": "City Name or N/A",
+            "state": "State Name or N/A",
+            "intent_brief": "2 sentence summary of what they need/are doing",
+            "deadline": "YYYY-MM-DD or N/A",
+            "reason": "If is_valid is false, why? (e.g., EXPIRED_TENDER, CONSUMER_SPAM)"
+        }
+        """
+
+        if track == "TRACK_1_TENDERS":
+            return f"You are a B2B procurement analyst looking for {target_product} bids. Look for active deadlines. If the submission deadline has already passed (earlier than today in 2026), mark is_valid as false. Extract the procuring department name." + base_schema
+            
+        elif track == "TRACK_2_CAPEX":
+            return f"You are an industrial intelligence analyst looking for {target_product} demand. You are evaluating land allotments, factory expansions, or EPC project awards. IGNORE past publication dates (a 6-month-old land allotment means they are building NOW). Mark entity_role as PROJECT_BUYER." + base_schema
+            
+        elif track == "TRACK_4_COMMERCIAL":
+            return f"You are a commercial intent analyst looking for {target_product} usage. If a company is hiring CAD Draftsmen/Engineers, they are a SERVICE_USER (Valid). If they are an OEM/Distributor selling the product, mark as SELLER. Do not reject small local MSMEs." + base_schema
+
+
+# ==========================================
+# PHASE 3: FAILSAFE ROUTER & CRM PUSH
+# ==========================================
+class WebhookRouter:
+    def __init__(self, webhook_url):
+        self.webhook_url = webhook_url
+
+    def route_and_push(self, doc, ai_result, target_product):
+        lead_id = str(uuid.uuid4())[:8].upper()
+        capture_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+        fingerprint = hashlib.md5(f"{doc['url']}".encode()).hexdigest()[:10]
+
+        is_valid = ai_result.get('is_valid', False)
+        confidence = ai_result.get('confidence', 'LOW')
+        role = ai_result.get('entity_role', 'IRRELEVANT')
+        
+        # 1. Routing Logic Matrix (Maps to the 9-Tab Sheet Layout)
+        target_sheet = "📥 Inbox"
+        
+        if not is_valid:
+            target_sheet = "🗑️ AI_Trash"
+        elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]:
+            target_sheet = "⚠️ Needs Review" # The Safety Net
+        elif role == "SELLER":
+            target_sheet = "🤝 Partners & Suppliers"
+            
+        # 2. Build the Row Array (Must match Google Sheet Columns exactly)
+        if target_sheet == "🗑️ AI_Trash":
+            # ["Timestamp", "Organization", "AI Reject Reason", "Original URL", "Source Track", "Action / Rescue To"]
+            row_data = [capture_date, ai_result.get('organization', 'Unknown'), ai_result.get('reason', 'Unknown'), doc['url'], doc['track'], ""]
+        elif target_sheet == "🤝 Partners & Suppliers":
+            # ["Date Added", "Partner Type", "State", "City", "Company Name", "Website", "Contact Details", "Products Sold"]
+            row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), ai_result.get('organization', ''), "", "", target_product]
+        else:
+            # Active Tabs (Inbox / Needs Review)
+            # ["Capture Date", "Deadline / Post Date", "Signal Category", "Sector / Industry", "State", "City", "Organization", "Target Product", "AI Intent Brief", "Source Link", "Action / Move To", "Lead ID & Fingerprint"]
+            row_data = [
+                capture_date,
+                ai_result.get('deadline', 'N/A'),
+                role,
+                "Unknown", # Sector (Can be updated manually or added to AI prompt)
+                ai_result.get('state', 'N/A'),
+                ai_result.get('city', 'N/A'),
+                ai_result.get('organization', 'Unknown'),
+                target_product,
+                ai_result.get('intent_brief', ''),
+                doc['url'],
+                "", # Leave Action empty for manual UI selection
+                f"{lead_id}::{fingerprint}"
+            ]
+
+        # 3. Pre-Flight Check (Global Deduplication)
+        try:
+            print(f"[*] Pre-Flight Check for: {ai_result.get('organization', 'Unknown')}")
+            check_payload = {
+                "action": "pre_flight_check",
+                "company_name": ai_result.get('organization', 'Unknown')
+            }
+            res = requests.post(self.webhook_url, json=check_payload).json()
+            if res.get('exists') and target_sheet == "📥 Inbox":
+                print(f"[!] Company already in {res.get('location')}. Webhook will append note automatically.")
+                # We still send it, the Google Script logic will convert it to a note!
+        except Exception as e:
+            print(f"[!] Pre-flight check failed: {e}")
+
+        # 4. Transmit Payload to Google Sheets
+        payload = {
+            "action": "insert_lead",
+            "target_sheet": target_sheet,
+            "company_name": ai_result.get('organization', 'Unknown'),
+            "signal_brief": ai_result.get('intent_brief', ''),
+            "row_data": row_data
+        }
+
+        try:
+            print(f"[*] Routing {ai_result.get('organization', 'Unknown')} to -> {target_sheet}")
+            requests.post(self.webhook_url, json=payload)
+        except Exception as e:
+            print(f"[!] Failed to push to CRM: {e}")
+
+# ==========================================
+# 5. MASTER EXECUTION (PHASE 1 -> 2 -> 3)
+# ==========================================
+if __name__ == "__main__":
+    TARGET_PRODUCT = "AutoCAD"
+    INDUSTRY = "Architecture OR Fabrication"
+    
+    # 1. Run Harvester (From Milestone 2)
+    # harvested_docs = run_harvester(TARGET_PRODUCT, INDUSTRY)
+    
+    # FOR TESTING: Let's mock a harvested document
+    harvested_docs = [{
+        "track": "TRACK_4_COMMERCIAL",
+        "url": "https://www.naukri.com/sample-job",
+        "title": "Hiring AutoCAD Draftsman - Pune",
+        "raw_text": "We are a leading fabrication firm in Pune. We urgently require 2 AutoCAD draftsmen for detailing heavy machinery components. Apply immediately."
+    }]
+
+    evaluator = SplitBrainEvaluator()
+    router = WebhookRouter(WEBHOOK_URL)
+
+    for doc in harvested_docs:
+        # 2. Split-Brain Evaluation
+        ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT)
+        print(f"\n[AI Verdict]: {json.dumps(ai_verdict, indent=2)}")
+        
+        # 3. Safely Route & Push to CRM
+        router.route_and_push(doc, ai_verdict, TARGET_PRODUCT)
+        
+    print("\n[✓] Radar Scout V17 Engine Cycle Complete.")
