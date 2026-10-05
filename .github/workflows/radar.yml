@@ -1,4 +1,4 @@
-name: Radar B2B Autopilot
+name: 1 - Morning Harvester
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  run-crm-engine:
+  run-radar:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install python-dotenv requests beautifulsoup4 google-genai dnspython aiohttp tenacity ddgs pypdf
           
-      - name: Run Master Autopilot Engine
+      - name: Run Radar Harvester
         env:
           GOOGLE_SHEET_WEBHOOK: ${{ secrets.GOOGLE_SHEET_WEBHOOK }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
@@ -34,14 +34,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
-        run: python autopilot.py
+        run: python radar.py
 
-      # Auto-Save backup system with collision prevention
-      - name: Save Backup (seen_links.txt) to GitHub
+      # Auto-Save backup system updated for the new fingerprint cache
+      - name: Save Backup (seen_links.txt & seen_fingerprints.txt) to GitHub
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen_links.txt || true
-          git commit -m "Auto-update seen_links.txt [skip ci]" || true
+          git add seen_links.txt seen_fingerprints.txt || true
+          git commit -m "Auto-update cache [skip ci]" || true
           git pull --rebase origin main || true
           git push origin main || true
