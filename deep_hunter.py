@@ -76,11 +76,14 @@ async def verify_domain_mx(domain):
         return True
     except Exception: return False
 
-async def is_b2b_email(email):
+# --- HYBRID EMAIL FILTER ---
+async def is_valid_contact_email(email, allow_freemail=False):
     if not email: return False
     try:
         domain = email.split('@')[-1].lower()
-        if domain in {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com"}: return False
+        freemails = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "rediffmail.com"}
+        if domain in freemails:
+            return allow_freemail
         return await verify_domain_mx(domain)
     except Exception: return False
 
@@ -109,7 +112,7 @@ def ai_verify_entity_sync(org_name, web_results, li_results, legal_results, b2b_
     if not client: return None
     model_stack = get_flash_model_stack(client)
     
-    # --- UPGRADED PROMPT: 4-COLUMN MULTI-DIRECTOR EXTRACTION ---
+    # --- MULTI-CONTACT OSINT TRIANGULATION PROMPT ---
     prompt = f"""
 You are an expert OSINT Triangulation Analyst investigating: "{org_name}"
 Extract the OFFICIAL corporate domain, primary Decision Maker, and official phone/email.
@@ -174,18 +177,24 @@ async def process_lead(session, lead, sem):
             async_get_search_results(session, f'"{lead["org"]}" official website india'),
             async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Director" OR "CEO") "{lead["org"]}"'),
             async_get_search_results(session, f'(site:zaubacorp.com OR site:thecompanycheck.com) "{lead["org"]}" directors'),
-            async_get_search_results(session, f'(site:indiamart.com OR site:justdial.com) "{lead["org"]}" contact')
+            async_get_search_results(session, f'(site:indiamart.com OR site:justdial.com OR site:tradeindia.com) "{lead["org"]}" contact')
         )
         
         ai_data = await asyncio.to_thread(ai_verify_entity_sync, lead['org'], web_res, li_res, legal_res, b2b_res)
+        
+        # --- DYNAMIC FREEMAIL TOGGLE ---
+        # Allow @gmail accounts if it's a marketplace lead or lacks a custom domain
+        is_local_msme = (lead.get("website") in ["N/A", "", None]) or any(m in str(lead.get("source", "")).lower() for m in ["indiamart", "tradeindia", "justdial", "msme"])
         
         # --- IDENTITY RESOLUTION: Process Directors Roster ---
         roster_to_send = []
         if ai_data:
             if ai_data.get("verified_website"): lead["website"] = ai_data["verified_website"]
             if ai_data.get("dm_name"): lead["dm_name"], lead["dm_title"] = ai_data["dm_name"], ai_data.get("dm_title", "Decision Maker")
-            if ai_data.get("directory_email") and not await is_b2b_email(lead.get("email", "")): lead["email"] = ai_data["directory_email"]
-            if ai_data.get("directory_phone") and lead.get("phone", "N/A") == "N/A": lead["phone"] = ai_data["directory_phone"]
+            if ai_data.get("directory_email") and not await is_valid_contact_email(lead.get("email", ""), allow_freemail=is_local_msme): 
+                lead["email"] = ai_data["directory_email"]
+            if ai_data.get("directory_phone") and lead.get("phone", "N/A") == "N/A": 
+                lead["phone"] = ai_data["directory_phone"]
             
             contacts_list = ai_data.get("all_contacts", [])
             for contact in contacts_list:
@@ -198,7 +207,7 @@ async def process_lead(session, lead, sem):
                 if c_email == "N/A" and lead.get("website") and lead.get("website") != "N/A":
                     perms = generate_email_permutations(c_name, lead["website"])
                     for e in perms:
-                        if await is_b2b_email(e): 
+                        if await is_valid_contact_email(e, allow_freemail=False): 
                             c_email = e
                             break
                             
@@ -216,7 +225,8 @@ async def process_lead(session, lead, sem):
                 perms = generate_email_permutations(lead["dm_name"], lead["website"])
                 if perms: emails = perms
             for e in emails:
-                if await is_b2b_email(e): lead["email"] = e; break
+                if await is_valid_contact_email(e, allow_freemail=is_local_msme): 
+                    lead["email"] = e; break
             if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
 
         # 1. Send the Main Lead Data to Qualified Sheet
@@ -245,6 +255,7 @@ async def process_lead(session, lead, sem):
                         break
                 except Exception: await asyncio.sleep(2)
 
+        # --- TELEGRAM QUALIFICATION DISPATCH ---
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
             msg = (
                 f"🌟 <b>ENRICHED QUALIFIED TARGET</b>\n\n"
@@ -264,7 +275,7 @@ async def process_lead(session, lead, sem):
             except Exception: pass
 
 async def hunt_async():
-    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (4-Column Multi-Director Engine)", flush=True)
+    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (Hybrid Email & Multi-Director Engine)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30).json().get("pending_leads", [])
