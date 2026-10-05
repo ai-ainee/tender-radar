@@ -394,6 +394,14 @@ BUYER SEGMENT CLASSIFICATION:
 - 'CORPORATE': Private/Public Limited enterprises.
 - 'LOCAL_MSME': Small businesses, contractors.
 
+PROJECT & MCA LEAD EVALUATION (DERIVED DEMAND):
+- For queries marked 'Project' or 'MCA', the Target Product will rarely be named directly.
+- If a newly incorporated company, capex expansion, or industrial site belongs to an industry that naturally consumes or deploys the Target Product (e.g., an EPC, structural engineering, or architectural firm needing design/engineering solutions), classify them as:
+  * entity_role: 'PROJECT_BUYER'
+  * is_valid: True
+  * confidence_score: 'HIGH' or 'MEDIUM'
+- Only mark is_valid=False if the company operates in a completely unrelated domain (e.g., a bakery or textile retailer).
+
 {exclusion_rule}
 
 DATA BATCH:
