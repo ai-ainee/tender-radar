@@ -408,25 +408,31 @@ ENTITY EXTRACTION HEURISTIC:
 - MCA Registrations: Extract the newly incorporated Legal Entity Name (excluding 'Pvt Ltd' / 'LLP' suffixes in analysis).
 
 ================================================================================
-SECTION 3: DERIVED DEMAND INFERENCE (CROSS-INDUSTRY EXPANSION)
+SECTION 3: DERIVED DEMAND & PROJECT EVALUATION (ZERO FALSE-NEGATIVE BIAS)
 ================================================================================
-The Target Product ('{batch[0].get('target', 'Target Product') if batch else 'Target Product'}') will rarely be named verbatim in private expansion signals. You must apply derived procurement mapping:
+CRITICAL DIRECTIVE: You are qualifying sales pipelines. It is 100x worse to reject a real buyer than to flag a potential lead for human review.
 
-1. INDUSTRIAL & MANUFACTURING CAPEX:
-   - If an entity in automotive, forging, defense, aerospace, electronics, heavy engineering, plastics, pharmaceuticals, chemicals, or consumer durables announces:
-     * Greenfield/Brownfield plant construction
-     * Capacity expansion, modernization, or tooling capex
-     * Land allotment in state industrial corridors (MIDC, GIDC, KIADB, SIPCOT)
-     * "Consent to Establish" (CTE) or Environmental Clearance (EC)
-   -> MANDATORY CLASSIFICATION: entity_role = 'PROJECT_BUYER', buyer_segment = 'CORPORATE', is_valid = True.
+1. CAPEX, INDUSTRIAL & EXPANSION LEADS (MANDATORY APPROVAL):
+   If the snippet or deep text mentions ANY of the following:
+   - Factory, plant, or facility setup, expansion, or modernization
+   - Plot/land allotment or possession (MIDC, GIDC, UPSIDA, KIADB, SIPCOT, etc.)
+   - Environmental Clearance (EC), Consent to Establish (CTE)
+   - Corporate capital expenditure (Capex), funding rounds, or capacity addition
+   - Construction, EPC contracts, infrastructure packages, building approvals
+   -> MANDATORY: Set is_valid = True, entity_role = 'PROJECT_BUYER', confidence_score = 'HIGH'.
+   -> DO NOT require the Target Product name to be present. Industrial projects consume civil, electrical, software, and mechanical supplies by default.
 
-2. INFRASTRUCTURE, REAL ESTATE & EPC:
-   - RERA project registrations, Metro rail packages, highway tenders, industrial warehouse setups, or Tier-1 EPC vendor empanelments (L&T, Tata Projects, Afcons).
-   -> MANDATORY CLASSIFICATION: entity_role = 'PROJECT_BUYER', is_valid = True.
+2. GOVERNMENT TENDERS & PROCUREMENT:
+   - If it is an active tender, RFP, or bid notice for services, equipment, or projects related to engineering, commercial, or public works:
+   -> MANDATORY: Set is_valid = True, entity_role = 'BUYER'.
 
-3. REJECTION BOUNDARY (STRICT FALSE-POSITIVE FILTER):
-   - Reject ONLY if the entity is completely incompatible with technical/industrial infrastructure (e.g., standalone local retail bakeries, personal lifestyle blogs, B2C consumer promotions, non-technical coaching classes, or generic macroeconomic op-eds).
-
+3. STRICT TRASH CRITERIA (ONLY REJECT THESE):
+   Mark is_valid = False and entity_role = 'IRRELEVANT' ONLY if the lead is:
+   - An expired tender with a submission deadline clearly before {CURRENT_DATE_STR}.
+   - A consumer retail promotion (e.g., shoe discount, food delivery, personal jewelry sale).
+   - An individual jobseeker resume or personal opinion blog.
+   - If unsure whether an entity is relevant, DO NOT set IRRELEVANT. Set entity_role = 'PROJECT_BUYER', confidence_score = 'LOW', and is_valid = True so human review can decide.
+   
 ================================================================================
 SECTION 4: DECISION MAKER (DM) MINING & GEOGRAPHY NORMALIZATION
 ================================================================================
@@ -480,7 +486,11 @@ DATA BATCH FOR ANALYSIS:
                 "item_index": {"type": "INTEGER"},
                 "product_match_reasoning": {"type": "STRING"},
                 "is_valid": {"type": "BOOLEAN"},
-                "confidence_score": {"type": "STRING"},
+                "confidence_score": {
+                    "type": "STRING",
+                    "enum": ["HIGH", "MEDIUM", "LOW"],
+                    "description": "Must be exactly 'HIGH', 'MEDIUM', or 'LOW'."
+                },
                 "entity_role": {"type": "STRING"},
                 "buyer_segment": {"type": "STRING"},
                 "org": {"type": "STRING"},
@@ -674,10 +684,23 @@ def run():
                     add_to_cache(fresh_leads[idx]['link'])  
                     continue
             
-            is_valid = entity.get("is_valid")
-            role = entity.get('entity_role')
-            segment = entity.get('buyer_segment', 'CORPORATE')
-            confidence = entity.get('confidence_score', 'HIGH')
+          is_valid = bool(entity.get("is_valid", False))
+            role = str(entity.get('entity_role', 'IRRELEVANT')).upper().strip()
+            segment = str(entity.get('buyer_segment', 'CORPORATE')).upper().strip()
+            
+            # Normalize confidence score whether Gemini outputs string ('HIGH') or float ('0.85')
+            raw_conf = str(entity.get('confidence_score', 'HIGH')).upper().strip()
+            if any(num in raw_conf for num in ["0.", "1."]):
+                try:
+                    f_val = float(raw_conf)
+                    confidence = "HIGH" if f_val >= 0.75 else ("MEDIUM" if f_val >= 0.40 else "LOW")
+                except Exception:
+                    confidence = "MEDIUM"
+            elif raw_conf in ["HIGH", "MEDIUM", "LOW"]:
+                confidence = raw_conf
+            else:
+                confidence = "MEDIUM"
+
             reason = entity.get("product_match_reasoning", "No reasoning provided")
             link_url = fresh_leads[idx]['link'].lower()
             raw_deep_text = fresh_leads[idx].get('deep_text', '')
@@ -687,18 +710,26 @@ def run():
 
             # Smart CIN Date Override
             cin_year = extract_cin_incorporation_year(entity.get("ref_id")) or extract_cin_incorporation_year(raw_deep_text)
-            
             if cin_year:
                 is_fresh_incorporation = (cin_year == TODAY.year)
-                # Force old companies (e.g. 1971) into Projects instead of MCA if deemed valid by AI
-                if cin_year < TODAY.year and is_valid:
+                if cin_year < TODAY.year:
                     role = "PROJECT_BUYER"
+                    is_valid = True
             else:
                 is_fresh_incorporation = is_mca_registry and str(TODAY.year) in str(entity.get("posted_date", ""))
 
+            # RECOVERY GUARD: If the search query came from Capex, Corridors, Statutory, or EPC,
+            # never allow Gemini to throw it in the trash as IRRELEVANT.
+            is_expansion_tier = query_type in ["Project", "MCA"] or any(k in link_url for k in ["midc", "gidc", "upsida", "kiadb", "sipcot", "parivesh", "screener", "trendlyne", "bseindia"])
+            if is_expansion_tier and not is_valid:
+                # Force into Needs Review instead of AI Trash
+                role = "PROJECT_BUYER"
+                confidence = "LOW"
+                is_valid = False
+
             print(f"       [Vote] Valid: {is_valid} | Role: {role} | Conf: {confidence} | Org: {entity.get('org')}", flush=True)
             
-            needs_review = (role in ["BUYER", "PROJECT_BUYER"] and confidence in ["LOW", "MEDIUM"])
+            needs_review = (confidence in ["LOW", "MEDIUM"]) or (not is_valid and is_expansion_tier)
 
             if is_valid and role in ["BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER"]:
                 if needs_review:
