@@ -252,37 +252,51 @@ def get_search_results(query):
 
 def fetch_deep_text(url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.google.com/"
+        }
         session = requests.Session()
-        r = session.get(url, headers=headers, timeout=(5, 12), verify=False)
+        session.headers.update(headers)
+        
+        # Disable SSL verification for Indian govt certificates that lack CA chains
+        r = session.get(url, timeout=(6, 14), verify=False)
         if r.status_code != 200:
             return ""
             
         content_type = r.headers.get('Content-Type', '').lower()
         clean_url = url.lower().split('?')[0]
 
-        if 'application/pdf' in content_type or clean_url.endswith('.pdf'):
-            try:
-                reader = PdfReader(io.BytesIO(r.content))
-                extracted_pages = []
-                for page in reader.pages[:8]:
-                    text = page.extract_text()
-                    if text: extracted_pages.append(text)
-                pdf_text = " ".join(extracted_pages)
-                return re.sub(r'\s+', ' ', pdf_text).strip()[:4000]
-            except Exception:
-                return ""
+        if 'application/pdf' in content_type or clean_url.endswith('.pdf') or 'showbiddocument' in clean_url:
+            if PdfReader:
+                try:
+                    reader = PdfReader(io.BytesIO(r.content))
+                    extracted_pages = []
+                    for page in reader.pages[:5]:
+                        t = page.extract_text()
+                        if t: extracted_pages.append(t)
+                    return re.sub(r'\s+', ' ', " ".join(extracted_pages)).strip()[:4000]
+                except Exception:
+                    pass
 
-        if 'text/html' in content_type:
+        if 'text/html' in content_type or not content_type:
             soup = BeautifulSoup(r.text, "html.parser")
             for tag in soup(["script", "style", "nav", "footer", "header", "noscript"]):
                 tag.decompose()
             return soup.get_text(separator=" ", strip=True)[:4000]
-    except Exception: pass
+    except Exception:
+        pass
     return ""
 
 def is_tender_active(raw_text):
-    if not raw_text: return True
+    if not raw_text:
+        return False  # If no content could be read from a tender portal, do not risk an expired bid
+
+    text = raw_text.replace("\n", " ")
+    
+    # 1. Look for explicit End/Closing/Submission Deadlines
     pattern = (
         r"(?:Bid\s+End(?:\s+Date)?(?:/\s*Time)?|"
         r"Submission\s+(?:End\s+Date|Deadline|Closing\s+Date)|"
@@ -290,23 +304,42 @@ def is_tender_active(raw_text):
         r"\s*[:\-]?\s*"
         r"(\d{1,2}[-/\.\s](?:[A-Za-z]{3,9}|\d{1,2})[-/\.\s]\d{4})"
     )
-    matches = re.findall(pattern, raw_text, re.IGNORECASE)
-    found_dates = []
+    matches = re.findall(pattern, text, re.IGNORECASE)
     
+    found_end_dates = []
     for date_str in matches:
         clean_str = re.sub(r"[/\\.\s]+", "-", date_str.strip())
+        for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%d-%m-%y"):
+            try:
+                found_end_dates.append(datetime.strptime(clean_str, fmt))
+                break
+            except ValueError:
+                continue
+
+    # If an end date exists, check it directly against today
+    if found_end_dates:
+        for tender_date in found_end_dates:
+            if tender_date.date() >= TODAY.date():
+                return True
+        print("    🚫 Regex Bouncer: Bid end date has passed. Dropping.", flush=True)
+        return False
+
+    # 2. Heuristic for GeM snippets missing end dates:
+    # Check "Dated: DD-MM-YYYY" or "Bid Start Date". GeM bids rarely stay active longer than 21 days.
+    start_pattern = r"(?:Dated|Bid\s+Start\s+Date)\s*[:\-]?\s*(\d{1,2}[-/\.\s](?:[A-Za-z]{3,9}|\d{1,2})[-/\.\s]\d{4})"
+    start_matches = re.findall(start_pattern, text, re.IGNORECASE)
+    for s_date_str in start_matches:
+        clean_str = re.sub(r"[/\\.\s]+", "-", s_date_str.strip())
         for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y"):
             try:
-                found_dates.append(datetime.strptime(clean_str, fmt))
-                break
-            except ValueError: continue
+                start_dt = datetime.strptime(clean_str, fmt)
+                if (TODAY - start_dt).days > 25:
+                    print(f"    🚫 Regex Bouncer: Bid was posted >25 days ago ({start_dt.strftime('%d-%b-%Y')}) with no future extension. Dropping.", flush=True)
+                    return False
+            except ValueError:
+                continue
 
-    if not found_dates: return True 
-    for tender_date in found_dates:
-        if tender_date.date() >= TODAY.date(): return True
-
-    print(f"    🚫 Regex Bouncer: All tender deadlines on this page have expired. Dropping.", flush=True)
-    return False
+    return True
 
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def ai_analyze_batch(batch, exclusions):
@@ -327,25 +360,33 @@ Banned Intents/Keywords: {json.dumps(exclusions)}
 - If the primary intent of the organization/lead is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False).
 """
 
-    prompt = f"""
-You are an expert B2B Ecosystem Analyst.
-CRITICAL CONTEXT: Today's date is {CURRENT_DATE_STR}.
+prompt = f"""
+You are an expert B2B Procurement and Lead Qualification Analyst.
+CRITICAL TEMPORAL CONTEXT: Today's date is {CURRENT_DATE_STR}.
+
+ORGANIZATION EXTRACTION RULES (STRICT):
+1. 'org': You MUST extract the ACTUAL buying department, ministry, municipal body, PSU, or enterprise (e.g. 'Military Engineer Services', 'NTPC Limited', 'CPWD', 'Tata Projects').
+2. NEVER set 'org' to 'Government e-Marketplace', 'GeM', 'eProcure', or 'TenderTiger'. Those are procurement portals/exchanges, NOT the buyer. Look at the buyer/consignee block in the text. If unknown, output 'Unknown Ministry/PSU'.
+
+DEADLINE & ACTIVE BID ENFORCEMENT:
+1. If the text mentions an expired Bid End Date, Submission Closing Date, or Due Date before {CURRENT_DATE_STR}, return is_valid=False.
+2. If the status is 'Closed', 'Awarded', 'Cancelled', or 'Technical Evaluation Completed', return is_valid=False.
 
 UNIQUE FINGERPRINT EXTRACTION:
 1. 'ref_id': Extract any official Bid Number, Tender ID, GeM ID, RERA Project ID, EC File No, or CIN (e.g., 'GEM/2026/B/89123', 'NIT-45/2026', 'U72900KA2026PTC123456'). If not found, return 'N/A'.
 2. 'project_scope_key': If 'ref_id' is 'N/A', generate a lowercase 3-to-5 word hyphen-separated slug of the specific project, site, and work scope (e.g., 'mumbai-metro-line-4-signaling'). DO NOT use generic phrases like 'buying-product'.
 
 CLASSIFICATION ROLES:
-1. 'BUYER': Direct procurement, GeM bids, public tenders, VC funding, Zauba import data, or direct buyer.
-2. 'PROJECT_BUYER': Capex, Environmental Clearances, Factory Setups, Land Allotments, RERA projects, SEBI expansions.
+1. 'BUYER': Active direct procurement, live tender, or live RFP.
+2. 'PROJECT_BUYER': Capex, Environmental Clearances, Factory Setups, Land Allotments, RERA projects.
 3. 'SERVICE_USER': Company offering commercial services using the Target Product.
-4. 'SELLER': Company manufacturing/supplying the Target Product or an alternative.
-5. 'IRRELEVANT': Unrelated products, job listings, directory listings, or generic news.
+4. 'SELLER': Company manufacturing/supplying the Target Product.
+5. 'IRRELEVANT': Expired bids, unrelated products, or generic news.
 
 BUYER SEGMENT CLASSIFICATION:
-- 'GOVT': Central/State Government, GeM, PSUs.
+- 'GOVT': Central/State Government, GeM, PSUs, Defense.
 - 'CORPORATE': Private/Public Limited enterprises.
-- 'LOCAL_MSME': Small businesses, contractors, dealers.
+- 'LOCAL_MSME': Small businesses, contractors.
 
 {exclusion_rule}
 
