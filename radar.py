@@ -49,8 +49,8 @@ GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
 current_key_index = 0
 
 EXISTING_URLS_CACHE = set()
-EXISTING_FINGERPRINTS_CACHE = {}  # Format: {fingerprint: timestamp}
-FINGERPRINT_TTL_SECONDS = 30 * 86400  # 30 days
+EXISTING_FINGERPRINTS_CACHE = {}  
+FINGERPRINT_TTL_SECONDS = 30 * 86400  
 
 def get_next_gemini_client():
     global current_key_index
@@ -81,26 +81,39 @@ def get_flash_model_stack(client):
     BEST_MODEL_STACK = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
+def extract_cin_incorporation_year(text_or_ref):
+    """Extracts the true incorporation year from Indian Corporate Identification Numbers (CIN/LLPIN)."""
+    if not text_or_ref:
+        return None
+    match = re.search(r'\b[UL]\d{5}[A-Z]{2}(\d{4})[A-Z]{3}\d{6}\b', str(text_or_ref).upper())
+    if match:
+        return int(match.group(1))
+    return None
+
 def get_buyer_industries(target, client):
-    """Dynamically identifies macro buyer industries to query MCA / ZaubaCorp registries."""
-    try:
-        prompt = (
-            f"What are 3 primary commercial or industrial sectors in India that purchase or deploy '{target}'? "
-            f"Respond strictly with 3 space-separated or OR-separated single keywords (e.g. Architecture OR Engineering OR Infrastructure)."
-        )
-        chat = client.chats.create(model="gemini-1.5-flash")
-        res = chat.send_message(prompt)
-        
-        cleaned = re.sub(r'[^a-zA-Z\s]', '', res.text).strip().split()
-        if cleaned:
-            return " OR ".join(cleaned[:3])
-    except Exception:
-        pass
-    return f'"{target}"'
+    """Dynamically identifies macro buyer industries without breaking Google Search syntax."""
+    if client:
+        try:
+            model_name = get_flash_model_stack(client)[0]
+            chat = client.chats.create(model=model_name)
+            prompt = (
+                f"Name 3 broad industries in India that buy '{target}'. "
+                f"Reply ONLY with 3 single-word industries separated by commas (e.g., Automotive, Aviation, Construction). No extra text."
+            )
+            res = chat.send_message(prompt)
+            # Cleanly split by comma, remove non-alphanumeric characters, and format safely
+            words = [re.sub(r'[^a-zA-Z0-9]', '', w.strip()) for w in res.text.split(',')]
+            valid_words = [w for w in words if len(w) > 2][:3]
+            if valid_words:
+                return " OR ".join(valid_words)
+        except Exception as e:
+            print(f"    ⚠️ AI Industry mapping failed for {target}: {e}", flush=True)
+
+    # Ultimate safe fallback if API times out
+    return "Engineering OR Manufacturing OR Infrastructure OR Corporate"
 
 # --- URL & FINGERPRINT HELPERS ---
 def canonicalize_url(url):
-    """Strips tracking query strings (utm, ref, session IDs) and standardizes formatting."""
     if not url: return ""
     try:
         parsed = urlparse(url.strip())
@@ -111,7 +124,6 @@ def canonicalize_url(url):
         return url.strip().lower()
 
 def normalize_text_key(text):
-    """Normalizes names by removing punctuation and corporate suffixes."""
     if not text or text.lower() == "unknown": return ""
     clean = text.lower()
     clean = re.sub(r'\b(pvt|private|ltd|limited|llp|inc|corp|corporation|co|enterprises)\b\.?', '', clean)
@@ -119,7 +131,6 @@ def normalize_text_key(text):
     return " ".join(clean.split())
 
 def make_lead_fingerprint(entity, target_product):
-    """Generates a unique deduplication key for the lead."""
     ref_id = str(entity.get("ref_id", "")).strip().upper()
     org = normalize_text_key(entity.get("org", "Unknown"))
     
@@ -135,9 +146,7 @@ def make_lead_fingerprint(entity, target_product):
     
     return f"SCOPE::{org}::{city}::{target}::{scope}"
 
-# --- DOUBLE-BACKUP SAVE SYSTEM ---
 def add_to_cache(link, fingerprint=None):
-    """Adds a URL and Fingerprint to active memory AND saves it to the backup text files."""
     if not link: return
     clean_link = canonicalize_url(link)
     
@@ -156,7 +165,6 @@ def add_to_cache(link, fingerprint=None):
                 f.write(f"{fingerprint}::{int(now)}\n")
         except Exception: pass
 
-# --- LOAD SYSTEM (TEXT FILE FIRST, GOOGLE SECOND) ---
 def load_existing_urls_cache():
     global EXISTING_URLS_CACHE, EXISTING_FINGERPRINTS_CACHE
     
@@ -216,7 +224,6 @@ def get_search_results(query):
     while current_serper_index < len(SERPER_KEYS):
         api_key = SERPER_KEYS[current_serper_index]
         try:
-            # FIX: Correct indentation and dynamic 30-day filter
             is_live_tender_search = any(k in query for k in ["gem.gov.in", "eprocure", "tender", "bidplus"])
             payload_dict = {"q": query, "gl": "in", "num": 10}
             if is_live_tender_search:
@@ -294,7 +301,7 @@ def fetch_deep_text(url):
 
 def is_tender_active(raw_text):
     if not raw_text:
-        return False  # Do not risk an expired bid if empty
+        return False 
 
     text = raw_text.replace("\n", " ")
     
@@ -342,15 +349,14 @@ def is_tender_active(raw_text):
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def ai_analyze_batch(batch, exclusions):
     client = get_next_gemini_client()
-    if not client:
-        return []
+    if not client: return []
     model_stack = get_flash_model_stack(client)
-
+    
     items_block = ""
     for i, x in enumerate(batch):
         date_str = f"Date Posted: {x['date']}\n" if x.get("date") else ""
         items_block += f"\n--- ITEM {i} ---\nTarget Product: {x.get('target', 'Unknown')}\nQuery Type: {x.get('query_type', 'Direct')}\n{date_str}Title: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
-
+        
     exclusion_rule = ""
     if exclusions:
         exclusion_rule = f"""
@@ -380,7 +386,8 @@ TRACK A: LIVE TENDERS, BIDS & RFQs (GeM, CPPP, State Portals, Defense, PSUs)
 
 TRACK B: DERIVED DEMAND SIGNALS (Capex, Land Allotments, EC/Clearances, MCA, EPC, Concalls)
 - NEVER reject Track B leads due to past announcement or publication dates.
-- A factory setup approved 6 months ago, an MCA incorporation from earlier this year, or an environmental clearance granted last quarter represents an ACTIVE CAPEX CYCLE where procurement of software, equipment, and consulting is actively underway.
+- A factory setup approved 6 months ago, an environmental clearance, or an industrial allotment represents an ACTIVE CAPEX CYCLE where procurement is actively underway.
+- EXPLICIT MCA DATE RULE: If evaluating a ZaubaCorp or Company Check snippet, you MUST extract the 'Date of Incorporation' and place it EXACTLY in the 'posted_date' JSON field.
 - Set is_valid = True and entity_role = 'PROJECT_BUYER' for valid industrial projects regardless of announcement age.
 
 ================================================================================
@@ -496,12 +503,10 @@ DATA BATCH FOR ANALYSIS:
             chat = client.chats.create(model=model_name)
             res = chat.send_message(prompt, config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0))
             raw_text = res.text.strip()
-            if raw_text.startswith("```"):
-                raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
+            if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
         except Exception as e:
-            if any(err in str(e) for err in ["NOT_FOUND", "404", "503", "500", "limit: 0", "limit: 20"]):
-                continue
+            if any(err in str(e) for err in ["NOT_FOUND", "404", "503", "500", "limit: 0", "limit: 20"]): continue
             raise e
     raise Exception("All Gemini models unavailable.")
 
@@ -509,7 +514,6 @@ def build_vector_matrix(target, industry_keywords):
     current_year = datetime.now().year
     exclusions = ' -"Award of Contract" -"AOC" -"Status: Closed" -"Cancelled" -"Corrigendum"'
 
-    # FIX: Tiers 3, 4, 5, and 7 now use industry_keywords instead of target!
     tier1_direct_tenders = [
         {"type": "Direct", "query": f'"{target}" site:bidplus.gem.gov.in{exclusions}'},
         {"type": "Direct", "query": f'"{target}" "Tender Documents" (site:eprocure.gov.in OR site:etenders.gov.in){exclusions}'},
@@ -527,22 +531,22 @@ def build_vector_matrix(target, industry_keywords):
     ]
 
     tier3_statutory = [
-        {"type": "Project", "query": f'({industry_keywords}) ("Environmental Clearance" OR "EC") (site:parivesh.nic.in OR site:environmentclearance.nic.in){exclusions}'},
-        {"type": "Project", "query": f'({industry_keywords}) "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
-        {"type": "Project", "query": f'({industry_keywords}) "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
-        {"type": "Project", "query": f'({industry_keywords}) "IEM acknowledged" site:dpiit.gov.in'},
-        {"type": "Project", "query": f'({industry_keywords}) "project cost" site:indiainvestmentgrid.gov.in'}
+        {"type": "Project", "query": f'{industry_keywords} ("Environmental Clearance" OR "EC") (site:parivesh.nic.in OR site:environmentclearance.nic.in){exclusions}'},
+        {"type": "Project", "query": f'{industry_keywords} "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
+        {"type": "Project", "query": f'{industry_keywords} "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
+        {"type": "Project", "query": f'{industry_keywords} "IEM acknowledged" site:dpiit.gov.in'},
+        {"type": "Project", "query": f'{industry_keywords} "project cost" site:indiainvestmentgrid.gov.in'}
     ]
 
     tier4_corridors = [
-        {"type": "Project", "query": f'({industry_keywords}) ("allotment" OR "plot allotment") (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
-        {"type": "Project", "query": f'({industry_keywords}) ("plot allotment" OR "possession letter" OR "building plan approved") (site:yamunaexpresswayauthority.com OR site:dholera.go.gov.in OR site:kiadb.in OR site:sipcot.tn.gov.in)'},
-        {"type": "Project", "query": f'({industry_keywords}) ("allotment of industrial land" OR "ground breaking") (Tamil Nadu OR Karnataka OR Uttar Pradesh) {current_year}'}
+        {"type": "Project", "query": f'{industry_keywords} ("allotment" OR "plot allotment") (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
+        {"type": "Project", "query": f'{industry_keywords} ("plot allotment" OR "possession letter" OR "building plan approved") (site:yamunaexpresswayauthority.com OR site:dholera.go.gov.in OR site:kiadb.in OR site:sipcot.tn.gov.in)'},
+        {"type": "Project", "query": f'{industry_keywords} ("allotment of industrial land" OR "ground breaking") (Tamil Nadu OR Karnataka OR Uttar Pradesh) {current_year}'}
     ]
 
     tier5_epc = [
-        {"type": "Project", "query": f'({industry_keywords}) ("Vendor Empanelment" OR "Expression of Interest" OR "Notice Inviting EOI") (site:larsentoubro.com OR site:tataprojects.com OR site:afcons.com OR site:ncc.co.in)'},
-        {"type": "Project", "query": f'({industry_keywords}) ("sub-contractor required" OR "sub-package" OR "invited for empanelment") India {current_year}'}
+        {"type": "Project", "query": f'{industry_keywords} ("Vendor Empanelment" OR "Expression of Interest" OR "Notice Inviting EOI") (site:larsentoubro.com OR site:tataprojects.com OR site:afcons.com OR site:ncc.co.in)'},
+        {"type": "Project", "query": f'{industry_keywords} ("sub-contractor required" OR "sub-package" OR "invited for empanelment") India {current_year}'}
     ]
 
     tier6_mdbs = [
@@ -551,33 +555,33 @@ def build_vector_matrix(target, industry_keywords):
     ]
 
     tier7_capex = [
-        {"type": "Project", "query": f'({industry_keywords}) ("concall transcript" OR "earnings conference call") "capex" (site:trendlyne.com OR site:researchbytes.com OR site:screener.in) India'},
-        {"type": "Project", "query": f'({industry_keywords}) "investor presentation" ("capacity addition" OR "new facility" OR "capital outlay") India {current_year}'},
-        {"type": "Project", "query": f'({industry_keywords}) ("Regulation 30" OR "outcome of board meeting") "capex" (site:bseindia.com OR site:nseindia.com)'},
-        {"type": "Project", "query": f'({industry_keywords}) "rating rationale" ("enhancement in capacity" OR "capex plan") (site:crisilratings.com OR site:icra.in OR site:careratings.com OR site:infomerics.com)'},
-        {"type": "Project", "query": f'({industry_keywords}) ("capacity expansion" OR "modernization" OR "brownfield") India {current_year}'}
+        {"type": "Project", "query": f'{industry_keywords} ("concall transcript" OR "earnings conference call") "capex" (site:trendlyne.com OR site:researchbytes.com OR site:screener.in) India'},
+        {"type": "Project", "query": f'{industry_keywords} "investor presentation" ("capacity addition" OR "new facility" OR "capital outlay") India {current_year}'},
+        {"type": "Project", "query": f'{industry_keywords} ("Regulation 30" OR "outcome of board meeting") "capex" (site:bseindia.com OR site:nseindia.com)'},
+        {"type": "Project", "query": f'{industry_keywords} "rating rationale" ("enhancement in capacity" OR "capex plan") (site:crisilratings.com OR site:icra.in OR site:careratings.com OR site:infomerics.com)'},
+        {"type": "Project", "query": f'{industry_keywords} ("capacity expansion" OR "modernization" OR "brownfield") India {current_year}'}
     ]
 
     tier8_growth_private = [
         {"type": "Project", "query": f'site:naukri.com/job-listings "{target}" ("urgent opening" OR "walk-in") India'},
-        {"type": "Project", "query": f'({industry_keywords}) ("raised" OR "funding" OR "seed" OR "series") (site:yourstory.com OR site:entrackr.com)'},
+        {"type": "Project", "query": f'{industry_keywords} ("raised" OR "funding" OR "seed" OR "series") (site:yourstory.com OR site:entrackr.com)'},
         {"type": "Direct", "query": f'"{target}" ("buying requirement" OR "urgent order") (site:connect2india.com OR site:exportersindia.com)'},
         {"type": "Direct", "query": f'"{target}" ("need agency" OR "looking for agency" OR "hiring") India (site:upwork.com OR site:freelancer.in)'},
-        {"type": "Project", "query": f'({industry_keywords}) ("exhibitor list" OR "participating in" OR "stall booked") India {current_year}'},
+        {"type": "Project", "query": f'{industry_keywords} ("exhibitor list" OR "participating in" OR "stall booked") India {current_year}'},
         {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
         {"type": "Direct", "query": f'"{target}" ("authorized dealer" OR "stockist") "contact number" site:justdial.com'},
         {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'},
         {"type": "Direct", "query": f'site:facebook.com/groups "{target}" ("urgent requirement" OR "need supplier" OR "vendor needed") India'},
-        {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" ({industry_keywords})'},
-        {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" ({industry_keywords})'},
-        {"type": "Project", "query": f'({industry_keywords}) ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
-        {"type": "Project", "query": f'({industry_keywords}) ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'}
+        {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" {industry_keywords}'},
+        {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" {industry_keywords}'},
+        {"type": "Project", "query": f'{industry_keywords} ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
+        {"type": "Project", "query": f'{industry_keywords} ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'}
     ]
 
     return tier1_direct_tenders + tier2_gem_defense + tier3_statutory + tier4_corridors + tier5_epc + tier6_mdbs + tier7_capex + tier8_growth_private
 
 def run():
-    print(">>> 📡 RADAR SCOUT ACTIVE (V15 Master Engine with Smart Deduplication)", flush=True)
+    print(">>> 📡 RADAR SCOUT ACTIVE (V16 Master Enterprise Engine)", flush=True)
     load_existing_urls_cache()
 
     cloud_targets, cloud_exclusions, cloud_domains = [], [], []
@@ -598,9 +602,22 @@ def run():
     search_matrix = []
     client = get_next_gemini_client()
     
-    for t in cloud_targets:
-        industry_keywords = get_buyer_industries(t, client) if client else f'"{t}"'
-        print(f"[*] Target: '{t}' mapped to macro industries: [{industry_keywords}]", flush=True)
+    for t_obj in cloud_targets:
+        if isinstance(t_obj, dict):
+            t = t_obj.get("target")
+            sheet_keywords = t_obj.get("keywords", "")
+        else:
+            t = t_obj
+            sheet_keywords = ""
+
+        if sheet_keywords:
+            industry_keywords = f"({sheet_keywords})"
+            print(f"[*] Target: '{t}' using Sheet overrides: [{industry_keywords}]", flush=True)
+        else:
+            ai_keywords = get_buyer_industries(t, client)
+            industry_keywords = f"({ai_keywords})"
+            print(f"[*] Target: '{t}' mapped dynamically by AI to: [{industry_keywords}]", flush=True)
+            
         for v in build_vector_matrix(t, industry_keywords):
             search_matrix.append({"target": t, "query": v["query"], "query_type": v["type"]})
 
@@ -647,16 +664,14 @@ def run():
             idx = entity.get("item_index")
             if idx is None or idx >= len(fresh_leads) or idx < 0: continue
             
-            # Generate the unique composite fingerprint
             lead_fp = make_lead_fingerprint(entity, target_product)
             now = time.time()
             
-            # Check for existing fingerprint within 30-day window
             if lead_fp in EXISTING_FINGERPRINTS_CACHE:
                 last_seen = EXISTING_FINGERPRINTS_CACHE[lead_fp]
                 if now - last_seen < FINGERPRINT_TTL_SECONDS:
                     print(f"    🔁 Duplicate Lead Detected ({lead_fp}). Skipping.", flush=True)
-                    add_to_cache(fresh_leads[idx]['link'])  # Don't inspect this URL again
+                    add_to_cache(fresh_leads[idx]['link'])  
                     continue
             
             is_valid = entity.get("is_valid")
@@ -665,10 +680,21 @@ def run():
             confidence = entity.get('confidence_score', 'HIGH')
             reason = entity.get("product_match_reasoning", "No reasoning provided")
             link_url = fresh_leads[idx]['link'].lower()
+            raw_deep_text = fresh_leads[idx].get('deep_text', '')
             
             is_supplier = (role == "SELLER")
             is_mca_registry = "zaubacorp.com" in link_url or "thecompanycheck.com" in link_url or query_type == "MCA"
-            is_fresh_incorporation = is_mca_registry and str(TODAY.year) in str(entity.get("posted_date", ""))
+
+            # Smart CIN Date Override
+            cin_year = extract_cin_incorporation_year(entity.get("ref_id")) or extract_cin_incorporation_year(raw_deep_text)
+            
+            if cin_year:
+                is_fresh_incorporation = (cin_year == TODAY.year)
+                # Force old companies (e.g. 1971) into Projects instead of MCA if deemed valid by AI
+                if cin_year < TODAY.year and is_valid:
+                    role = "PROJECT_BUYER"
+            else:
+                is_fresh_incorporation = is_mca_registry and str(TODAY.year) in str(entity.get("posted_date", ""))
 
             print(f"       [Vote] Valid: {is_valid} | Role: {role} | Conf: {confidence} | Org: {entity.get('org')}", flush=True)
             
@@ -702,7 +728,7 @@ def run():
                     "target_sheet": target_sheet,
                     "is_supplier": is_supplier,
                     "lead_id": str(uuid.uuid4())[:8],
-                    "fingerprint": lead_fp,  # Sending the fingerprint to Apps Script
+                    "fingerprint": lead_fp, 
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "posted_date": entity.get("posted_date", "N/A"), 
                     "source": source_tag,
@@ -761,7 +787,20 @@ def run():
                         break
                     except Exception: time.sleep(2)
             else:
-                ai_trash_log.append({"url": fresh_leads[idx]['link'], "reason": f"[{role}] {reason}"})
+                ai_trash_log.append({
+                    "url": fresh_leads[idx]['link'],
+                    "org": entity.get("org", "Unknown"),
+                    "reason": f"[{role}] {reason}",
+                    "city": entity.get("city", "Unknown"),
+                    "state": entity.get("state", "Pan-India"),
+                    "industry": target_product,
+                    "intent": entity.get("intent_summary") or "Identified Requirement",
+                    "posted_date": entity.get("posted_date", "N/A"),
+                    "ref_id": entity.get("ref_id", "N/A"),
+                    "fingerprint": lead_fp,
+                    "dm_name": entity.get("dm_name") or "N/A",
+                    "dm_title": entity.get("dm_title") or "N/A"
+                })
                 add_to_cache(fresh_leads[idx]['link'])
         
         if ai_trash_log:
