@@ -12,7 +12,10 @@ import concurrent.futures
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from datetime import datetime
-from pypdf import PdfReader
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
