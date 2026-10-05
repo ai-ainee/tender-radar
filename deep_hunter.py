@@ -50,15 +50,16 @@ def get_flash_model_stack(client):
                 valid_models.append(name)
         if valid_models:
             valid_models.sort(reverse=True)
-            for preferred in ["models/gemini-3.8-flash", "models/gemini-3.5-flash", "models/gemini-1.5-flash"]:
+            for preferred in ["models/gemini-3.5-flash-lite", "models/gemini-1.5-flash"]:
                 if preferred in valid_models:
                     valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
             BEST_MODEL_STACK = valid_models
             return BEST_MODEL_STACK
     except Exception: pass
-    BEST_MODEL_STACK = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+    BEST_MODEL_STACK = ["gemini-3.5-flash-lite", "gemini-1.5-flash"]
     return BEST_MODEL_STACK
 
+# --- UPGRADED: EMAIL PERMUTATION ENGINE ---
 def generate_email_permutations(name, domain):
     if not name or name == "N/A" or not domain or domain == "N/A": return []
     parts = name.lower().replace(".", "").split()
@@ -75,14 +76,12 @@ async def verify_domain_mx(domain):
         return True
     except Exception: return False
 
-async def is_valid_contact_email(email, allow_freemail=False):
+async def is_b2b_email(email):
     if not email: return False
     try:
         domain = email.split('@')[-1].lower()
-        freemails = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "rediffmail.com"}
-        if domain not in freemails:
-            return await verify_domain_mx(domain)
-        return allow_freemail
+        if domain in {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com"}: return False
+        return await verify_domain_mx(domain)
     except Exception: return False
 
 async def async_get_search_results(session, query, num=5):
@@ -110,14 +109,15 @@ def ai_verify_entity_sync(org_name, web_results, li_results, legal_results, b2b_
     if not client: return None
     model_stack = get_flash_model_stack(client)
     
+    # --- UPGRADED PROMPT: 4-COLUMN MULTI-DIRECTOR EXTRACTION ---
     prompt = f"""
 You are an expert OSINT Triangulation Analyst investigating: "{org_name}"
 Extract the OFFICIAL corporate domain, primary Decision Maker, and official phone/email.
-CRITICAL: From Corporate Registries (ZaubaCorp/TheCompanyCheck), LinkedIn, or Directories (IndiaMART/JustDial), extract ALL listed Directors/Founders.
+CRITICAL: From the Corporate Registries (ZaubaCorp/TheCompanyCheck) or LinkedIn, extract an array of ALL listed Directors, Founders, or C-Level Executives.
 
 Web: {json.dumps(web_results)}
 LinkedIn: {json.dumps(li_results)}
-Registries: {json.dumps(legal_results)}
+Corporate Registries: {json.dumps(legal_results)}
 Directories: {json.dumps(b2b_results)}
 """
     schema = {
@@ -130,6 +130,7 @@ Directories: {json.dumps(b2b_results)}
             "directory_email": {"type": "STRING", "nullable": True},
             "all_contacts": {
                 "type": "ARRAY",
+                "description": "List of all founders/directors found across data sources.",
                 "items": {
                     "type": "OBJECT",
                     "properties": {
@@ -137,7 +138,7 @@ Directories: {json.dumps(b2b_results)}
                         "designation": {"type": "STRING"},
                         "phone": {"type": "STRING", "nullable": True},
                         "email": {"type": "STRING", "nullable": True},
-                        "source": {"type": "STRING"}
+                        "source": {"type": "STRING", "description": "Where was this person found (e.g., ZaubaCorp, LinkedIn)"}
                     }
                 }
             }
@@ -168,40 +169,45 @@ async def async_crawl_contacts(session, url):
 async def process_lead(session, lead, sem):
     async with sem:
         print(f"[*] Triangulating: {lead['org']}", flush=True)
+        
         web_res, li_res, legal_res, b2b_res = await asyncio.gather(
             async_get_search_results(session, f'"{lead["org"]}" official website india'),
-            async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Director" OR "CEO" OR "Proprietor") "{lead["org"]}"'),
+            async_get_search_results(session, f'site:linkedin.com/in/ ("Procurement" OR "Director" OR "CEO") "{lead["org"]}"'),
             async_get_search_results(session, f'(site:zaubacorp.com OR site:thecompanycheck.com) "{lead["org"]}" directors'),
-            async_get_search_results(session, f'(site:indiamart.com OR site:justdial.com OR site:tradeindia.com) "{lead["org"]}" contact')
+            async_get_search_results(session, f'(site:indiamart.com OR site:justdial.com) "{lead["org"]}" contact')
         )
         
         ai_data = await asyncio.to_thread(ai_verify_entity_sync, lead['org'], web_res, li_res, legal_res, b2b_res)
-        is_local_msme = (lead.get("website") in ["N/A", "", None]) or any(m in str(lead.get("source", "")).lower() for m in ["indiamart", "tradeindia", "justdial", "msme"])
         
+        # --- IDENTITY RESOLUTION: Process Directors Roster ---
         roster_to_send = []
         if ai_data:
             if ai_data.get("verified_website"): lead["website"] = ai_data["verified_website"]
             if ai_data.get("dm_name"): lead["dm_name"], lead["dm_title"] = ai_data["dm_name"], ai_data.get("dm_title", "Decision Maker")
-            if ai_data.get("directory_email") and not await is_valid_contact_email(lead.get("email", ""), allow_freemail=is_local_msme): 
-                lead["email"] = ai_data["directory_email"]
-            if ai_data.get("directory_phone") and lead.get("phone", "N/A") == "N/A": 
-                lead["phone"] = ai_data["directory_phone"]
+            if ai_data.get("directory_email") and not await is_b2b_email(lead.get("email", "")): lead["email"] = ai_data["directory_email"]
+            if ai_data.get("directory_phone") and lead.get("phone", "N/A") == "N/A": lead["phone"] = ai_data["directory_phone"]
             
-            for contact in ai_data.get("all_contacts", []):
+            contacts_list = ai_data.get("all_contacts", [])
+            for contact in contacts_list:
                 c_name = contact.get("name")
                 if not c_name: continue
                 c_email = contact.get("email") or "N/A"
                 c_phone = contact.get("phone") or "N/A"
                 
+                # Apply Email Permutations for Directors if missing
                 if c_email == "N/A" and lead.get("website") and lead.get("website") != "N/A":
                     perms = generate_email_permutations(c_name, lead["website"])
                     for e in perms:
-                        if await is_valid_contact_email(e, allow_freemail=False): 
-                            c_email = e; break
+                        if await is_b2b_email(e): 
+                            c_email = e
+                            break
                             
                 roster_to_send.append({
-                    "name": c_name, "designation": contact.get("designation") or "Director / Owner",
-                    "phone": c_phone, "email": c_email, "source": contact.get("source") or "Registry"
+                    "name": c_name,
+                    "designation": contact.get("designation") or "Director",
+                    "phone": c_phone,
+                    "email": c_email,
+                    "source": contact.get("source") or "Registry"
                 })
 
         if lead.get("website") and lead["website"] != "N/A":
@@ -210,23 +216,32 @@ async def process_lead(session, lead, sem):
                 perms = generate_email_permutations(lead["dm_name"], lead["website"])
                 if perms: emails = perms
             for e in emails:
-                if await is_valid_contact_email(e, allow_freemail=is_local_msme): 
-                    lead["email"] = e; break
+                if await is_b2b_email(e): lead["email"] = e; break
             if phones and lead.get("phone", "N/A") == "N/A": lead["phone"] = phones[0]
 
+        # 1. Send the Main Lead Data to Qualified Sheet
         for attempt in range(3):
             try:
                 async with session.post(WEBHOOK, json={"secret": SECRET, "action": "update_lead", **lead}, timeout=30) as response: 
                     await response.read()
+                    print(f"    ✅ Enriched Target: {lead['org']}", flush=True)
                     break
             except Exception: await asyncio.sleep(2)
             
+        # 2. Send the Multi-Director Roster to Account Contacts Sheet
         if roster_to_send:
             for attempt in range(3):
                 try:
-                    payload = {"secret": SECRET, "action": "add_contacts", "lead_id": lead.get("lead_id"), "org": lead.get("org"), "contacts": roster_to_send}
+                    payload = {
+                        "secret": SECRET,
+                        "action": "add_contacts",
+                        "lead_id": lead.get("lead_id"),
+                        "org": lead.get("org"),
+                        "contacts": roster_to_send
+                    }
                     async with session.post(WEBHOOK, json=payload, timeout=30) as response:
                         await response.read()
+                        print(f"    👥 Synced {len(roster_to_send)} contacts for {lead['org']} to CRM.", flush=True)
                         break
                 except Exception: await asyncio.sleep(2)
 
@@ -249,7 +264,7 @@ async def process_lead(session, lead, sem):
             except Exception: pass
 
 async def hunt_async():
-    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (Tri-Buyer Multi-Contact Engine)", flush=True)
+    print(">>> 🕵️‍♂️ DEEP HUNTER ACTIVE (4-Column Multi-Director Engine)", flush=True)
     if not WEBHOOK or not SECRET: return
     try:
         pending = requests.post(WEBHOOK, json={"secret": SECRET, "action": "get_pending"}, timeout=30).json().get("pending_leads", [])
