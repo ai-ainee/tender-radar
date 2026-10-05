@@ -160,7 +160,6 @@ def add_to_cache(link, fingerprint=None):
 def load_existing_urls_cache():
     global EXISTING_URLS_CACHE, EXISTING_FINGERPRINTS_CACHE
     
-    # 1. Load URLs
     if os.path.exists("seen_links.txt"):
         try:
             with open("seen_links.txt", "r", encoding="utf-8") as f:
@@ -170,7 +169,6 @@ def load_existing_urls_cache():
             print(f"[*] Loaded {len(EXISTING_URLS_CACHE)} URLs from seen_links.txt", flush=True)
         except Exception as e: print(f"⚠️ Error reading seen_links.txt: {e}")
 
-    # 2. Load Fingerprints
     now = time.time()
     if os.path.exists("seen_fingerprints.txt"):
         try:
@@ -184,7 +182,6 @@ def load_existing_urls_cache():
             print(f"[*] Loaded {len(EXISTING_FINGERPRINTS_CACHE)} active fingerprints.", flush=True)
         except Exception as e: print(f"⚠️ Error reading seen_fingerprints.txt: {e}")
 
-    # 3. Load from Webhook with 60-Second Timeout Fix
     if not WEBHOOK or not SECRET: 
         print("⚠️ Webhook credentials missing. Relying ONLY on text backups.", flush=True)
         return
@@ -219,13 +216,13 @@ def get_search_results(query):
     while current_serper_index < len(SERPER_KEYS):
         api_key = SERPER_KEYS[current_serper_index]
         try:
-            # Only enforce past 30 days on active tender portals; give registries & capex broader reach
-        is_live_tender_search = any(k in query for k in ["gem.gov.in", "eprocure", "tender", "bidplus"])
-        payload_dict = {"q": query, "gl": "in", "num": 10}
-        if is_live_tender_search:
-            payload_dict["tbs"] = "qdr:m"
-            
-        payload = json.dumps(payload_dict)
+            # FIX: Correct indentation and dynamic 30-day filter
+            is_live_tender_search = any(k in query for k in ["gem.gov.in", "eprocure", "tender", "bidplus"])
+            payload_dict = {"q": query, "gl": "in", "num": 10}
+            if is_live_tender_search:
+                payload_dict["tbs"] = "qdr:m"
+                
+            payload = json.dumps(payload_dict)
             headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
             response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=25)
             
@@ -267,7 +264,6 @@ def fetch_deep_text(url):
         session = requests.Session()
         session.headers.update(headers)
         
-        # Disable SSL verification for Indian govt certificates that lack CA chains
         r = session.get(url, timeout=(6, 14), verify=False)
         if r.status_code != 200:
             return ""
@@ -298,11 +294,10 @@ def fetch_deep_text(url):
 
 def is_tender_active(raw_text):
     if not raw_text:
-        return False  # If no content could be read from a tender portal, do not risk an expired bid
+        return False  # Do not risk an expired bid if empty
 
     text = raw_text.replace("\n", " ")
     
-    # 1. Look for explicit End/Closing/Submission Deadlines
     pattern = (
         r"(?:Bid\s+End(?:\s+Date)?(?:/\s*Time)?|"
         r"Submission\s+(?:End\s+Date|Deadline|Closing\s+Date)|"
@@ -322,7 +317,6 @@ def is_tender_active(raw_text):
             except ValueError:
                 continue
 
-    # If an end date exists, check it directly against today
     if found_end_dates:
         for tender_date in found_end_dates:
             if tender_date.date() >= TODAY.date():
@@ -330,8 +324,6 @@ def is_tender_active(raw_text):
         print("    🚫 Regex Bouncer: Bid end date has passed. Dropping.", flush=True)
         return False
 
-    # 2. Heuristic for GeM snippets missing end dates:
-    # Check "Dated: DD-MM-YYYY" or "Bid Start Date". GeM bids rarely stay active longer than 21 days.
     start_pattern = r"(?:Dated|Bid\s+Start\s+Date)\s*[:\-]?\s*(\d{1,2}[-/\.\s](?:[A-Za-z]{3,9}|\d{1,2})[-/\.\s]\d{4})"
     start_matches = re.findall(start_pattern, text, re.IGNORECASE)
     for s_date_str in start_matches:
@@ -366,7 +358,7 @@ Banned Intents/Keywords: {json.dumps(exclusions)}
 - If the primary intent of the organization/lead is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False).
 """
 
-prompt = f"""
+    prompt = f"""
 You are an expert B2B Procurement and Lead Qualification Analyst.
 CRITICAL TEMPORAL CONTEXT: Today's date is {CURRENT_DATE_STR}.
 
@@ -449,6 +441,7 @@ def build_vector_matrix(target, industry_keywords):
     current_year = datetime.now().year
     exclusions = ' -"Award of Contract" -"AOC" -"Status: Closed" -"Cancelled" -"Corrigendum"'
 
+    # FIX: Tiers 3, 4, 5, and 7 now use industry_keywords instead of target!
     tier1_direct_tenders = [
         {"type": "Direct", "query": f'"{target}" site:bidplus.gem.gov.in{exclusions}'},
         {"type": "Direct", "query": f'"{target}" "Tender Documents" (site:eprocure.gov.in OR site:etenders.gov.in){exclusions}'},
@@ -466,22 +459,22 @@ def build_vector_matrix(target, industry_keywords):
     ]
 
     tier3_statutory = [
-        {"type": "Project", "query": f'"{target}" (site:parivesh.nic.in OR site:environmentclearance.nic.in){exclusions}'},
-        {"type": "Project", "query": f'"{target}" "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
-        {"type": "Project", "query": f'"{target}" "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
-        {"type": "Project", "query": f'"{target}" "IEM acknowledged" site:dpiit.gov.in'},
-        {"type": "Project", "query": f'"{target}" "project cost" site:indiainvestmentgrid.gov.in'}
+        {"type": "Project", "query": f'({industry_keywords}) ("Environmental Clearance" OR "EC") (site:parivesh.nic.in OR site:environmentclearance.nic.in){exclusions}'},
+        {"type": "Project", "query": f'({industry_keywords}) "Consent to Establish" (site:mpcb.gov.in OR site:gpcb.gujarat.gov.in OR site:uppcb.com)'},
+        {"type": "Project", "query": f'({industry_keywords}) "project cost" (site:maharera.mahaonline.gov.in OR site:up-rera.in OR site:rera.karnataka.gov.in)'},
+        {"type": "Project", "query": f'({industry_keywords}) "IEM acknowledged" site:dpiit.gov.in'},
+        {"type": "Project", "query": f'({industry_keywords}) "project cost" site:indiainvestmentgrid.gov.in'}
     ]
 
     tier4_corridors = [
-        {"type": "Project", "query": f'"{target}" "allotment" (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
-        {"type": "Project", "query": f'"{target}" ("plot allotment" OR "possession letter" OR "building plan approved") (site:yamunaexpresswayauthority.com OR site:dholera.go.gov.in OR site:kiadb.in OR site:sipcot.tn.gov.in)'},
-        {"type": "Project", "query": f'"{target}" ("allotment of industrial land" OR "ground breaking") (Tamil Nadu OR Karnataka OR Uttar Pradesh) {current_year}'}
+        {"type": "Project", "query": f'({industry_keywords}) ("allotment" OR "plot allotment") (site:midcindia.org OR site:gidc.gujarat.gov.in OR site:onlineupsida.com)'},
+        {"type": "Project", "query": f'({industry_keywords}) ("plot allotment" OR "possession letter" OR "building plan approved") (site:yamunaexpresswayauthority.com OR site:dholera.go.gov.in OR site:kiadb.in OR site:sipcot.tn.gov.in)'},
+        {"type": "Project", "query": f'({industry_keywords}) ("allotment of industrial land" OR "ground breaking") (Tamil Nadu OR Karnataka OR Uttar Pradesh) {current_year}'}
     ]
 
     tier5_epc = [
-        {"type": "Project", "query": f'"{target}" ("Vendor Empanelment" OR "Expression of Interest" OR "Notice Inviting EOI") (site:larsentoubro.com OR site:tataprojects.com OR site:afcons.com OR site:ncc.co.in)'},
-        {"type": "Project", "query": f'"{target}" ("sub-contractor required" OR "sub-package" OR "invited for empanelment") India {current_year}'}
+        {"type": "Project", "query": f'({industry_keywords}) ("Vendor Empanelment" OR "Expression of Interest" OR "Notice Inviting EOI") (site:larsentoubro.com OR site:tataprojects.com OR site:afcons.com OR site:ncc.co.in)'},
+        {"type": "Project", "query": f'({industry_keywords}) ("sub-contractor required" OR "sub-package" OR "invited for empanelment") India {current_year}'}
     ]
 
     tier6_mdbs = [
@@ -490,27 +483,27 @@ def build_vector_matrix(target, industry_keywords):
     ]
 
     tier7_capex = [
-        {"type": "Project", "query": f'"{target}" ("concall transcript" OR "earnings conference call") "capex" (site:trendlyne.com OR site:researchbytes.com OR site:screener.in) India'},
-        {"type": "Project", "query": f'"{target}" "investor presentation" ("capacity addition" OR "new facility" OR "capital outlay") India {current_year}'},
-        {"type": "Project", "query": f'"{target}" ("Regulation 30" OR "outcome of board meeting") "capex" (site:bseindia.com OR site:nseindia.com)'},
-        {"type": "Project", "query": f'"{target}" "rating rationale" ("enhancement in capacity" OR "capex plan") (site:crisilratings.com OR site:icra.in OR site:careratings.com OR site:infomerics.com)'},
-        {"type": "Project", "query": f'"{target}" ("capacity expansion" OR "modernization" OR "brownfield") India {current_year}'}
+        {"type": "Project", "query": f'({industry_keywords}) ("concall transcript" OR "earnings conference call") "capex" (site:trendlyne.com OR site:researchbytes.com OR site:screener.in) India'},
+        {"type": "Project", "query": f'({industry_keywords}) "investor presentation" ("capacity addition" OR "new facility" OR "capital outlay") India {current_year}'},
+        {"type": "Project", "query": f'({industry_keywords}) ("Regulation 30" OR "outcome of board meeting") "capex" (site:bseindia.com OR site:nseindia.com)'},
+        {"type": "Project", "query": f'({industry_keywords}) "rating rationale" ("enhancement in capacity" OR "capex plan") (site:crisilratings.com OR site:icra.in OR site:careratings.com OR site:infomerics.com)'},
+        {"type": "Project", "query": f'({industry_keywords}) ("capacity expansion" OR "modernization" OR "brownfield") India {current_year}'}
     ]
 
     tier8_growth_private = [
         {"type": "Project", "query": f'site:naukri.com/job-listings "{target}" ("urgent opening" OR "walk-in") India'},
-        {"type": "Direct", "query": f'"{target}" ("raised" OR "funding" OR "seed" OR "series") (site:yourstory.com OR site:entrackr.com)'},
+        {"type": "Project", "query": f'({industry_keywords}) ("raised" OR "funding" OR "seed" OR "series") (site:yourstory.com OR site:entrackr.com)'},
         {"type": "Direct", "query": f'"{target}" ("buying requirement" OR "urgent order") (site:connect2india.com OR site:exportersindia.com)'},
         {"type": "Direct", "query": f'"{target}" ("need agency" OR "looking for agency" OR "hiring") India (site:upwork.com OR site:freelancer.in)'},
-        {"type": "Project", "query": f'"{target}" ("exhibitor list" OR "participating in" OR "stall booked") India {current_year}'},
+        {"type": "Project", "query": f'({industry_keywords}) ("exhibitor list" OR "participating in" OR "stall booked") India {current_year}'},
         {"type": "Direct", "query": f'"{target}" buyer requirement site:indiamart.com OR site:tradeindia.com'},
         {"type": "Direct", "query": f'"{target}" ("authorized dealer" OR "stockist") "contact number" site:justdial.com'},
         {"type": "Direct", "query": f'"{target}" "looking for vendors" site:linkedin.com/posts'},
         {"type": "Direct", "query": f'site:facebook.com/groups "{target}" ("urgent requirement" OR "need supplier" OR "vendor needed") India'},
         {"type": "MCA", "query": f'site:zaubacorp.com "Date of Incorporation" "{current_year}" ({industry_keywords})'},
         {"type": "MCA", "query": f'site:thecompanycheck.com "Incorporation Date" "{current_year}" ({industry_keywords})'},
-        {"type": "Project", "query": f'"{target}" ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
-        {"type": "Project", "query": f'"{target}" ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'}
+        {"type": "Project", "query": f'({industry_keywords}) ("Letter of Award" OR "awarded contract" OR "lowest bidder") India {current_year}'},
+        {"type": "Project", "query": f'({industry_keywords}) ("MoU signed" OR "groundbreaking ceremony" OR "new plant") India'}
     ]
 
     return tier1_direct_tenders + tier2_gem_defense + tier3_statutory + tier4_corridors + tier5_epc + tier6_mdbs + tier7_capex + tier8_growth_private
@@ -696,7 +689,7 @@ def run():
                     try:
                         requests.post(WEBHOOK, json=payload, timeout=30)
                         add_to_cache(fresh_leads[idx]['link'], lead_fp)
-                        print(f"    ⚠️️ [SAVED FROM TRASH] -> {target_sheet}: {entity['org']}", flush=True)
+                        print(f"    ⚠ [SAVED FROM TRASH] -> {target_sheet}: {entity['org']}", flush=True)
                         break
                     except Exception: time.sleep(2)
             else:
