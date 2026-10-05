@@ -342,14 +342,15 @@ def is_tender_active(raw_text):
 @retry(wait=wait_exponential(multiplier=2, min=4, max=30), stop=stop_after_attempt(5))
 def ai_analyze_batch(batch, exclusions):
     client = get_next_gemini_client()
-    if not client: return []
+    if not client:
+        return []
     model_stack = get_flash_model_stack(client)
-    
+
     items_block = ""
     for i, x in enumerate(batch):
         date_str = f"Date Posted: {x['date']}\n" if x.get("date") else ""
         items_block += f"\n--- ITEM {i} ---\nTarget Product: {x.get('target', 'Unknown')}\nQuery Type: {x.get('query_type', 'Direct')}\n{date_str}Title: {x['title']}\nLink: {x['link']}\nData: {(x.get('deep_text') or x.get('summary') or '')[:2000]}\n"
-        
+
     exclusion_rule = ""
     if exclusions:
         exclusion_rule = f"""
@@ -358,7 +359,7 @@ Banned Intents/Keywords: {json.dumps(exclusions)}
 - If the primary intent of the organization/lead is to procure or offer these EXACT [Banned Keywords], REJECT THEM (is_valid=False).
 """
 
-prompt = f"""
+    prompt = f"""
 You are the Chief Intelligence Analyst for an Enterprise B2B/B2G Market Radar.
 Your mandate: Extract, qualify, and score high-intent commercial procurement signals across India's public and private industrial ecosystems.
 
@@ -463,6 +464,7 @@ SECTION 6: CLASSIFICATION ROLES & SEGMENTS
 DATA BATCH FOR ANALYSIS:
 {items_block}
 """
+
     schema = {
         "type": "ARRAY",
         "items": {
@@ -494,10 +496,12 @@ DATA BATCH FOR ANALYSIS:
             chat = client.chats.create(model=model_name)
             res = chat.send_message(prompt, config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0))
             raw_text = res.text.strip()
-            if raw_text.startswith("```"): raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
+            if raw_text.startswith("```"):
+                raw_text = raw_text.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
             return json.loads(raw_text)
         except Exception as e:
-            if any(err in str(e) for err in ["NOT_FOUND", "404", "503", "500", "limit: 0", "limit: 20"]): continue
+            if any(err in str(e) for err in ["NOT_FOUND", "404", "503", "500", "limit: 0", "limit: 20"]):
+                continue
             raise e
     raise Exception("All Gemini models unavailable.")
 
