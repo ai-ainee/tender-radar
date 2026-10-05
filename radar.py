@@ -219,7 +219,13 @@ def get_search_results(query):
     while current_serper_index < len(SERPER_KEYS):
         api_key = SERPER_KEYS[current_serper_index]
         try:
-            payload = json.dumps({"q": query, "gl": "in", "tbs": "qdr:m", "num": 10})
+            # Only enforce past 30 days on active tender portals; give registries & capex broader reach
+        is_live_tender_search = any(k in query for k in ["gem.gov.in", "eprocure", "tender", "bidplus"])
+        payload_dict = {"q": query, "gl": "in", "num": 10}
+        if is_live_tender_search:
+            payload_dict["tbs"] = "qdr:m"
+            
+        payload = json.dumps(payload_dict)
             headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
             response = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=25)
             
