@@ -2,11 +2,13 @@ name: Radar Scout Automation Engine
 
 on:
   schedule:
-    # Runs radar.py at 2:30 AM UTC (8:00 AM IST) daily
-    - cron: '30 2 * * *'
-    # Runs enrichment_worker.py at 5:30 AM UTC (11:00 AM IST) daily
-    - cron: '30 5 * * *'
-  workflow_dispatch: # Allows you to click a "Run Now" button manually
+    - cron: '30 2 * * *' # 8:00 AM IST
+    - cron: '30 5 * * *' # 11:00 AM IST
+  workflow_dispatch:
+
+# Fixes the timezone globally for the server
+env:
+  TZ: 'Asia/Kolkata'
 
 jobs:
   run-radar-scout:
@@ -15,6 +17,9 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          # Required to allow the bot to commit files back to the repo
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,3 +44,11 @@ jobs:
           SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: python enrichment_worker.py
+
+      # This prevents the "Amnesia Problem" by saving the cache file back to GitHub
+      - name: Save Cache to Repository
+        run: |
+          git config --global user.name "Radar Scout Bot"
+          git config --global user.email "bot@radarscout.local"
+          git add seen_links.txt
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update scraped links cache" && git push)
