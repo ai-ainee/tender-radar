@@ -50,7 +50,7 @@ def cache_link(link):
         f.write(link + '\n')
 
 # ==========================================
-# 1. QUERY GENERATOR (WITH GEO-TARGETING)
+# 1. QUERY GENERATOR
 # ==========================================
 class QueryGenerator:
     def __init__(self, target_product, industry_keywords="", country="India", states=""):
@@ -64,7 +64,6 @@ class QueryGenerator:
         ind = self.industry if self.industry != "Unknown" else ""
         current_year = self.year
         
-        # Inject state or country directly into the commercial searches
         location_kw = self.states if self.states else self.country
         
         return {
@@ -158,20 +157,20 @@ class ContentScraper:
         return " ".join(text.split())[:15000]
 
 # ==========================================
-# 4. SPLIT-BRAIN EVALUATOR (WITH GEO-FENCING)
+# 4. SPLIT-BRAIN EVALUATOR
 # ==========================================
 class SplitBrainEvaluator:
     def __init__(self, key_manager):
         self.keys = key_manager
 
-    def evaluate(self, doc, target_product, country, states):
+    def evaluate(self, doc, target_product, country, states, banned_keywords):
         track = doc['track']
         raw_text = doc['raw_text']
         
         if track == "TRACK_3_MCA":
             return self._evaluate_mca(raw_text)
 
-        prompt = self._get_prompt_for_track(track, target_product, country, states)
+        prompt = self._get_prompt_for_track(track, target_product, country, states, banned_keywords)
         full_prompt = f"{prompt}\n\nDOCUMENT TEXT:\n{raw_text[:15000]}"
         
         for _ in range(len(self.keys.keys)):
@@ -208,11 +207,14 @@ class SplitBrainEvaluator:
             }
         return {"is_valid": False, "confidence": "LOW", "reason": f"NOT_{datetime.now().year}_OR_NO_CIN"}
 
-    def _get_prompt_for_track(self, track, target_product, country, states):
-        # GEO-FENCING RULE FOR GEMINI
+    def _get_prompt_for_track(self, track, target_product, country, states, banned_keywords):
         geo_rule = f"The target must be located in {country}."
         if states:
-            geo_rule = f"STRICT LOCATION RULE: The project or company MUST be located in {country}, specifically within these states: {states}. If the location is outside these areas, you MUST mark is_valid as false and set reason to OUTSIDE_TARGET_LOCATION."
+            geo_rule = f"STRICT LOCATION RULE: The project/company MUST be located in {country}, within these states: {states}. If outside, mark is_valid as false, reason: OUTSIDE_TARGET_LOCATION."
+
+        ban_rule = ""
+        if banned_keywords:
+            ban_rule = f"STRICT EXCLUSION RULE: If the text heavily features any of these banned keywords ({banned_keywords}), you MUST mark is_valid as false and set reason to CONTAINS_BANNED_KEYWORD."
 
         base_schema = f"""
         Respond STRICTLY in this JSON format:
@@ -225,6 +227,7 @@ class SplitBrainEvaluator:
         }}
         
         {geo_rule}
+        {ban_rule}
         """
         
         if track == "TRACK_1_TENDERS":
@@ -305,27 +308,32 @@ def fetch_dynamic_settings():
             return (
                 response.get("target_product"), 
                 response.get("industry_keywords"),
-                response.get("target_country", "India"), # Defaults to India if empty
-                response.get("target_states", "")        # Expecting e.g. "Gujarat, Maharashtra"
+                response.get("target_country", "India"),
+                response.get("target_states", ""),
+                response.get("banned_keywords", ""),
+                response.get("banned_websites", ""),
+                response.get("protected_domains", "")
             )
         else:
             print("[!] Settings tab is empty. Please fill Row 2 in Google Sheets.")
-            return None, None, None, None
+            return None, None, None, None, None, None, None
     except Exception as e:
         print(f"[!] Failed to connect to Google Sheets for settings: {e}")
-        return None, None, None, None
+        return None, None, None, None, None, None, None
 
 if __name__ == "__main__":
     print("=== Waking Up: Radar Scout Harvester ===")
     
-    TARGET_PRODUCT, INDUSTRY, COUNTRY, STATES = fetch_dynamic_settings()
+    TARGET_PRODUCT, INDUSTRY, COUNTRY, STATES, BANNED_KEYWORDS, BANNED_WEBSITES, PROTECTED_DOMAINS = fetch_dynamic_settings()
     
     if not TARGET_PRODUCT or TARGET_PRODUCT == "Unknown":
         print("[!] Halting execution. No Target Product defined in Google Sheets.")
         exit()
 
     print(f"[*] Active Target: {TARGET_PRODUCT}")
-    print(f"[*] Filter: {COUNTRY} | {STATES if STATES else 'All States'}")
+    
+    banned_kw_list = [k.strip().lower() for k in str(BANNED_KEYWORDS).split(',')] if BANNED_KEYWORDS else []
+    banned_site_list = [s.strip().lower() for s in str(BANNED_WEBSITES).split(',')] if BANNED_WEBSITES else []
     
     generator = QueryGenerator(TARGET_PRODUCT, INDUSTRY, COUNTRY, STATES)
     harvester = SerperHarvester(serper_keys)
@@ -347,7 +355,24 @@ if __name__ == "__main__":
                 if not link or link in seen_links: 
                     continue
                 
-                # PRE-SCRAPE DATE GUARD
+                link_lower = link.lower()
+                snippet_lower = snippet.lower()
+
+                # --- PRE-SCRAPE BANNED WEBSITE GUARD ---
+                if any(b_site in link_lower for b_site in banned_site_list if b_site):
+                    print(f"[-] Dropping banned website: {link}")
+                    cache_link(link)
+                    seen_links.add(link)
+                    continue
+                    
+                # --- PRE-SCRAPE BANNED KEYWORD GUARD ---
+                if any(b_kw in link_lower or b_kw in snippet_lower for b_kw in banned_kw_list if b_kw):
+                    print(f"[-] Dropping link due to banned keyword in snippet: {link}")
+                    cache_link(link)
+                    seen_links.add(link)
+                    continue
+
+                # --- PRE-SCRAPE DATE GUARD ---
                 current_yr = datetime.now().year
                 combined_text = f"{link} {snippet}"
                 found_years = [int(y) for y in re.findall(r'\b(?:19|20)\d{2}\b', combined_text)]
@@ -360,7 +385,6 @@ if __name__ == "__main__":
                         seen_links.add(link)
                         continue
 
-                # CACHE IMMEDIATELY TO AVOID REDUNDANT CALLS
                 cache_link(link)
                 seen_links.add(link)
 
@@ -368,8 +392,7 @@ if __name__ == "__main__":
                 content = scraper.fetch_content(link)
                 if content:
                     doc = {"track": track_name, "url": link, "raw_text": content}
-                    # Pass the geo-filters directly to the AI evaluator
-                    ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT, COUNTRY, STATES)
+                    ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT, COUNTRY, STATES, BANNED_KEYWORDS)
                     router.route_and_push(doc, ai_verdict, TARGET_PRODUCT)
 
     print("\n[✓] Radar Scout Cycle Complete.")
