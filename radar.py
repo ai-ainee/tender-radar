@@ -3,14 +3,14 @@ import json
 import hashlib
 import requests
 import urllib3
+import re
+import uuid
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
 from google import genai
 from google.genai import types
-import re
-import uuid
 
 # Suppress SSL warnings for Indian Govt websites
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -50,7 +50,7 @@ def cache_link(link):
         f.write(link + '\n')
 
 # ==========================================
-# 1. QUERY GENERATOR
+# 1. QUERY GENERATOR (DYNAMIC YEARS)
 # ==========================================
 class QueryGenerator:
     def __init__(self, target_product, industry_keywords=""):
@@ -60,23 +60,25 @@ class QueryGenerator:
 
     def build_tracks(self):
         ind = self.industry if self.industry != "Unknown" else ""
+        current_year = self.year
+        
         return {
             "TRACK_1_TENDERS": [
-                f'"{self.target}" tender OR RFP OR "procurement notice" site:eprocure.gov.in',
-                f'"{self.target}" "bid document" site:gem.gov.in',
-                f'"{self.target}" {ind} tender site:mahatenders.gov.in'
+                f'"{self.target}" ("{current_year}" OR "{current_year - 1}") tender OR RFP site:eprocure.gov.in',
+                f'"{self.target}" "bid document" "{current_year}" site:gem.gov.in',
+                f'"{self.target}" {ind} tender "{current_year}" site:mahatenders.gov.in'
             ],
             "TRACK_2_CAPEX": [
-                f'"{self.target}" "environmental clearance" OR "Terms of Reference" site:environmentclearance.nic.in',
-                f'"{self.target}" "land allotment" OR "industrial area" (MIDC OR GIDC OR SIPCOT)',
-                f'"{self.target}" "capacity expansion" OR "greenfield project" filetype:pdf'
+                f'"{self.target}" "environmental clearance" "{current_year}" site:environmentclearance.nic.in',
+                f'"{self.target}" ("land allotment" OR "industrial area") "{current_year}" (MIDC OR GIDC OR SIPCOT)',
+                f'"{self.target}" ("capacity expansion" OR "greenfield project") "{current_year}" filetype:pdf'
             ],
             "TRACK_3_MCA": [
-                f'"{ind}" "Incorporation Date" "{self.year}" site:zaubacorp.com'
+                f'"{ind}" "Incorporation Date" "{current_year}" site:zaubacorp.com'
             ],
             "TRACK_4_COMMERCIAL": [
-                f'hiring "CAD Draftsman" OR "{self.target} engineer" site:naukri.com OR site:linkedin.com',
-                f'"{self.target}" service provider OR consultant "India"'
+                f'hiring "CAD Draftsman" OR "{self.target} engineer" "{current_year}" site:naukri.com OR site:linkedin.com',
+                f'"{self.target}" service provider OR consultant "{current_year}" "India"'
             ]
         }
 
@@ -108,7 +110,12 @@ class SerperHarvester:
 
     def search_web(self, query):
         print(f"[*] Executing Search: {query}")
-        payload = json.dumps({"q": query, "num": 10, "gl": "in"})
+        payload = json.dumps({
+            "q": query, 
+            "num": 10, 
+            "gl": "in",
+            "tbs": "qdr:m"  # Strict 1-month date filter
+        })
         res = self._execute_search("https://google.serper.dev/search", payload)
         return res.get("organic", [])
 
@@ -117,12 +124,10 @@ class SerperHarvester:
 # ==========================================
 class ContentScraper:
     def __init__(self):
-        # Added a robust User-Agent to help bypass blocks like Indeed
         self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
     def fetch_content(self, url):
         try:
-            # verify=False bypasses the Indian Govt SSL errors. timeout=10 stops the script from hanging.
             response = requests.get(url, headers=self.headers, timeout=10, verify=False)
             response.raise_for_status()
 
@@ -167,7 +172,6 @@ class SplitBrainEvaluator:
         
         for _ in range(len(self.keys.keys)):
             try:
-                # Upgraded to the new google-genai syntax
                 client = genai.Client(api_key=self.keys.get_current())
                 print(f"[*] Sending to Gemini ({track})...")
                 
@@ -192,13 +196,13 @@ class SplitBrainEvaluator:
 
     def _evaluate_mca(self, text):
         cin_match = re.search(r'[L|U]\d{5}[A-Z]{2}(\d{4})[A-Z]{3}\d{6}', text)
-        if cin_match and cin_match.group(1) == "2026":
+        if cin_match and cin_match.group(1) == str(datetime.now().year):
             return {
                 "is_valid": True, "confidence": "HIGH", "entity_role": "NEW_INCORPORATION",
                 "organization": "Unknown (Review Link)", "city": "Unknown", "state": "Unknown",
-                "intent_brief": "New Company incorporated in 2026. Verified via CIN.", "deadline": "N/A"
+                "intent_brief": f"New Company incorporated in {datetime.now().year}. Verified via CIN.", "deadline": "N/A"
             }
-        return {"is_valid": False, "confidence": "LOW", "reason": "NOT_2026_OR_NO_CIN"}
+        return {"is_valid": False, "confidence": "LOW", "reason": f"NOT_{datetime.now().year}_OR_NO_CIN"}
 
     def _get_prompt_for_track(self, track, target_product):
         base_schema = """
@@ -236,7 +240,7 @@ class WebhookRouter:
         
         target_sheet = "📥 Inbox"
         if not is_valid: target_sheet = "🗑️ AI_Trash"
-        elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]: target_sheet = "⚠️️ Needs Review"
+        elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]: target_sheet = "⚠️ Needs Review"
         elif role == "SELLER": target_sheet = "🤝 Partners & Suppliers"
             
         if target_sheet == "🗑️ AI_Trash":
@@ -307,8 +311,27 @@ if __name__ == "__main__":
             results = harvester.search_web(query)
             for res in results:
                 link = res.get("link")
-                if not link or link in seen_links: continue
+                snippet = res.get("snippet", "")
                 
+                if not link or link in seen_links: 
+                    continue
+                
+                # --- PRE-SCRAPE DATE GUARD (DYNAMIC REGEX) ---
+                current_yr = datetime.now().year
+                combined_text = f"{link} {snippet}"
+                
+                # Find all 4-digit numbers that start with 19 or 20
+                found_years = [int(y) for y in re.findall(r'\b(?:19|20)\d{2}\b', combined_text)]
+                
+                if found_years:
+                    max_year = max(found_years)
+                    # If the most recent year mentioned is older than last year, it's dead.
+                    if max_year < current_yr - 1:
+                        print(f"[-] Dropping stale link (Most recent year is {max_year}): {link}")
+                        cache_link(link)
+                        seen_links.add(link)
+                        continue
+
                 print(f"[+] Scraping: {link}")
                 content = scraper.fetch_content(link)
                 if content:
