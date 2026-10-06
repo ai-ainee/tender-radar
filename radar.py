@@ -360,32 +360,60 @@ class WebhookRouter:
             print(f"[!] Failed to push to CRM: {e}")
 
 # ==========================================
-# 5. MASTER EXECUTION (PHASE 1 -> 2 -> 3)
+# 6. MASTER EXECUTION
 # ==========================================
+def fetch_dynamic_settings():
+    """Pulls your search targets directly from the Google Sheet Settings tab."""
+    print("[*] Fetching search parameters from Google Sheets...")
+    try:
+        response = requests.get(f"{WEBHOOK_URL}?action=get_settings").json()
+        if response.get("status") == "success":
+            return response.get("target_product"), response.get("industry_keywords")
+        else:
+            print("[!] Settings tab is empty. Please fill Row 2 in Google Sheets.")
+            return None, None
+    except Exception as e:
+        print(f"[!] Failed to connect to Google Sheets for settings: {e}")
+        return None, None
+
 if __name__ == "__main__":
-    TARGET_PRODUCT = "AutoCAD"
-    INDUSTRY = "Architecture OR Fabrication"
+    print("=== Waking Up: Radar Scout Harvester ===")
     
-    # 1. Run Harvester (From Milestone 2)
-    # harvested_docs = run_harvester(TARGET_PRODUCT, INDUSTRY)
+    # Dynamically pull from Google Sheets
+    TARGET_PRODUCT, INDUSTRY = fetch_dynamic_settings()
     
-    # FOR TESTING: Let's mock a harvested document
-    harvested_docs = [{
-        "track": "TRACK_4_COMMERCIAL",
-        "url": "https://www.naukri.com/sample-job",
-        "title": "Hiring AutoCAD Draftsman - Pune",
-        "raw_text": "We are a leading fabrication firm in Pune. We urgently require 2 AutoCAD draftsmen for detailing heavy machinery components. Apply immediately."
-    }]
+    if not TARGET_PRODUCT or TARGET_PRODUCT == "Unknown":
+        print("[!] Halting execution. No Target Product defined in Google Sheets.")
+        exit()
 
-    evaluator = SplitBrainEvaluator()
+    print(f"[*] Active Target: {TARGET_PRODUCT}")
+    print(f"[*] Active Industry: {INDUSTRY}")
+    
+    generator = QueryGenerator(TARGET_PRODUCT, INDUSTRY)
+    harvester = SerperHarvester(serper_keys)
+    scraper = ContentScraper()
+    evaluator = SplitBrainEvaluator(gemini_keys)
     router = WebhookRouter(WEBHOOK_URL)
+    seen_links = get_cached_links()
+    
+    tracks = generator.build_tracks()
 
-    for doc in harvested_docs:
-        # 2. Split-Brain Evaluation
-        ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT)
-        print(f"\n[AI Verdict]: {json.dumps(ai_verdict, indent=2)}")
-        
-        # 3. Safely Route & Push to CRM
-        router.route_and_push(doc, ai_verdict, TARGET_PRODUCT)
-        
-    print("\n[✓] Radar Scout V17 Engine Cycle Complete.")
+    for track_name, queries in tracks.items():
+        print(f"\n=== Initiating {track_name} ===")
+        for query in queries:
+            results = harvester.search_web(query)
+            for res in results:
+                link = res.get("link")
+                if not link or link in seen_links: continue
+                
+                print(f"[+] Scraping: {link}")
+                content = scraper.fetch_content(link)
+                if content:
+                    doc = {"track": track_name, "url": link, "raw_text": content}
+                    ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT)
+                    router.route_and_push(doc, ai_verdict, TARGET_PRODUCT)
+                    
+                    cache_link(link)
+                    seen_links.add(link)
+
+    print("\n[✓] Radar Scout Cycle Complete.")
