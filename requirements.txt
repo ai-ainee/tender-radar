@@ -4,6 +4,6 @@ google-genai
 dnspython
 aiohttp
 tenacity
-ddgs
 python-dotenv
 pypdf
+urllib3
