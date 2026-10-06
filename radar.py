@@ -2,13 +2,18 @@ import os
 import json
 import hashlib
 import requests
+import urllib3
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import re
 import uuid
+
+# Suppress SSL warnings for Indian Govt websites
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
 # MULTI-KEY AUTO-ROTATION MANAGER
@@ -28,10 +33,6 @@ class APIKeyManager:
         print(f"[!] {service_name} limit hit. Rotating to Key #{self.index + 1} of {len(self.keys)}...")
         return self.get_current()
 
-# ==========================================
-# INITIALIZE GLOBALS & KEYS
-# ==========================================
-# These must be at the top level so all functions can see them!
 serper_keys = APIKeyManager(os.getenv("SERPER_API_KEYS", ""))
 gemini_keys = APIKeyManager(os.getenv("GEMINI_API_KEYS", ""))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
@@ -58,7 +59,6 @@ class QueryGenerator:
         self.year = datetime.now().year
 
     def build_tracks(self):
-        # We handle "Unknown" just in case you leave the cell blank in Google Sheets
         ind = self.industry if self.industry != "Unknown" else ""
         return {
             "TRACK_1_TENDERS": [
@@ -93,16 +93,16 @@ class SerperHarvester:
                 'X-API-KEY': self.keys.get_current(),
                 'Content-Type': 'application/json'
             }
-            response = requests.post(endpoint, headers=headers, data=payload)
-            
-            if response.status_code in [403, 429]:
-                self.keys.rotate("Serper")
-                continue
-                
-            if response.status_code == 200:
-                return response.json()
+            try:
+                response = requests.post(endpoint, headers=headers, data=payload, timeout=10)
+                if response.status_code in [403, 429]:
+                    self.keys.rotate("Serper")
+                    continue
+                if response.status_code == 200:
+                    return response.json()
+            except Exception as e:
+                print(f"[!] Serper connection issue: {e}")
             return {}
-            
         print("[!] All Serper keys exhausted.")
         return {}
 
@@ -112,21 +112,18 @@ class SerperHarvester:
         res = self._execute_search("https://google.serper.dev/search", payload)
         return res.get("organic", [])
 
-    def search_places(self, query, location="India"):
-        payload = json.dumps({"q": query, "location": location})
-        res = self._execute_search("https://google.serper.dev/places", payload)
-        return res.get("places", [])
-
 # ==========================================
-# 3. DEEP CONTENT SCRAPER
+# 3. DEEP CONTENT SCRAPER (SSL FIX & TIMEOUT)
 # ==========================================
 class ContentScraper:
     def __init__(self):
-        self.headers = {"User-Agent": "Mozilla/5.0"}
+        # Added a robust User-Agent to help bypass blocks like Indeed
+        self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
     def fetch_content(self, url):
         try:
-            response = requests.get(url, headers=self.headers, timeout=15)
+            # verify=False bypasses the Indian Govt SSL errors. timeout=10 stops the script from hanging.
+            response = requests.get(url, headers=self.headers, timeout=10, verify=False)
             response.raise_for_status()
 
             if 'application/pdf' in response.headers.get('Content-Type', '') or url.lower().endswith('.pdf'):
@@ -152,7 +149,7 @@ class ContentScraper:
         return " ".join(text.split())[:15000]
 
 # ==========================================
-# 4. SPLIT-BRAIN EVALUATOR (MULTI-KEY ENABLED)
+# 4. SPLIT-BRAIN EVALUATOR (NEW GENAI SDK)
 # ==========================================
 class SplitBrainEvaluator:
     def __init__(self, key_manager):
@@ -170,13 +167,17 @@ class SplitBrainEvaluator:
         
         for _ in range(len(self.keys.keys)):
             try:
-                genai.configure(api_key=self.keys.get_current())
-                model = genai.GenerativeModel(
-                    'gemini-1.5-flash',
-                    generation_config={"response_mime_type": "application/json"}
-                )
+                # Upgraded to the new google-genai syntax
+                client = genai.Client(api_key=self.keys.get_current())
                 print(f"[*] Sending to Gemini ({track})...")
-                response = model.generate_content(full_prompt)
+                
+                response = client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=full_prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                    ),
+                )
                 return json.loads(response.text)
                 
             except Exception as e:
@@ -235,7 +236,7 @@ class WebhookRouter:
         
         target_sheet = "📥 Inbox"
         if not is_valid: target_sheet = "🗑️ AI_Trash"
-        elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]: target_sheet = "⚠️ Needs Review"
+        elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]: target_sheet = "⚠️️ Needs Review"
         elif role == "SELLER": target_sheet = "🤝 Partners & Suppliers"
             
         if target_sheet == "🗑️ AI_Trash":
@@ -250,7 +251,7 @@ class WebhookRouter:
             ]
 
         try:
-            check = requests.post(self.webhook_url, json={"action": "pre_flight_check", "company_name": ai_result.get('organization', 'Unknown')}).json()
+            requests.post(self.webhook_url, json={"action": "pre_flight_check", "company_name": ai_result.get('organization', 'Unknown')}, timeout=10)
         except: pass
 
         try:
@@ -259,7 +260,7 @@ class WebhookRouter:
                 "action": "insert_lead", "target_sheet": target_sheet,
                 "company_name": ai_result.get('organization', 'Unknown'),
                 "signal_brief": ai_result.get('intent_brief', ''), "row_data": row_data
-            })
+            }, timeout=10)
         except Exception as e:
             print(f"[!] Failed to push to CRM: {e}")
 
@@ -267,10 +268,9 @@ class WebhookRouter:
 # 6. MASTER EXECUTION
 # ==========================================
 def fetch_dynamic_settings():
-    """Pulls your search targets directly from the Google Sheet Settings tab."""
     print("[*] Fetching search parameters from Google Sheets...")
     try:
-        response = requests.get(f"{WEBHOOK_URL}?action=get_settings").json()
+        response = requests.get(f"{WEBHOOK_URL}?action=get_settings", timeout=10).json()
         if response.get("status") == "success":
             return response.get("target_product"), response.get("industry_keywords")
         else:
