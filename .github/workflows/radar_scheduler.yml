@@ -6,19 +6,19 @@ on:
     - cron: '30 5 * * *' # 11:00 AM IST
   workflow_dispatch:
 
-# Fixes the timezone globally for the server
 env:
   TZ: 'Asia/Kolkata'
 
 jobs:
   run-radar-scout:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write  # Grants git push write access for seen_links.txt
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          # Required to allow the bot to commit files back to the repo
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
@@ -45,8 +45,8 @@ jobs:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: python enrichment_worker.py
 
-      # This prevents the "Amnesia Problem" by saving the cache file back to GitHub
       - name: Save Cache to Repository
+        if: always()  # Saves cache even if run is terminated or errors occur
         run: |
           git config --global user.name "Radar Scout Bot"
           git config --global user.email "bot@radarscout.local"
