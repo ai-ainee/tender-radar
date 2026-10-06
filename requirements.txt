@@ -7,4 +7,3 @@ tenacity
 ddgs
 python-dotenv
 pypdf
-google-generativeai
