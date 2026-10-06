@@ -63,7 +63,6 @@ class QueryGenerator:
     def build_tracks(self):
         ind = self.industry if self.industry != "Unknown" else ""
         current_year = self.year
-        
         location_kw = self.states if self.states else self.country
         
         return {
@@ -163,11 +162,11 @@ class SplitBrainEvaluator:
     def __init__(self, key_manager):
         self.keys = key_manager
 
-    def evaluate(self, doc, target_product, country, states, banned_keywords):
+    def evaluate(self, doc, target_product, industry, country, states, banned_keywords):
         track = doc['track']
         raw_text = doc['raw_text']
         
-        # RESCUE MISSION: Applies to all vectors if the website blocked us
+        # Anti-blocker rescue for all vectors
         if len(raw_text.strip()) < 200:
             print(f"[!] Website blocked scraper or PDF failed. Rescuing to Needs Review.")
             return {
@@ -180,7 +179,7 @@ class SplitBrainEvaluator:
         if track == "TRACK_3_MCA":
             return self._evaluate_mca(raw_text)
 
-        prompt = self._get_prompt_for_track(track, target_product, country, states, banned_keywords)
+        prompt = self._get_prompt_for_track(track, target_product, industry, country, states, banned_keywords)
         full_prompt = f"{prompt}\n\nDOCUMENT TEXT:\n{raw_text[:15000]}"
         
         for _ in range(len(self.keys.keys)):
@@ -216,7 +215,6 @@ class SplitBrainEvaluator:
                 "intent_brief": f"New Company incorporated in {datetime.now().year}. Verified via CIN.", "deadline": "N/A"
             }
         
-        # RESCUE MISSION FOR MCA: Push to Needs Review instead of Trashing
         return {
             "is_valid": True, "confidence": "LOW", "entity_role": "PROJECT_BUYER",
             "organization": "Unknown (Review MCA Link)", "city": "Unknown", "state": "Unknown",
@@ -224,14 +222,26 @@ class SplitBrainEvaluator:
             "deadline": "N/A", "reason": "CIN_NOT_FOUND_OR_OLD"
         }
 
-    def _get_prompt_for_track(self, track, target_product, country, states, banned_keywords):
+    def _get_prompt_for_track(self, track, target_product, industry, country, states, banned_keywords):
         geo_rule = f"Target country is {country}."
         if states:
-            geo_rule = f"LOCATION: Preferred states are {states}. BENEFIT OF THE DOUBT: If the document does not explicitly mention a state/location, ASSUME IT IS VALID. ONLY mark is_valid as false if it states a location completely outside these areas."
+            geo_rule = f"""
+            PREFERRED STATES: [{states}].
+            STATE MISMATCH RULE:
+            1. If the opportunity is a valid match but located in a DIFFERENT state (or state cannot be verified), DO NOT DISCARD IT.
+            2. Set "is_valid": true, "confidence": "LOW", and "reason": "OUTSIDE_TARGET_STATE".
+            3. NEVER set "is_valid": false solely due to a non-matching state.
+            """
 
         ban_rule = ""
         if banned_keywords:
-            ban_rule = f"EXCLUSION: Mark is_valid as false ONLY if the core subject of the text is about these banned keywords: ({banned_keywords}). If a banned keyword is just mentioned casually in passing, ignore it and keep the lead."
+            ban_rule = f"EXCLUSION: Mark is_valid as false ONLY if the primary subject of the text is about these banned keywords: ({banned_keywords}). If a banned keyword is merely mentioned in passing, ignore it."
+
+        context_rule = f"""
+        SEMANTIC MATCHING RULE (CRITICAL): Do not be overly literal. The document DOES NOT need to explicitly contain the exact target word "{target_product}". 
+        If the text heavily involves the broader "{industry}" sector, related workflows, associated services, or standard industry synonyms, you MUST treat it as a valid match. 
+        DO NOT mark is_valid as false just because the specific product name is missing if the context implies its usage.
+        """
 
         base_schema = f"""
         Respond STRICTLY in this JSON format:
@@ -240,21 +250,24 @@ class SplitBrainEvaluator:
             "entity_role": "(BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT)",
             "organization": "Name of Company", "city": "City Name or N/A",
             "state": "State Name or N/A", "intent_brief": "2 sentence summary",
-            "deadline": "YYYY-MM-DD or N/A", "reason": "If false, why?"
+            "deadline": "YYYY-MM-DD or N/A", "reason": "If false or low confidence, why?"
         }}
         
         {geo_rule}
         {ban_rule}
+        {context_rule}
         
-        CRITICAL RESCUE RULE: If you are unsure, if the text is messy, if dates are missing, or if you cannot confidently make a decision, DO NOT THROW THE LEAD AWAY. You MUST mark "is_valid": true and set "confidence": "LOW". Only use "is_valid": false for guaranteed junk.
+        CRITICAL RESCUE RULE: Only use "is_valid": false for guaranteed irrelevance, sellers/spam, or stale archives. If an actual buyer or commercial demand exists, always mark "is_valid": true.
         """
         
         if track == "TRACK_1_TENDERS":
-            return f"You are a procurement analyst. Find {target_product} bids." + base_schema
+            return f"You are a procurement analyst. Find bids related to {target_product} or the {industry} sector." + base_schema
         elif track == "TRACK_2_CAPEX":
-            return f"You are an industrial analyst looking for {target_product} demand in land/factory reports. Role = PROJECT_BUYER." + base_schema
+            return f"You are an industrial analyst looking for {target_product} demand or {industry} expansion in land/factory reports. Role = PROJECT_BUYER." + base_schema
+        elif track == "TRACK_4_COMMERCIAL":
+            return f"You are a commercial analyst finding {target_product} usage or {industry} operations (hiring = SERVICE_USER, distributors = SELLER)." + base_schema
         else:
-            return f"You are a commercial analyst finding {target_product} usage (hiring = SERVICE_USER, distributors = SELLER)." + base_schema
+            return f"You are a general B2B analyst looking for {target_product} or {industry} opportunities." + base_schema
 
 # ==========================================
 # 5. FAILSAFE ROUTER & CRM PUSH
@@ -286,17 +299,20 @@ class WebhookRouter:
         is_valid = ai_result.get('is_valid', False)
         confidence = ai_result.get('confidence', 'LOW')
         role = ai_result.get('entity_role', 'IRRELEVANT')
+        reason = ai_result.get('reason', '')
         
-        target_sheet = "📥 Inbox"
+        # ROUTING LOGIC
         if not is_valid: 
-            target_sheet = "🗑️️ AI_Trash"
-        elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]: 
-            target_sheet = "⚠️ Needs Review"
+            target_sheet = "🗑️ AI_Trash"
         elif role == "SELLER": 
             target_sheet = "🤝 Partners & Suppliers"
+        elif confidence == "LOW" or reason in ["OUTSIDE_TARGET_STATE", "SCRAPER_BLOCKED", "CIN_NOT_FOUND_OR_OLD"]: 
+            target_sheet = "⚠️ Needs Review"
+        else:
+            target_sheet = "📥 Inbox"
             
-        if target_sheet == "🗑️️ AI_Trash":
-            row_data = [capture_date, company_name, ai_result.get('reason', 'Unknown'), doc['url'], doc['track'], ""]
+        if target_sheet == "🗑️ AI_Trash":
+            row_data = [capture_date, company_name, reason, doc['url'], doc['track'], ""]
         elif target_sheet == "🤝 Partners & Suppliers":
             row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
         else:
@@ -349,6 +365,7 @@ if __name__ == "__main__":
         exit()
 
     print(f"[*] Active Target: {TARGET_PRODUCT}")
+    print(f"[*] Preferred Territory: {COUNTRY} | {STATES if STATES else 'All States'}")
     
     banned_kw_list = [k.strip().lower() for k in str(BANNED_KEYWORDS).split(',')] if BANNED_KEYWORDS else []
     banned_site_list = [s.strip().lower() for s in str(BANNED_WEBSITES).split(',')] if BANNED_WEBSITES else []
@@ -410,7 +427,8 @@ if __name__ == "__main__":
                 content = scraper.fetch_content(link)
                 if content:
                     doc = {"track": track_name, "url": link, "raw_text": content}
-                    ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT, COUNTRY, STATES, BANNED_KEYWORDS)
+                    # Passing INDUSTRY explicitly so Gemini learns the context synonyms
+                    ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT, INDUSTRY, COUNTRY, STATES, BANNED_KEYWORDS)
                     router.route_and_push(doc, ai_verdict, TARGET_PRODUCT)
 
     print("\n[✓] Radar Scout Cycle Complete.")
