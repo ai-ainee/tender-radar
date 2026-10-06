@@ -50,17 +50,22 @@ def cache_link(link):
         f.write(link + '\n')
 
 # ==========================================
-# 1. QUERY GENERATOR
+# 1. QUERY GENERATOR (WITH GEO-TARGETING)
 # ==========================================
 class QueryGenerator:
-    def __init__(self, target_product, industry_keywords=""):
+    def __init__(self, target_product, industry_keywords="", country="India", states=""):
         self.target = target_product
         self.industry = industry_keywords
+        self.country = country
+        self.states = states
         self.year = datetime.now().year
 
     def build_tracks(self):
         ind = self.industry if self.industry != "Unknown" else ""
         current_year = self.year
+        
+        # Inject state or country directly into the commercial searches
+        location_kw = self.states if self.states else self.country
         
         return {
             "TRACK_1_TENDERS": [
@@ -71,14 +76,14 @@ class QueryGenerator:
             "TRACK_2_CAPEX": [
                 f'"{self.target}" "environmental clearance" "{current_year}" site:environmentclearance.nic.in',
                 f'"{self.target}" ("land allotment" OR "industrial area") "{current_year}" (MIDC OR GIDC OR SIPCOT)',
-                f'"{self.target}" ("capacity expansion" OR "greenfield project") "{current_year}" filetype:pdf'
+                f'"{self.target}" ("capacity expansion" OR "greenfield project") "{current_year}" "{location_kw}" filetype:pdf'
             ],
             "TRACK_3_MCA": [
-                f'"{ind}" "Incorporation Date" "{current_year}" site:zaubacorp.com'
+                f'"{ind}" "Incorporation Date" "{current_year}" "{location_kw}" site:zaubacorp.com'
             ],
             "TRACK_4_COMMERCIAL": [
                 f'hiring "CAD Draftsman" OR "{self.target} engineer" "{current_year}" site:naukri.com OR site:linkedin.com',
-                f'"{self.target}" service provider OR consultant "{current_year}" "India"'
+                f'"{self.target}" service provider OR consultant "{current_year}" "{location_kw}"'
             ]
         }
 
@@ -113,7 +118,6 @@ class SerperHarvester:
         payload = json.dumps({
             "q": query, 
             "num": 10, 
-            "gl": "in",
             "tbs": "qdr:m"
         })
         res = self._execute_search("https://google.serper.dev/search", payload)
@@ -154,20 +158,20 @@ class ContentScraper:
         return " ".join(text.split())[:15000]
 
 # ==========================================
-# 4. SPLIT-BRAIN EVALUATOR
+# 4. SPLIT-BRAIN EVALUATOR (WITH GEO-FENCING)
 # ==========================================
 class SplitBrainEvaluator:
     def __init__(self, key_manager):
         self.keys = key_manager
 
-    def evaluate(self, doc, target_product):
+    def evaluate(self, doc, target_product, country, states):
         track = doc['track']
         raw_text = doc['raw_text']
         
         if track == "TRACK_3_MCA":
             return self._evaluate_mca(raw_text)
 
-        prompt = self._get_prompt_for_track(track, target_product)
+        prompt = self._get_prompt_for_track(track, target_product, country, states)
         full_prompt = f"{prompt}\n\nDOCUMENT TEXT:\n{raw_text[:15000]}"
         
         for _ in range(len(self.keys.keys)):
@@ -204,17 +208,25 @@ class SplitBrainEvaluator:
             }
         return {"is_valid": False, "confidence": "LOW", "reason": f"NOT_{datetime.now().year}_OR_NO_CIN"}
 
-    def _get_prompt_for_track(self, track, target_product):
-        base_schema = """
+    def _get_prompt_for_track(self, track, target_product, country, states):
+        # GEO-FENCING RULE FOR GEMINI
+        geo_rule = f"The target must be located in {country}."
+        if states:
+            geo_rule = f"STRICT LOCATION RULE: The project or company MUST be located in {country}, specifically within these states: {states}. If the location is outside these areas, you MUST mark is_valid as false and set reason to OUTSIDE_TARGET_LOCATION."
+
+        base_schema = f"""
         Respond STRICTLY in this JSON format:
-        {
+        {{
             "is_valid": true/false, "confidence": "HIGH" or "LOW",
             "entity_role": "(BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT)",
             "organization": "Name of Company", "city": "City Name or N/A",
             "state": "State Name or N/A", "intent_brief": "2 sentence summary",
             "deadline": "YYYY-MM-DD or N/A", "reason": "If false, why?"
-        }
+        }}
+        
+        {geo_rule}
         """
+        
         if track == "TRACK_1_TENDERS":
             return f"You are a procurement analyst. Find {target_product} bids. If deadline is past, mark false." + base_schema
         elif track == "TRACK_2_CAPEX":
@@ -232,7 +244,6 @@ class WebhookRouter:
     def route_and_push(self, doc, ai_result, target_product):
         company_name = ai_result.get('organization', 'Unknown')
         
-        # PRE-FLIGHT DUPLICATE CHECK
         try:
             check_req = requests.post(
                 self.webhook_url, 
@@ -291,27 +302,32 @@ def fetch_dynamic_settings():
     try:
         response = requests.get(f"{WEBHOOK_URL}?action=get_settings", timeout=10).json()
         if response.get("status") == "success":
-            return response.get("target_product"), response.get("industry_keywords")
+            return (
+                response.get("target_product"), 
+                response.get("industry_keywords"),
+                response.get("target_country", "India"), # Defaults to India if empty
+                response.get("target_states", "")        # Expecting e.g. "Gujarat, Maharashtra"
+            )
         else:
             print("[!] Settings tab is empty. Please fill Row 2 in Google Sheets.")
-            return None, None
+            return None, None, None, None
     except Exception as e:
         print(f"[!] Failed to connect to Google Sheets for settings: {e}")
-        return None, None
+        return None, None, None, None
 
 if __name__ == "__main__":
     print("=== Waking Up: Radar Scout Harvester ===")
     
-    TARGET_PRODUCT, INDUSTRY = fetch_dynamic_settings()
+    TARGET_PRODUCT, INDUSTRY, COUNTRY, STATES = fetch_dynamic_settings()
     
     if not TARGET_PRODUCT or TARGET_PRODUCT == "Unknown":
         print("[!] Halting execution. No Target Product defined in Google Sheets.")
         exit()
 
     print(f"[*] Active Target: {TARGET_PRODUCT}")
-    print(f"[*] Active Industry: {INDUSTRY}")
+    print(f"[*] Filter: {COUNTRY} | {STATES if STATES else 'All States'}")
     
-    generator = QueryGenerator(TARGET_PRODUCT, INDUSTRY)
+    generator = QueryGenerator(TARGET_PRODUCT, INDUSTRY, COUNTRY, STATES)
     harvester = SerperHarvester(serper_keys)
     scraper = ContentScraper()
     evaluator = SplitBrainEvaluator(gemini_keys)
@@ -352,7 +368,8 @@ if __name__ == "__main__":
                 content = scraper.fetch_content(link)
                 if content:
                     doc = {"track": track_name, "url": link, "raw_text": content}
-                    ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT)
+                    # Pass the geo-filters directly to the AI evaluator
+                    ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT, COUNTRY, STATES)
                     router.route_and_push(doc, ai_verdict, TARGET_PRODUCT)
 
     print("\n[✓] Radar Scout Cycle Complete.")
