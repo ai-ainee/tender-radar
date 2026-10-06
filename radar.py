@@ -283,7 +283,7 @@ class WebhookRouter:
             check_req = requests.post(
                 self.webhook_url, 
                 json={"action": "pre_flight_check", "company_name": company_name}, 
-                timeout=10
+                timeout=30
             )
             check_data = check_req.json()
             if check_data.get("status") in ["exists", "duplicate"]:
@@ -338,7 +338,7 @@ class WebhookRouter:
 def fetch_dynamic_settings():
     print("[*] Fetching search parameters from Google Sheets...")
     try:
-        response = requests.get(f"{WEBHOOK_URL}?action=get_settings", timeout=10).json()
+        response = requests.get(f"{WEBHOOK_URL}?action=get_settings", timeout=30).json()
         if response.get("status") == "success":
             return (
                 response.get("target_product"), 
