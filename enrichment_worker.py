@@ -6,7 +6,7 @@ from google import genai
 from google.genai import types
 from bs4 import BeautifulSoup
 
-# Suppress SSL warnings for Indian Govt websites
+# Suppress SSL warnings for Indian Govt portals
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
@@ -36,17 +36,13 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 # ==========================================
 def generate_deep_dossier(url, company_name):
     print(f"[*] Generating Deep Dossier for {company_name}...")
-    
-    # Aggressive User-Agent to bypass blocks
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
     try:
-        # SSL Bypass & 10-second timeout
         response = requests.get(url, headers=headers, timeout=10, verify=False)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Strip noisy elements
         for element in soup(["script", "style", "nav", "footer", "header"]):
             element.decompose()
             
@@ -71,7 +67,7 @@ def generate_deep_dossier(url, company_name):
         try:
             client = genai.Client(api_key=gemini_keys.get_current())
             result = client.models.generate_content(
-                model='gemini-3.8-flash', # UPDATED TO PRODUCTION MODEL
+                model='gemini-3.8-flash',
                 contents=prompt
             )
             return result.text.strip()
@@ -110,7 +106,7 @@ class WaterfallEnrichment:
             "linkedin_url": "", "website": "", "phone": "", "email": ""
         }
 
-        # 1. Find the Decision Maker on LinkedIn
+        # 1. Decision Maker Search on LinkedIn
         li_query = f'site:linkedin.com/in "{company_name}" (Director OR "Plant Head" OR Procurement)'
         li_res = self._serper_post("https://google.serper.dev/search", json.dumps({"q": li_query, "num": 1, "gl": "in"}))
         
@@ -120,14 +116,14 @@ class WaterfallEnrichment:
             contact_data["dm_name"] = top_hit.get("title", "").split("-")[0].strip()
             contact_data["dm_title"] = top_hit.get("snippet", "")[:50] + "..."
 
-        # 2. Find the Company Website & Phone on Google Maps
+        # 2. Business Details on Places
         map_res = self._serper_post("https://google.serper.dev/places", json.dumps({"q": company_name, "location": "India"}))
         if map_res and map_res.get("places"):
             top_place = map_res["places"][0]
             contact_data["website"] = top_place.get("website", "")
             contact_data["phone"] = top_place.get("phoneNumber", "")
 
-        # 3. Guess the Email
+        # 3. Domain Email Generation
         if contact_data["website"]:
             domain = contact_data["website"].replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "")
             if contact_data["dm_name"] != "Unknown":
@@ -157,26 +153,29 @@ def run_enrichment_worker():
     enricher = WaterfallEnrichment()
 
     for lead in pending_leads:
-        org = lead['organization']
-        dossier = generate_deep_dossier(lead['url'], org)
+        org = lead.get('organization', 'Unknown')
+        lead_id = lead.get('lead_id', 'REF')
+        row_idx = lead.get('row_index')
+        
+        dossier = generate_deep_dossier(lead.get('url', ''), org)
         contacts = enricher.hunt_decision_maker(org)
         
-        # Push Dossier back to Lead row
+        # Push Dossier update
         try:
             requests.post(WEBHOOK_URL, json={
-                "action": "update_lead_dossier", "row_index": lead['row_index'],
+                "action": "update_lead_dossier", "row_index": row_idx,
                 "dossier": dossier, "contacts": contacts
             }, timeout=10)
         except Exception as e:
             print(f"[!] Failed to update dossier for {org}: {e}")
         
-        # Push Contact to CRM
+        # Push Contact entry
         try:
             requests.post(WEBHOOK_URL, json={
                 "action": "upsert_contact",
                 "contact_data": {
                     "linkedin_url": contacts['linkedin_url'], "company_name": org,
-                    "row_array": ["", org, contacts['dm_title'], contacts['dm_name'], contacts['linkedin_url'], contacts['email'], contacts['phone'], "", f"C-{lead['lead_id']}"]
+                    "row_array": ["", org, contacts['dm_title'], contacts['dm_name'], contacts['linkedin_url'], contacts['email'], contacts['phone'], "", f"C-{lead_id}"]
                 }
             }, timeout=10)
         except Exception as e:
