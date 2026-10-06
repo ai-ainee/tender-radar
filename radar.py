@@ -167,6 +167,16 @@ class SplitBrainEvaluator:
         track = doc['track']
         raw_text = doc['raw_text']
         
+        # RESCUE MISSION: Applies to all vectors if the website blocked us
+        if len(raw_text.strip()) < 200:
+            print(f"[!] Website blocked scraper or PDF failed. Rescuing to Needs Review.")
+            return {
+                "is_valid": True, "confidence": "LOW", "entity_role": "PROJECT_BUYER",
+                "organization": "Unknown (Blocked by Website)", "city": "N/A", "state": "N/A", 
+                "intent_brief": "Website blocked automated reading. Please click the link to review manually.",
+                "deadline": "N/A", "reason": "SCRAPER_BLOCKED"
+            }
+
         if track == "TRACK_3_MCA":
             return self._evaluate_mca(raw_text)
 
@@ -205,16 +215,23 @@ class SplitBrainEvaluator:
                 "organization": "Unknown (Review Link)", "city": "Unknown", "state": "Unknown",
                 "intent_brief": f"New Company incorporated in {datetime.now().year}. Verified via CIN.", "deadline": "N/A"
             }
-        return {"is_valid": False, "confidence": "LOW", "reason": f"NOT_{datetime.now().year}_OR_NO_CIN"}
+        
+        # RESCUE MISSION FOR MCA: Push to Needs Review instead of Trashing
+        return {
+            "is_valid": True, "confidence": "LOW", "entity_role": "PROJECT_BUYER",
+            "organization": "Unknown (Review MCA Link)", "city": "Unknown", "state": "Unknown",
+            "intent_brief": "Possible new incorporation, but CIN could not be auto-verified. Manual review required.",
+            "deadline": "N/A", "reason": "CIN_NOT_FOUND_OR_OLD"
+        }
 
     def _get_prompt_for_track(self, track, target_product, country, states, banned_keywords):
-        geo_rule = f"The target must be located in {country}."
+        geo_rule = f"Target country is {country}."
         if states:
-            geo_rule = f"STRICT LOCATION RULE: The project/company MUST be located in {country}, within these states: {states}. If outside, mark is_valid as false, reason: OUTSIDE_TARGET_LOCATION."
+            geo_rule = f"LOCATION: Preferred states are {states}. BENEFIT OF THE DOUBT: If the document does not explicitly mention a state/location, ASSUME IT IS VALID. ONLY mark is_valid as false if it states a location completely outside these areas."
 
         ban_rule = ""
         if banned_keywords:
-            ban_rule = f"STRICT EXCLUSION RULE: If the text heavily features any of these banned keywords ({banned_keywords}), you MUST mark is_valid as false and set reason to CONTAINS_BANNED_KEYWORD."
+            ban_rule = f"EXCLUSION: Mark is_valid as false ONLY if the core subject of the text is about these banned keywords: ({banned_keywords}). If a banned keyword is just mentioned casually in passing, ignore it and keep the lead."
 
         base_schema = f"""
         Respond STRICTLY in this JSON format:
@@ -228,10 +245,12 @@ class SplitBrainEvaluator:
         
         {geo_rule}
         {ban_rule}
+        
+        CRITICAL RESCUE RULE: If you are unsure, if the text is messy, if dates are missing, or if you cannot confidently make a decision, DO NOT THROW THE LEAD AWAY. You MUST mark "is_valid": true and set "confidence": "LOW". Only use "is_valid": false for guaranteed junk.
         """
         
         if track == "TRACK_1_TENDERS":
-            return f"You are a procurement analyst. Find {target_product} bids. If deadline is past, mark false." + base_schema
+            return f"You are a procurement analyst. Find {target_product} bids." + base_schema
         elif track == "TRACK_2_CAPEX":
             return f"You are an industrial analyst looking for {target_product} demand in land/factory reports. Role = PROJECT_BUYER." + base_schema
         else:
@@ -270,13 +289,13 @@ class WebhookRouter:
         
         target_sheet = "📥 Inbox"
         if not is_valid: 
-            target_sheet = "🗑️ AI_Trash"
+            target_sheet = "🗑️️ AI_Trash"
         elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]: 
             target_sheet = "⚠️ Needs Review"
         elif role == "SELLER": 
             target_sheet = "🤝 Partners & Suppliers"
             
-        if target_sheet == "🗑️ AI_Trash":
+        if target_sheet == "🗑️️ AI_Trash":
             row_data = [capture_date, company_name, ai_result.get('reason', 'Unknown'), doc['url'], doc['track'], ""]
         elif target_sheet == "🤝 Partners & Suppliers":
             row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
@@ -311,20 +330,19 @@ def fetch_dynamic_settings():
                 response.get("target_country", "India"),
                 response.get("target_states", ""),
                 response.get("banned_keywords", ""),
-                response.get("banned_websites", ""),
-                response.get("protected_domains", "")
+                response.get("banned_websites", "")
             )
         else:
             print("[!] Settings tab is empty. Please fill Row 2 in Google Sheets.")
-            return None, None, None, None, None, None, None
+            return None, None, None, None, None, None
     except Exception as e:
         print(f"[!] Failed to connect to Google Sheets for settings: {e}")
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None
 
 if __name__ == "__main__":
     print("=== Waking Up: Radar Scout Harvester ===")
     
-    TARGET_PRODUCT, INDUSTRY, COUNTRY, STATES, BANNED_KEYWORDS, BANNED_WEBSITES, PROTECTED_DOMAINS = fetch_dynamic_settings()
+    TARGET_PRODUCT, INDUSTRY, COUNTRY, STATES, BANNED_KEYWORDS, BANNED_WEBSITES = fetch_dynamic_settings()
     
     if not TARGET_PRODUCT or TARGET_PRODUCT == "Unknown":
         print("[!] Halting execution. No Target Product defined in Google Sheets.")
