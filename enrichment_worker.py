@@ -50,7 +50,7 @@ def generate_deep_dossier(url, company_name):
         try:
             client = genai.Client(api_key=gemini_keys.get_current())
             result = client.models.generate_content(
-                model='gemini-1.5-flash',
+                model='gemini-3.8-flash',
                 contents=prompt
             )
             return result.text.strip()
