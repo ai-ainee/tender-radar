@@ -12,7 +12,7 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 
-# Suppress SSL warnings for Indian Govt websites
+# Suppress SSL warnings for Indian Govt portals
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
@@ -50,7 +50,7 @@ def cache_link(link):
         f.write(link + '\n')
 
 # ==========================================
-# 1. QUERY GENERATOR (DYNAMIC YEARS)
+# 1. QUERY GENERATOR
 # ==========================================
 class QueryGenerator:
     def __init__(self, target_product, industry_keywords=""):
@@ -83,7 +83,7 @@ class QueryGenerator:
         }
 
 # ==========================================
-# 2. SERPER HARVESTER (MULTI-KEY ENABLED)
+# 2. SERPER HARVESTER
 # ==========================================
 class SerperHarvester:
     def __init__(self, key_manager):
@@ -114,13 +114,13 @@ class SerperHarvester:
             "q": query, 
             "num": 10, 
             "gl": "in",
-            "tbs": "qdr:m"  # Strict 1-month date filter
+            "tbs": "qdr:m"
         })
         res = self._execute_search("https://google.serper.dev/search", payload)
         return res.get("organic", [])
 
 # ==========================================
-# 3. DEEP CONTENT SCRAPER (SSL FIX & TIMEOUT)
+# 3. DEEP CONTENT SCRAPER
 # ==========================================
 class ContentScraper:
     def __init__(self):
@@ -154,7 +154,7 @@ class ContentScraper:
         return " ".join(text.split())[:15000]
 
 # ==========================================
-# 4. SPLIT-BRAIN EVALUATOR (NEW GENAI SDK)
+# 4. SPLIT-BRAIN EVALUATOR
 # ==========================================
 class SplitBrainEvaluator:
     def __init__(self, key_manager):
@@ -230,6 +230,22 @@ class WebhookRouter:
         self.webhook_url = webhook_url
 
     def route_and_push(self, doc, ai_result, target_product):
+        company_name = ai_result.get('organization', 'Unknown')
+        
+        # PRE-FLIGHT DUPLICATE CHECK
+        try:
+            check_req = requests.post(
+                self.webhook_url, 
+                json={"action": "pre_flight_check", "company_name": company_name}, 
+                timeout=10
+            )
+            check_data = check_req.json()
+            if check_data.get("status") in ["exists", "duplicate"]:
+                print(f"[-] Dropping Duplicate: {company_name} already registered in CRM.")
+                return
+        except Exception:
+            pass
+
         lead_id = str(uuid.uuid4())[:8].upper()
         capture_date = datetime.now().strftime("%Y-%m-%d %H:%M")
         fingerprint = hashlib.md5(f"{doc['url']}".encode()).hexdigest()[:10]
@@ -239,30 +255,29 @@ class WebhookRouter:
         role = ai_result.get('entity_role', 'IRRELEVANT')
         
         target_sheet = "📥 Inbox"
-        if not is_valid: target_sheet = "🗑️ AI_Trash"
-        elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]: target_sheet = "⚠️ Needs Review"
-        elif role == "SELLER": target_sheet = "🤝 Partners & Suppliers"
+        if not is_valid: 
+            target_sheet = "🗑️ AI_Trash"
+        elif confidence == "LOW" and role in ["PROJECT_BUYER", "SERVICE_USER"]: 
+            target_sheet = "⚠️ Needs Review"
+        elif role == "SELLER": 
+            target_sheet = "🤝 Partners & Suppliers"
             
         if target_sheet == "🗑️ AI_Trash":
-            row_data = [capture_date, ai_result.get('organization', 'Unknown'), ai_result.get('reason', 'Unknown'), doc['url'], doc['track'], ""]
+            row_data = [capture_date, company_name, ai_result.get('reason', 'Unknown'), doc['url'], doc['track'], ""]
         elif target_sheet == "🤝 Partners & Suppliers":
-            row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), ai_result.get('organization', ''), "", "", target_product]
+            row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
         else:
             row_data = [
                 capture_date, ai_result.get('deadline', 'N/A'), role, "Unknown", 
-                ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), ai_result.get('organization', 'Unknown'), 
+                ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), company_name, 
                 target_product, ai_result.get('intent_brief', ''), doc['url'], "", f"{lead_id}::{fingerprint}"
             ]
 
         try:
-            requests.post(self.webhook_url, json={"action": "pre_flight_check", "company_name": ai_result.get('organization', 'Unknown')}, timeout=10)
-        except: pass
-
-        try:
-            print(f"[*] Routing {ai_result.get('organization', 'Unknown')} to -> {target_sheet}")
+            print(f"[*] Routing {company_name} to -> {target_sheet}")
             requests.post(self.webhook_url, json={
                 "action": "insert_lead", "target_sheet": target_sheet,
-                "company_name": ai_result.get('organization', 'Unknown'),
+                "company_name": company_name,
                 "signal_brief": ai_result.get('intent_brief', ''), "row_data": row_data
             }, timeout=10)
         except Exception as e:
@@ -316,21 +331,22 @@ if __name__ == "__main__":
                 if not link or link in seen_links: 
                     continue
                 
-                # --- PRE-SCRAPE DATE GUARD (DYNAMIC REGEX) ---
+                # PRE-SCRAPE DATE GUARD
                 current_yr = datetime.now().year
                 combined_text = f"{link} {snippet}"
-                
-                # Find all 4-digit numbers that start with 19 or 20
                 found_years = [int(y) for y in re.findall(r'\b(?:19|20)\d{2}\b', combined_text)]
                 
                 if found_years:
                     max_year = max(found_years)
-                    # If the most recent year mentioned is older than last year, it's dead.
                     if max_year < current_yr - 1:
                         print(f"[-] Dropping stale link (Most recent year is {max_year}): {link}")
                         cache_link(link)
                         seen_links.add(link)
                         continue
+
+                # CACHE IMMEDIATELY TO AVOID REDUNDANT CALLS
+                cache_link(link)
+                seen_links.add(link)
 
                 print(f"[+] Scraping: {link}")
                 content = scraper.fetch_content(link)
@@ -338,8 +354,5 @@ if __name__ == "__main__":
                     doc = {"track": track_name, "url": link, "raw_text": content}
                     ai_verdict = evaluator.evaluate(doc, TARGET_PRODUCT)
                     router.route_and_push(doc, ai_verdict, TARGET_PRODUCT)
-                    
-                    cache_link(link)
-                    seen_links.add(link)
 
     print("\n[✓] Radar Scout Cycle Complete.")
