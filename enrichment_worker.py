@@ -9,7 +9,8 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
 
@@ -17,7 +18,7 @@ from tenacity import retry, wait_exponential, stop_after_attempt
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("EnrichmentWorker")
-logging.getLogger("google.api_core.bidi").setLevel(logging.ERROR)
+logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ==========================================
@@ -30,6 +31,12 @@ class APIKeyManager:
         if not self.keys: raise ValueError("No API keys found. Check GitHub Secrets.")
 
     def get_current(self): return self.keys[self.index]
+
+    def get_api_key(self): return self.get_current()
+
+    def get_backup_key(self):
+        self.index = (self.index + 1) % len(self.keys)
+        return self.get_current()
 
     def rotate(self, service_name):
         self.index = (self.index + 1) % len(self.keys)
@@ -59,29 +66,29 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default_secret")
 system_monitor = SystemAlertNotifier()
 
 # ==========================================
-# 2. DEEP DOSSIER GENERATOR
+# 2. DEEP DOSSIER GENERATOR (USING GOOGLE-GENAI & OPENAI FALLBACK)
 # ==========================================
 class DossierEngine:
     def __init__(self, key_manager):
         self.keys = key_manager
-        # Using the exact models requested
         self.gemini_models = ['gemini-3.8-flash', 'gemini-3.5-flash']
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         
-        self.current_gemini_key = self.keys.get_current()
-        genai.configure(api_key=self.current_gemini_key)
+        self.current_gemini_key = self.keys.get_api_key()
+        self.client = genai.Client(api_key=self.current_gemini_key)
         
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         ]
 
     def _rotate_gemini_key(self):
-        new_key = self.keys.rotate("Gemini")
+        new_key = self.keys.get_backup_key()
         if new_key and new_key != self.current_gemini_key:
             logger.info("🔑 Rotating to a backup Gemini API Key...")
             self.current_gemini_key = new_key
-            genai.configure(api_key=self.current_gemini_key)
+            self.client = genai.Client(api_key=self.current_gemini_key)
             return True
         logger.warning("⚠️ No more backup Gemini keys available.")
         return False
@@ -124,41 +131,36 @@ class DossierEngine:
         </scraped_data>
         """
 
-        # 1. पहले जेमिनी ईकोसिस्टम (Gemini Ecosystem) को ट्राई करें
         max_retries = 3
         for model_name in self.gemini_models:
             delay = 2
             for attempt in range(max_retries):
                 try:
                     logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
-                    model = genai.GenerativeModel(model_name)
-                    
-                    response = model.generate_content(
-                        prompt,
-                        request_options={"timeout": 30.0}
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=prompt
                     )
                     
                     if response.text:
                         return response.text.strip()
 
-                except ResourceExhausted as e:
-                    logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
-                    if self._rotate_gemini_key():
-                        time.sleep(1)
-                    else:
-                        time.sleep(delay)
-                        delay *= 2
-
-                except GoogleAPIError as e:
-                    logger.warning(f"⚠️ Gemini API Error: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(delay)
-                        delay *= 2
-                
                 except Exception as e:
-                    logger.error(f"🔌 Unexpected connection error: {e}")
-                    time.sleep(delay)
-                    delay *= 2
+                    err = str(e).lower()
+                    if "429" in err or "quota" in err or "resource_exhausted" in err:
+                        logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
+                        if self._rotate_gemini_key():
+                            time.sleep(1)
+                        else:
+                            time.sleep(delay)
+                            delay *= 2
+                    else:
+                        logger.warning(f"⚠️ Gemini API Error on {model_name}: {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(delay)
+                            delay *= 2
+                        else:
+                            break
             
             logger.info(f"⏭️ Moving to next Gemini model...\n")
         
