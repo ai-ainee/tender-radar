@@ -8,6 +8,7 @@ import time
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
+from datetime import datetime
 from google import genai
 from google.genai import types
 from tenacity import retry, wait_exponential, stop_after_attempt
@@ -35,7 +36,6 @@ class APIKeyManager:
         return self.get_current()
 
 class SystemAlertNotifier:
-    """Handles operational alerts, health checks, and crash reports."""
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -63,7 +63,8 @@ system_monitor = SystemAlertNotifier()
 class DossierEngine:
     def __init__(self, key_manager):
         self.keys = key_manager
-        self.models = ['gemini-3.5-flash', 'gemini-1.5-flash']
+        # Uses the latest stable model endpoints to prevent 404/503 errors
+        self.models = ['gemini-2.5-flash', 'gemini-2.0-flash']
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
@@ -194,6 +195,7 @@ def webhook_post(payload):
 def run_enrichment_worker():
     logger.info("=== Waking Up: Radar Scout Enrichment Worker ===")
     start_time = datetime.now()
+    
     try:
         response = requests.get(f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_pending_leads", timeout=15).json()
         pending_leads = response.get("leads", [])
@@ -219,9 +221,37 @@ def run_enrichment_worker():
         dossier = dossier_engine.generate(lead.get('url', ''), org)
         contacts = enricher.hunt_decision_maker(org)
         
-        # Push Dossier update
+        # Wrapped the push operations in a properly closed try-except block
         try:
+            # Push Dossier update
             webhook_post({
                 "secret": WEBHOOK_SECRET, "action": "update_lead_dossier", "row_index": row_idx,
                 "dossier": dossier, "contacts": contacts
             })
+            
+            # Push Contact entry
+            webhook_post({
+                "secret": WEBHOOK_SECRET, "action": "upsert_contact",
+                "contact_data": {
+                    "linkedin_url": contacts['linkedin_url'], "company_name": org,
+                    "row_array": ["", org, contacts['dm_title'], contacts['dm_name'], contacts['linkedin_url'], contacts['email'], contacts['phone'], "", f"C-{lead_id}"]
+                }
+            })
+            logger.info(f"Successfully Enriched: {org}")
+            enriched_count += 1
+        except Exception as e:
+            logger.error(f"Failed to push updates for {org}: {e}")
+
+    # End-of-Run Execution Summary to Telegram
+    duration = str(datetime.now() - start_time).split('.')[0]
+    summary_msg = (
+        f"🧠 *Enrichment Run Complete*\n"
+        f"• Leads Processed: `{len(pending_leads)}`\n"
+        f"• Successfully Enriched: `{enriched_count}`\n"
+        f"• Duration: `{duration}`"
+    )
+    system_monitor.send(summary_msg)
+    logger.info("Enrichment Worker Cycle Complete.")
+
+if __name__ == "__main__":
+    run_enrichment_worker()
