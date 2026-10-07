@@ -13,7 +13,8 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
 
@@ -21,7 +22,7 @@ from tenacity import retry, wait_exponential, stop_after_attempt
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("RadarScout")
-logging.getLogger("google.api_core.bidi").setLevel(logging.ERROR)
+logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 try:
@@ -39,6 +40,12 @@ class APIKeyManager:
         if not self.keys: raise ValueError("No API keys found. Check GitHub Secrets.")
 
     def get_current(self): return self.keys[self.index]
+
+    def get_api_key(self): return self.get_current()
+
+    def get_backup_key(self):
+        self.index = (self.index + 1) % len(self.keys)
+        return self.get_current()
 
     def rotate(self, service_name):
         self.index = (self.index + 1) % len(self.keys)
@@ -177,25 +184,23 @@ class DataEngine:
             return None
 
 # ==========================================
-# 5. AI BATCH EVALUATOR
+# 5. AI BATCH EVALUATOR (USING GOOGLE-GENAI & OPENAI FALLBACK)
 # ==========================================
 class BatchedSplitBrain:
     def __init__(self, key_manager):
         self.keys = key_manager
-        # Using the exact models requested
         self.gemini_models = ['gemini-3.8-flash', 'gemini-3.5-flash']
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         
-        self.current_gemini_key = self.keys.get_current()
-        genai.configure(api_key=self.current_gemini_key)
+        self.current_gemini_key = self.keys.get_api_key()
+        self.client = genai.Client(api_key=self.current_gemini_key)
 
     def _rotate_gemini_key(self):
-        """अगर किसी की (Key) पर रेट लिमिट आती है, तो यह दूसरी की पर स्विच करता है"""
-        new_key = self.keys.rotate("Gemini")
+        new_key = self.keys.get_backup_key()
         if new_key and new_key != self.current_gemini_key:
             logger.info("🔑 Rotating to a backup Gemini API Key...")
             self.current_gemini_key = new_key
-            genai.configure(api_key=self.current_gemini_key)
+            self.client = genai.Client(api_key=self.current_gemini_key)
             return True
         logger.warning("⚠️ No more backup Gemini keys available.")
         return False
@@ -222,42 +227,38 @@ class BatchedSplitBrain:
         {items_block}
         """
 
-        # 1. पहले जेमिनी ईकोसिस्टम (Gemini Ecosystem) को ट्राई करें
         max_retries = 3
         for model_name in self.gemini_models:
             delay = 2
             for attempt in range(max_retries):
                 try:
                     logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
-                    model = genai.GenerativeModel(model_name)
-                    
-                    response = model.generate_content(
-                        prompt,
-                        request_options={"timeout": 30.0}
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
                     )
                     
                     if response.text:
                         data = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
                         return data.get("leads", data) if isinstance(data, dict) else data
 
-                except ResourceExhausted as e:
-                    logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
-                    if self._rotate_gemini_key():
-                        time.sleep(1)
-                    else:
-                        time.sleep(delay)
-                        delay *= 2
-
-                except GoogleAPIError as e:
-                    logger.warning(f"⚠️ Gemini API Error: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(delay)
-                        delay *= 2
-                
                 except Exception as e:
-                    logger.error(f"🔌 Unexpected connection error: {e}")
-                    time.sleep(delay)
-                    delay *= 2
+                    err = str(e).lower()
+                    if "429" in err or "quota" in err or "resource_exhausted" in err:
+                        logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
+                        if self._rotate_gemini_key():
+                            time.sleep(1)
+                        else:
+                            time.sleep(delay)
+                            delay *= 2
+                    else:
+                        logger.warning(f"⚠️ Gemini API Error on {model_name}: {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(delay)
+                            delay *= 2
+                        else:
+                            break # Move to next model on permanent failure (like 404)
             
             logger.info(f"⏭️ Moving to next Gemini model...\n")
 
