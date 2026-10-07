@@ -13,15 +13,16 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
 
 # --- CONFIGURATION & LOGGING ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("RadarScout")
-logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+logging.getLogger("google.api_core.bidi").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 try:
     from ddgs import DDGS
@@ -45,7 +46,6 @@ class APIKeyManager:
         return self.get_current()
 
 class SystemAlertNotifier:
-    """Handles operational alerts, health checks, and crash reports."""
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -111,8 +111,8 @@ class QueryGenerator:
             ],
             "TRACK_2_CAPEX": [
                 f'"{self.target}" "environmental clearance" "{yr}" site:environmentclearance.nic.in',
-                f'"{self.target}" ("land allotment" OR "industrial area") "{yr}" (MIDC OR GIDC)',
-                f'"{self.target}" ("capacity expansion" OR "greenfield") "{yr}" "{self.loc}" filetype:pdf'
+                f'"{self.target}" ("land allotment" OR "industrial area") "{yr}" (MIDC OR GIDC OR SIPCOT)',
+                f'"{self.target}" ("capacity expansion" OR "greenfield project") "{yr}" "{self.loc}" filetype:pdf'
             ],
             "TRACK_3_MCA": [
                 f'"{self.ind}" "Incorporation Date" "{yr}" "{self.loc}" site:zaubacorp.com'
@@ -182,8 +182,23 @@ class DataEngine:
 class BatchedSplitBrain:
     def __init__(self, key_manager):
         self.keys = key_manager
-        # Current active flagship models
-        self.models = ['gemini-3.8-flash', 'gemini-3.5-flash']
+        # Using the exact models requested
+        self.gemini_models = ['gemini-3.8-flash', 'gemini-3.5-flash']
+        self.openai_key = os.getenv("OPENAI_API_KEY", "")
+        
+        self.current_gemini_key = self.keys.get_current()
+        genai.configure(api_key=self.current_gemini_key)
+
+    def _rotate_gemini_key(self):
+        """अगर किसी की (Key) पर रेट लिमिट आती है, तो यह दूसरी की पर स्विच करता है"""
+        new_key = self.keys.rotate("Gemini")
+        if new_key and new_key != self.current_gemini_key:
+            logger.info("🔑 Rotating to a backup Gemini API Key...")
+            self.current_gemini_key = new_key
+            genai.configure(api_key=self.current_gemini_key)
+            return True
+        logger.warning("⚠️ No more backup Gemini keys available.")
+        return False
 
     def evaluate_batch(self, batch, target, ind, country, states, banned_kw):
         if not batch: return []
@@ -200,42 +215,70 @@ class BatchedSplitBrain:
         {geo_rule}
         {ban_rule}
         
+        Respond STRICTLY with a JSON object containing a single key "leads" which maps to an array of objects with these exact keys:
+        "item_index" (integer), "is_valid" (boolean), "confidence" ("HIGH" or "LOW"), "entity_role" ("BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER", "IRRELEVANT"), "organization" (string), "city" (string), "state" (string), "intent_brief" (string), "deadline" (string), "reason" (string).
+        
         DATA BATCH:
         {items_block}
         """
 
-        schema = {
-            "type": "ARRAY", "items": {
-                "type": "OBJECT", "properties": {
-                    "item_index": {"type": "INTEGER"},
-                    "is_valid": {"type": "BOOLEAN"},
-                    "confidence": {"type": "STRING"},
-                    "entity_role": {"type": "STRING", "description": "BUYER, PROJECT_BUYER, SERVICE_USER, SELLER, IRRELEVANT"},
-                    "organization": {"type": "STRING"},
-                    "city": {"type": "STRING"}, "state": {"type": "STRING"},
-                    "intent_brief": {"type": "STRING"}, "deadline": {"type": "STRING"}, "reason": {"type": "STRING"}
-                }, "required": ["item_index", "is_valid", "confidence", "entity_role", "organization", "city", "state", "intent_brief", "reason"]
-            }
-        }
+        # 1. पहले जेमिनी ईकोसिस्टम (Gemini Ecosystem) को ट्राई करें
+        max_retries = 3
+        for model_name in self.gemini_models:
+            delay = 2
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
+                    model = genai.GenerativeModel(model_name)
+                    
+                    response = model.generate_content(
+                        prompt,
+                        request_options={"timeout": 30.0}
+                    )
+                    
+                    if response.text:
+                        data = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
+                        return data.get("leads", data) if isinstance(data, dict) else data
 
-        for attempt in range(3):
-            for model_name in self.models:
-                for _ in range(len(self.keys.keys)):
-                    try:
-                        client = genai.Client(api_key=self.keys.get_current())
-                        res = client.models.generate_content(
-                            model=model_name, contents=prompt,
-                            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema)
-                        )
-                        return json.loads(res.text.strip().replace("```json", "").replace("```", "").strip())
-                    except Exception as e:
-                        err = str(e).lower()
-                        if "429" in err or "quota" in err: self.keys.rotate("Gemini")
-                        elif "503" in err or "500" in err: time.sleep(3 * (attempt + 1)); break
-                        else: break
-                        
-        logger.error("All AI models/keys exhausted for batch.")
-        system_monitor.send("⚠️ *Radar Scout Warning*: Gemini API limit hit across all fallback models.")
+                except ResourceExhausted as e:
+                    logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
+                    if self._rotate_gemini_key():
+                        time.sleep(1)
+                    else:
+                        time.sleep(delay)
+                        delay *= 2
+
+                except GoogleAPIError as e:
+                    logger.warning(f"⚠️ Gemini API Error: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
+                
+                except Exception as e:
+                    logger.error(f"🔌 Unexpected connection error: {e}")
+                    time.sleep(delay)
+                    delay *= 2
+            
+            logger.info(f"⏭️ Moving to next Gemini model...\n")
+
+        # 2. ब्रह्मास्त्र: OpenAI Fallback
+        if self.openai_key:
+            logger.warning("🚨 CRITICAL: All Gemini options exhausted. Activating OpenAI Fallback...")
+            try:
+                client = OpenAI(api_key=self.openai_key)
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    timeout=30.0
+                )
+                logger.info("✅ Successfully recovered using OpenAI!")
+                data = json.loads(response.choices[0].message.content.strip())
+                return data.get("leads", data) if isinstance(data, dict) else data
+            except OpenAIError as e:
+                logger.error(f"🚨 TOTAL SYSTEM FAILURE: Gemini and OpenAI both failed. OpenAI Error: {e}")
+
+        system_monitor.send("⚠️ *Radar Scout Warning*: TOTAL API FAILURE. Both Gemini and OpenAI failed.")
         return []
 
 # ==========================================
@@ -262,19 +305,25 @@ class WebhookRouter:
                 return "DUPLICATE"
         except: pass
 
+        capture_date = datetime.now().strftime("%Y-%m-%d %H:%M")
         is_valid = ai_result.get('is_valid', False)
+        confidence = ai_result.get('confidence', 'LOW')
         role = ai_result.get('entity_role', 'IRRELEVANT')
+        reason = ai_result.get('reason', '')
         
-        target_sheet = "🗑️ AI_Trash" if not is_valid else ("🤝 Partners & Suppliers" if role == "SELLER" else ("⚠️ Needs Review" if ai_result.get('confidence') == "LOW" else "📥 Inbox"))
+        target_sheet = "🗑️ AI_Trash" if not is_valid else ("🤝 Partners & Suppliers" if role == "SELLER" else ("⚠️ Needs Review" if confidence == "LOW" else "📥 Inbox"))
         
-        row_data = [
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-            ai_result.get('deadline', 'N/A') if is_valid else raw_name,
-            role if is_valid else ai_result.get('reason', ''),
-            "Unknown", ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), 
-            company_name, target_product, ai_result.get('intent_brief', ''), 
-            doc['url'], "", f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"
-        ]
+        if target_sheet == "🗑️ AI_Trash":
+            row_data = [capture_date, company_name, reason, doc['url'], doc['track'], ""]
+        elif target_sheet == "🤝 Partners & Suppliers":
+            row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
+        else:
+            row_data = [
+                capture_date, ai_result.get('deadline', 'N/A'), role, "Unknown", 
+                ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), company_name, 
+                target_product, ai_result.get('intent_brief', ''), doc['url'], "", 
+                f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"
+            ]
 
         logger.info(f"[*] Routing {company_name} [{role}] -> {target_sheet}")
         requests.post(self.url, json={
@@ -351,7 +400,6 @@ if __name__ == "__main__":
                         if dest in ["📥 Inbox", "⚠️ Needs Review"]:
                             leads_pushed += 1
 
-    # End-of-Run Execution Summary to Telegram
     duration = str(datetime.now() - start_time).split('.')[0]
     summary_msg = (
         f"🏁 *Radar Scout Run Complete*\n"
