@@ -189,9 +189,8 @@ class DataEngine:
 class BatchedSplitBrain:
     def __init__(self, key_manager):
         self.keys = key_manager
-        self.gemini_models = ['gemini-3.8-flash', 'gemini-3.5-flash']
+        self.gemini_models = ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.5-flash-8b']
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
-        
         self.current_gemini_key = self.keys.get_api_key()
         self.client = genai.Client(api_key=self.current_gemini_key)
 
