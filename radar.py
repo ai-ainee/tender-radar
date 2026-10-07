@@ -291,6 +291,10 @@ class WebhookRouter:
         self.secret = secret
 
     def normalize_company(self, name):
+        # Safety guard: ensure name is a string, default to "Unknown" if None or invalid
+        if not name or not isinstance(name, str):
+            name = "Unknown"
+            
         clean = re.sub(r'(?i)\b(ltd|pvt|limited|private|inc|corp|llc)\b\.?', '', name)
         return re.sub(r'[^a-zA-Z0-9\s]', '', clean).strip().title()
 
