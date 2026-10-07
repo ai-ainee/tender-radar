@@ -5,6 +5,7 @@ import requests
 import urllib3
 import re
 import uuid
+import time
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
@@ -182,28 +183,36 @@ class SplitBrainEvaluator:
         prompt = self._get_prompt_for_track(track, target_product, industry, country, states, banned_keywords)
         full_prompt = f"{prompt}\n\nDOCUMENT TEXT:\n{raw_text[:15000]}"
         
-        for _ in range(len(self.keys.keys)):
-            try:
-                client = genai.Client(api_key=self.keys.get_current())
-                print(f"[*] Sending to Gemini ({track})...")
-                
-                response = client.models.generate_content(
-                    model='gemini-3.5-flash',
-                    contents=full_prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                    ),
-                )
-                return json.loads(response.text)
-                
-            except Exception as e:
-                error_str = str(e).lower()
-                if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
-                    self.keys.rotate("Gemini")
-                else:
-                    print(f"[!] Gemini Error: {e}")
-                    return {"is_valid": False, "confidence": "LOW", "reason": "AI_PARSE_ERROR"}
+        max_retries = 3
+        for attempt in range(max_retries):
+            for _ in range(len(self.keys.keys)):
+                try:
+                    client = genai.Client(api_key=self.keys.get_current())
+                    print(f"[*] Sending to Gemini ({track}) [Attempt {attempt + 1}/{max_retries}]...")
                     
+                    response = client.models.generate_content(
+                        model='gemini-3.5-flash',
+                        contents=full_prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                        ),
+                    )
+                    return json.loads(response.text)
+                    
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
+                        self.keys.rotate("Gemini")
+                    elif "503" in error_str or "unavailable" in error_str or "500" in error_str:
+                        wait_time = 3 * (attempt + 1)
+                        print(f"[!] Gemini Server Busy (503). Waiting {wait_time}s and retrying...")
+                        time.sleep(wait_time)
+                        break # Break the key loop to trigger the outer retry loop
+                    else:
+                        print(f"[!] Gemini Error: {e}")
+                        return {"is_valid": False, "confidence": "LOW", "reason": "AI_PARSE_ERROR"}
+                        
+        print("[!] All retries and keys exhausted for this document.")
         return {"is_valid": False, "confidence": "LOW", "reason": "ALL_GEMINI_KEYS_EXHAUSTED"}
 
     def _evaluate_mca(self, text):
