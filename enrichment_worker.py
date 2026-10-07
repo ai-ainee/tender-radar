@@ -9,15 +9,16 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
 
 # --- CONFIGURATION & LOGGING ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("EnrichmentWorker")
-logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+logging.getLogger("google.api_core.bidi").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ==========================================
 # 1. CREDENTIALS & SYSTEM ALERTS
@@ -63,13 +64,27 @@ system_monitor = SystemAlertNotifier()
 class DossierEngine:
     def __init__(self, key_manager):
         self.keys = key_manager
-        # Uses the latest stable model endpoints to prevent 404/503 errors
-        self.models = ['gemini-2.5-flash', 'gemini-2.0-flash']
+        # Using the exact models requested
+        self.gemini_models = ['gemini-3.8-flash', 'gemini-3.5-flash']
+        self.openai_key = os.getenv("OPENAI_API_KEY", "")
+        
+        self.current_gemini_key = self.keys.get_current()
+        genai.configure(api_key=self.current_gemini_key)
+        
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
         ]
+
+    def _rotate_gemini_key(self):
+        new_key = self.keys.rotate("Gemini")
+        if new_key and new_key != self.current_gemini_key:
+            logger.info("🔑 Rotating to a backup Gemini API Key...")
+            self.current_gemini_key = new_key
+            genai.configure(api_key=self.current_gemini_key)
+            return True
+        logger.warning("⚠️ No more backup Gemini keys available.")
+        return False
 
     def fetch_content(self, url):
         time.sleep(random.uniform(1.5, 3.0))
@@ -109,24 +124,61 @@ class DossierEngine:
         </scraped_data>
         """
 
-        for attempt in range(3):
-            for model_name in self.models:
-                for _ in range(len(self.keys.keys)):
-                    try:
-                        client = genai.Client(api_key=self.keys.get_current())
-                        res = client.models.generate_content(
-                            model=model_name, contents=prompt
-                        )
-                        return res.text.strip()
-                    except Exception as e:
-                        err = str(e).lower()
-                        if "429" in err or "quota" in err: self.keys.rotate("Gemini")
-                        elif "503" in err or "500" in err: time.sleep(3 * (attempt + 1)); break
-                        else: break
+        # 1. पहले जेमिनी ईकोसिस्टम (Gemini Ecosystem) को ट्राई करें
+        max_retries = 3
+        for model_name in self.gemini_models:
+            delay = 2
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
+                    model = genai.GenerativeModel(model_name)
+                    
+                    response = model.generate_content(
+                        prompt,
+                        request_options={"timeout": 30.0}
+                    )
+                    
+                    if response.text:
+                        return response.text.strip()
+
+                except ResourceExhausted as e:
+                    logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
+                    if self._rotate_gemini_key():
+                        time.sleep(1)
+                    else:
+                        time.sleep(delay)
+                        delay *= 2
+
+                except GoogleAPIError as e:
+                    logger.warning(f"⚠️ Gemini API Error: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
+                
+                except Exception as e:
+                    logger.error(f"🔌 Unexpected connection error: {e}")
+                    time.sleep(delay)
+                    delay *= 2
+            
+            logger.info(f"⏭️ Moving to next Gemini model...\n")
         
-        logger.error(f"All AI models/keys exhausted for {company_name} dossier.")
-        system_monitor.send("⚠️ *Enrichment Worker Warning*: Gemini API limit hit across all fallback models.")
-        return "Failed: All Gemini API keys exhausted."
+        # 2. ब्रह्मास्त्र: OpenAI Fallback
+        if self.openai_key:
+            logger.warning("🚨 CRITICAL: All Gemini options exhausted. Activating OpenAI Fallback...")
+            try:
+                client = OpenAI(api_key=self.openai_key)
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=30.0
+                )
+                logger.info("✅ Successfully recovered using OpenAI!")
+                return response.choices[0].message.content.strip()
+            except OpenAIError as e:
+                logger.error(f"🚨 TOTAL SYSTEM FAILURE: OpenAI Error: {e}")
+
+        system_monitor.send("⚠️ *Enrichment Worker Warning*: TOTAL API FAILURE. Both Gemini and OpenAI failed.")
+        return "Failed: All API Ecosystems (Gemini & OpenAI) exhausted."
 
 # ==========================================
 # 3. DECISION MAKER HUNTER
@@ -221,7 +273,6 @@ def run_enrichment_worker():
         dossier = dossier_engine.generate(lead.get('url', ''), org)
         contacts = enricher.hunt_decision_maker(org)
         
-        # Wrapped the push operations in a properly closed try-except block
         try:
             # Push Dossier update
             webhook_post({
@@ -242,7 +293,6 @@ def run_enrichment_worker():
         except Exception as e:
             logger.error(f"Failed to push updates for {org}: {e}")
 
-    # End-of-Run Execution Summary to Telegram
     duration = str(datetime.now() - start_time).split('.')[0]
     summary_msg = (
         f"🧠 *Enrichment Run Complete*\n"
