@@ -182,7 +182,8 @@ class DataEngine:
 class BatchedSplitBrain:
     def __init__(self, key_manager):
         self.keys = key_manager
-        self.models = ['gemini-3.5-flash', 'gemini-1.5-flash']
+        # Current active flagship models
+        self.models = ['gemini-3.8-flash', 'gemini-3.5-flash']
 
     def evaluate_batch(self, batch, target, ind, country, states, banned_kw):
         if not batch: return []
