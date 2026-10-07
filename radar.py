@@ -190,9 +190,9 @@ class BatchedSplitBrain:
     def __init__(self, key_manager):
         self.keys = key_manager
         self.gemini_models = [
-            'gemini-2.5-pro',       # Tier 1 (Top Model)
-            'gemini-2.5-flash',     # Tier 2 (Middle)
-            'gemini-2.0-flash'      # Tier 3 (Fastest Fallback)
+            'gemini-3.1-pro-preview',   # Tier 1 (Explicitly recommended by Google's error)
+            'gemini-3.1-flash',         # Tier 2 (Standard fast model)
+            'gemini-3.0-flash'          # Tier 3 (Fallback)
         ]
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         self.current_gemini_key = self.keys.get_api_key()
