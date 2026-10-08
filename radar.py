@@ -8,13 +8,11 @@ import uuid
 import time
 import random
 import logging
-import concurrent.futures
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
 from google import genai
-from google.genai import types
 from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
 
@@ -24,11 +22,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("RadarScout")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-
-try:
-    from ddgs import DDGS
-except ImportError:
-    DDGS = None
 
 # ==========================================
 # 1. CREDENTIALS & SYSTEM ALERTS
@@ -40,12 +33,6 @@ class APIKeyManager:
         if not self.keys: raise ValueError("No API keys found. Check GitHub Secrets.")
 
     def get_current(self): return self.keys[self.index]
-
-    def get_api_key(self): return self.get_current()
-
-    def get_backup_key(self):
-        self.index = (self.index + 1) % len(self.keys)
-        return self.get_current()
 
     def rotate(self, service_name):
         self.index = (self.index + 1) % len(self.keys)
@@ -75,7 +62,7 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default_secret")
 system_monitor = SystemAlertNotifier()
 
 # ==========================================
-# 2. CACHE MANAGER (GITHUB ACTIONS SAFE)
+# 2. CACHE MANAGER
 # ==========================================
 CACHE_FILE = "seen_links.txt"
 if not os.path.exists(CACHE_FILE): open(CACHE_FILE, 'w').close()
@@ -128,13 +115,15 @@ class QueryGenerator:
         TRACK 3 (MCA): Corporate registrations for new companies in this space. (e.g., site:zaubacorp.com)
         TRACK 4 (COMMERCIAL): You MUST generate exactly 2 distinct strategies here:
            - Query 1: Target job aggregators (e.g., site:naukri.com OR site:linkedin.com/jobs)
-           - Query 2: Target direct corporate websites by using negative keywords to block job boards (e.g., "careers" "{self.target}" "{self.loc}" -naukri -linkedin -indeed -glassdoor -ambitionbox)
+           - Query 2: Target direct corporate websites by using negative keywords to block job boards.
         
         CRITICAL RULES:
         - Keep EVERY query under 15 words to prevent search engine crashes.
         - Only use a maximum of 2 'OR' conditions per query.
         - Generate exactly 2 queries per track.
         - Use exact match quotes "" for the product name.
+        - MANDATORY GEOGRAPHY: You must include the exact word "{self.country}" or "{self.loc}" as a standalone keyword in every single query. 
+        - DO NOT restrict searches using site:.in or site:.co.in. We want to find companies regardless of their domain extension.
         
         Respond STRICTLY with a valid JSON object matching this exact structure:
         {{
@@ -167,12 +156,12 @@ class QueryGenerator:
     def _fallback_tracks(self):
         yr = self.year
         return {
-            "TRACK_1_TENDERS": [f'"{self.target}" tender "{yr}" site:eprocure.gov.in'],
-            "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" ("authorized dealer" OR "reseller") "{self.loc}"'],
-            "TRACK_3_MCA": [f'"{self.ind}" "Incorporation" "{yr}" "{self.loc}" site:zaubacorp.com'],
+            "TRACK_1_TENDERS": [f'"{self.target}" tender "{yr}" "{self.country}"', f'"{self.target}" RFP "{self.country}"'],
+            "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" ("authorized dealer" OR "reseller") "{self.country}"'],
+            "TRACK_3_MCA": [f'"{self.ind}" "Incorporation" "{yr}" "{self.loc}"'],
             "TRACK_4_COMMERCIAL": [
                 f'hiring "{self.target}" "{yr}" site:naukri.com',
-                f'"careers" "{self.target}" "{self.loc}" -naukri -linkedin -indeed'
+                f'"careers" "{self.target}" "{self.country}" -naukri -linkedin -indeed'
             ]
         }
 
@@ -187,34 +176,41 @@ class DataEngine:
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
         ]
 
-    def search(self, query):
+    def search(self, query, country_name="India"):
         logger.info(f"🔍 Executing Serper Query: {query}")
         results = []
         max_retries = len(self.serper_keys.keys) if self.serper_keys.keys else 1
         
         url = "https://google.serper.dev/search"
         
+        gl_map = {
+            "india": "in", "united states": "us", "usa": "us",
+            "uk": "gb", "united kingdom": "gb", "uae": "ae",
+            "united arab emirates": "ae", "australia": "au",
+            "canada": "ca", "singapore": "sg", "germany": "de"
+        }
+        gl_code = gl_map.get(str(country_name).strip().lower(), "us")
+
         for attempt in range(max_retries):
             current_key = self.serper_keys.get_current()
             if not current_key:
                 logger.error("❌ No Serper API keys configured!")
                 return results
 
-            # CRITICAL FIX 1: .strip() removes any hidden \n or \r characters from the API key
             headers = {
                 'X-API-KEY': str(current_key).strip(),
                 'Content-Type': 'application/json'
             }
             
-            # Keep it to the absolute minimum required parameters
             payload = json.dumps({
-                "q": str(query).strip()
+                "q": str(query).strip(),
+                "gl": gl_code,
+                "num": 15
             })
 
             try:
                 response = requests.request("POST", url, headers=headers, data=payload, timeout=15)
                 
-                # CRITICAL FIX 2: If it 400s again, print the EXACT error message from Serper's servers
                 if response.status_code == 400:
                     logger.error(f"❌ Serper 400 Error. Query: {query} | Serper says: {response.text}")
                     return results
@@ -267,24 +263,19 @@ class DataEngine:
             return None
 
 # ==========================================
-# 5. AI BATCH EVALUATOR
+# 5. MASTER AI EVALUATOR
 # ==========================================
 class BatchedSplitBrain:
     def __init__(self, key_manager):
         self.keys = key_manager
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
-        
         self.current_gemini_key = self.keys.get_current()
-        # NEW SDK: Initialize Client directly instead of genai.configure()
         self.client = genai.Client(api_key=self.current_gemini_key) 
-        
-        # Dynamically build the model stack on startup
         self.gemini_models = self._get_flash_model_stack()
 
     def _get_flash_model_stack(self):
         try:
             valid_models = []
-            # NEW SDK: Use client.models.list()
             for m in self.client.models.list():
                 name = m.name.lower().replace("models/", "")
                 banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
@@ -303,7 +294,6 @@ class BatchedSplitBrain:
                 return valid_models
         except Exception as e:
             logger.warning(f"⚠️ Could not fetch live model list: {e}. Using fallbacks.")
-        
         return ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
 
     def _rotate_gemini_key(self):
@@ -311,23 +301,19 @@ class BatchedSplitBrain:
         if new_key and new_key != self.current_gemini_key:
             logger.info("🔑 Rotating to a backup Gemini API Key...")
             self.current_gemini_key = new_key
-            # NEW SDK: Reinitialize client with new key
             self.client = genai.Client(api_key=self.current_gemini_key)
             return True
         logger.warning("⚠️ No more backup Gemini keys available.")
         return False
 
-    def evaluate_batch(self, batch, target, ind, country, states, banned_kw):
+    def evaluate_batch(self, batch, target, ind, country, states, geo_rule, ban_rule):
         if not batch: return []
-        
-        geo_rule = f"Preferred States: {states}. If match is outside preferred state, set is_valid: true, confidence: LOW, reason: OUTSIDE_TARGET_STATE." if states else f"Target Country: {country}."
-        ban_rule = f"REJECT (is_valid: false) if primary intent is about these banned words: {banned_kw}." if banned_kw else ""
         
         items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:5000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
 
         prompt = f"""
         Your Role: You are a ruthless, senior sales executive at a B2B business transformation and digital advisory firm.
-        Your Mission: Analyze the raw web scrapes below to identify and qualify real companies that match our target segment, and produce highly structured, actionable intelligence ready for outreach targeting the product offering.
+        Your Mission: Analyze the raw web scrapes below to identify and qualify real companies that match our target segment, and produce highly structured, actionable intelligence ready for outreach.
 
         TARGET PRODUCT/OFFERING: {target}
         INDUSTRY CONTEXT & SEGMENT: {ind}
@@ -336,27 +322,20 @@ class BatchedSplitBrain:
 
         STEP 1 - THE QUALIFICATION LENS:
         Before classifying, internalize what this segment is trying to solve. Look for urgency drivers in the scraped text: project pipelines, digital maturity signals, public tenders, hiring patterns, capacity expansions, or regulatory pressures. 
-        Keep in mind: Why now? What are the target business outcomes? Which specific features/modules or partner implementation services fit this segment?
 
         STEP 2 - CRITICAL CLASSIFICATION LOGIC & RESEARCH:
         If the text reveals a real company, extract their details and classify their role:
-        1. THE "HIRING" SIGNAL: Job postings hiring someone with '{target}' skills = active user/expanding team.
-           -> Action: Set entity_role to "SERVICE_USER". Set is_valid to true.
-        2. THE "TENDER" SIGNAL: Company/gov issuing a tender, RFP, or seeking vendors for '{target}'.
-           -> Action: Set entity_role to "BUYER". Set is_valid to true.
-        3. THE "PARTNER" SIGNAL: Reseller, distributor, consultant, or service provider for '{target}'.
-           -> Action: Set entity_role to "SELLER". Set is_valid to true.
-        4. THE "EXPANSION" SIGNAL: Building a new plant, expanding capacity, or environmental clearance.
-           -> Action: Set entity_role to "PROJECT_BUYER". Set is_valid to true.
+        1. THE "HIRING" SIGNAL: Job postings hiring someone with '{target}' skills. -> Set entity_role to "SERVICE_USER".
+        2. THE "TENDER" SIGNAL: Company/gov issuing a tender, RFP, or seeking vendors for '{target}'. -> Set entity_role to "BUYER".
+        3. THE "PARTNER" SIGNAL: Reseller, distributor, consultant, or service provider for '{target}'. -> Set entity_role to "SELLER".
+        4. THE "EXPANSION" SIGNAL: Building a new plant, expanding capacity, or environmental clearance. -> Set entity_role to "PROJECT_BUYER".
 
-        FATAL ERRORS TO AVOID (STRICT):
-        - DO NOT list job boards (Naukri, LinkedIn) or government portals (GeM, eProcure) as the "organization". You must find the ACTUAL company name embedded in the text.
+        FATAL ERRORS TO AVOID (STRICT - VIOLATION RESULTS IN TERMINATION):
+        - STRICT GEOGRAPHY: The lead MUST have operations, projects, or hiring actively occurring in the TARGET COUNTRY. Multinational companies with global headquarters elsewhere ARE PERFECTLY VALID as long as they are operating, hiring, or buying within the TARGET COUNTRY. If the text proves the lead is EXCLUSIVELY operating outside the TARGET COUNTRY with zero local presence, set is_valid to false and entity_role to "IRRELEVANT".
+        - DO NOT list job boards (Naukri, LinkedIn) or government portals as the "organization". Extract the ACTUAL company name.
         - If the text is a generic directory of links with no specific company context, set is_valid to false and entity_role to "IRRELEVANT".
-        - "Why Engage Now" must reference specific, concrete signals found in the text — not generic claims.
-        - Product usage status must be evidence-based (e.g., job posting confirms usage), not assumed.
 
         STEP 3 - PRIORITY SCORING:
-        Evaluate the urgency and assign a Confidence Priority:
         - "HIGH": Not using our product (or using a competitor) + active project pipeline + matches segment closely.
         - "MEDIUM": Unknown product usage, partial match to segment profile, or contact hard to reach.
         - "LOW": Confirmed existing user (upsell only) or incomplete qualifying information.
@@ -365,14 +344,14 @@ class BatchedSplitBrain:
         Respond STRICTLY with a JSON object containing a single key "leads" which maps to an array of objects with these exact keys:
         "item_index": (integer) matches the input item,
         "is_valid": (boolean) true if a real company lead is found,
-        "confidence": (string) "HIGH", "MEDIUM", or "LOW" based on scoring criteria,
+        "confidence": (string) "HIGH", "MEDIUM", or "LOW",
         "entity_role": (string) "BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER", or "IRRELEVANT",
         "organization": (string) Official trading name of the company,
         "city": (string) City and region (if found),
         "state": (string) Website domain or state (if found),
-        "intent_brief": (string) Format exactly as follows: [Activity: 1-2 sentence description of what they do] | [Why Engage Now: 2-4 sentences explaining urgency, pipeline, hiring patterns, or growth signals],
+        "intent_brief": (string) Format exactly: [Activity: ...] | [Why Engage Now: ...],
         "deadline": (string) Upcoming events, trade shows, deadlines, or 'Unknown',
-        "reason": (string) Format exactly as follows: [Product Usage: Confirmed/Competitor/Unknown + Evidence] | [Solutions to Push: Specific products or advisory services that fit] | [Contact: Name, Job Title, Email if found]
+        "reason": (string) Format exactly: [Product Usage: ...] | [Solutions to Push: ...] | [Contact: ...]
         
         DATA BATCH:
         {items_block}
@@ -385,7 +364,6 @@ class BatchedSplitBrain:
                 try:
                     logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
                     
-                    # NEW SDK: generate_content via client with response format
                     response = self.client.models.generate_content(
                         model=model_name,
                         contents=prompt,
@@ -400,16 +378,11 @@ class BatchedSplitBrain:
                     error_msg = str(e).lower()
                     if "429" in error_msg or "quota" in error_msg or "exhausted" in error_msg:
                         logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
-                        if self._rotate_gemini_key():
-                            time.sleep(1)
-                        else:
-                            time.sleep(delay)
-                            delay *= 2
+                        if self._rotate_gemini_key(): time.sleep(1)
+                        else: time.sleep(delay); delay *= 2
                     else:
                         logger.warning(f"⚠️ Gemini API Error: {e}")
-                        if attempt < max_retries - 1:
-                            time.sleep(delay)
-                            delay *= 2
+                        if attempt < max_retries - 1: time.sleep(delay); delay *= 2
             
             logger.info(f"⏭️ Moving to next Gemini model...\n")
 
@@ -440,10 +413,7 @@ class WebhookRouter:
         self.secret = secret
 
     def normalize_company(self, name):
-        # Safety guard: ensure name is a string, default to "Unknown" if None or invalid
-        if not name or not isinstance(name, str):
-            name = "Unknown"
-            
+        if not name or not isinstance(name, str): name = "Unknown"
         clean = re.sub(r'(?i)\b(ltd|pvt|limited|private|inc|corp|llc)\b\.?', '', name)
         return re.sub(r'[^a-zA-Z0-9\s]', '', clean).strip().title()
 
@@ -465,9 +435,9 @@ class WebhookRouter:
         role = ai_result.get('entity_role', 'IRRELEVANT')
         reason = ai_result.get('reason', '')
         
-        target_sheet = "🗑️ AI_Trash" if not is_valid else ("🤝 Partners & Suppliers" if role == "SELLER" else ("⚠️ Needs Review" if confidence == "LOW" else "📥 Inbox"))
+        target_sheet = "🗑 AI_Trash" if not is_valid else ("🤝 Partners & Suppliers" if role == "SELLER" else ("⚠️ Needs Review" if confidence == "LOW" else "📥 Inbox"))
         
-        if target_sheet == "🗑️ AI_Trash":
+        if target_sheet == "🗑 AI_Trash":
             row_data = [capture_date, company_name, reason, doc['url'], doc['track'], ""]
         elif target_sheet == "🤝 Partners & Suppliers":
             row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
@@ -500,34 +470,32 @@ if __name__ == "__main__":
         cache_buster = int(time.time())
         settings_url = f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={cache_buster}"
         
-        # 1. Fetch the raw response first
         raw_response = requests.get(settings_url, timeout=30)
-        
-        # 2. Try to parse it, but print the raw HTML if it fails so we can see the exact error
         try:
             settings_req = raw_response.json()
         except Exception:
             print("🚨 GOOGLE WEBHOOK RETURNED HTML INSTEAD OF JSON! Here is what Google said:")
-            print(raw_response.text[:1000])  # Print the first 1000 characters of the error
+            print(raw_response.text[:1000])
             exit()
             
-        # 1. Base Arrays
         TARGETS = settings_req.get("target_products", [])
         if not TARGETS: raise ValueError("No target products defined in Column A.")
         
         INDUSTRIES = settings_req.get("industry_keywords", [])
         COUNTRIES = settings_req.get("target_countries", [])
         STATES = settings_req.get("target_states", [])
-        
-        # 2. Banned Lists (used for filtering links and text)
         BANNED_KW = [k.lower() for k in settings_req.get("banned_keywords", [])]
         BANNED_SITES = [s.lower() for s in settings_req.get("banned_websites", [])]
         PROTECTED_DOMAINS = [d.lower() for d in settings_req.get("protected_domains", [])]
         
-        # 3. Smart Search Bundling (Wraps multiple items in OR statements for Google Dorks)
         IND = "(" + " OR ".join(INDUSTRIES) + ")" if INDUSTRIES else "Unknown"
         COUNTRY = "(" + " OR ".join(COUNTRIES) + ")" if COUNTRIES else "India"
         LOC = "(" + " OR ".join(STATES) + ")" if STATES else ""
+        
+        # Define the exact Geographic and Banning rules for the AI
+        country_name = COUNTRIES[0] if COUNTRIES else "India"
+        geo_rule = f"TARGET COUNTRY: {country_name}. Multinational companies are VALID as long as they have operations, active projects, or hiring taking place inside {country_name}. Only reject leads that are strictly operating outside of {country_name} with no local presence."
+        ban_rule = f"Do not qualify any of these domains: {', '.join(BANNED_SITES)}" if BANNED_SITES else ""
 
     except Exception as e:
         system_monitor.send(f"🚨 *Radar Scout Halted*: Could not fetch parameters from Google Sheet.\nError: `{e}`")
@@ -538,13 +506,11 @@ if __name__ == "__main__":
     router = WebhookRouter(WEBHOOK_URL, WEBHOOK_SECRET)
     seen_links = load_hybrid_cache()
     
-    # NEW: Run a dedicated pipeline for EVERY product in Column A
     for TARGET in TARGETS:
         logger.info(f"\n==============================================")
         logger.info(f"🚀 LAUNCHING PIPELINE FOR TARGET: {TARGET}")
         logger.info(f"==============================================")
         
-        # Pass the initialized Gemini client and dynamic model stack to the Query Generator
         generator = QueryGenerator(TARGET, IND, COUNTRY, LOC, evaluator.client, evaluator.gemini_models)
         tracks = generator.build_tracks()
 
@@ -553,31 +519,26 @@ if __name__ == "__main__":
             docs_to_evaluate = []
             
             for query in queries:
-                for res in engine.search(query):
+                # PASS THE DYNAMIC COUNTRY VARIABLE TO SERPER
+                for res in engine.search(query, country_name=country_name):
                     link, snippet = res.get("link", "").lower(), res.get("snippet", "").lower()
                     
                     if not link or link in seen_links: continue
                     scanned_links += 1
                     
-                   # 1. Check if the link belongs to a Protected Domain
                     is_protected = any(pd in link for pd in PROTECTED_DOMAINS if pd)
                     
-                    # 2. Only apply Ban Filters if the domain is NOT protected
                     if not is_protected:
                         if any(bd in link for bd in BANNED_SITES if bd):
-                            # ADDED PRINT: Tell us if a site was banned
                             print(f"🚫 Dropped (Banned Site): {link}")
                             save_to_cache(link); seen_links.add(link); continue
                             
                         if any(bx in snippet for bx in BANNED_KW if bx):
-                            # ADDED PRINT: Tell us if a keyword was banned
                             print(f"🚫 Dropped (Banned Keyword): {link}")
                             save_to_cache(link); seen_links.add(link); continue
 
-                    # 3. Date Filter (Check if it's too old)
                     years = [int(y) for y in re.findall(r'\b(?:202[0-9])\b', f"{link} {snippet}")]
                     if years and max(years) < datetime.now().year - 1:
-                        # ADDED PRINT: Tell us if the date is too old
                         print(f"⏳ Dropped (Too Old): {link} (Max Year: {max(years)})")
                         save_to_cache(link); seen_links.add(link); continue
 
@@ -591,7 +552,8 @@ if __name__ == "__main__":
                 logger.info(f"Batched {len(docs_to_evaluate)} documents for AI analysis.")
                 for i in range(0, len(docs_to_evaluate), 5):
                     batch = docs_to_evaluate[i:i+5]
-                    ai_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, BANNED_KW)
+                    # Pass the geo and ban rules explicitly to the AI batch processor
+                    ai_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
                     
                     for verdict in ai_verdicts:
                         idx = verdict.get("item_index")
