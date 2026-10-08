@@ -245,19 +245,31 @@ class DataEngine:
 
     def fetch(self, url):
         time.sleep(random.uniform(1.5, 3.0))
-        verify_ssl = False if '.gov.in' in url or '.nic.in' in url else True
         
+        # 1. If it's a known anti-bot / gov site, route directly through the free reader bridge
+        is_gov_or_protected = any(k in url.lower() for k in [".gov.in", ".nic.in", "zaubacorp", "gem.gov.in"])
+        target_url = f"https://r.jina.ai/{url}" if is_gov_or_protected else url
+
         try:
             headers = {"User-Agent": random.choice(self.user_agents)}
-            res = requests.get(url, headers=headers, timeout=12, verify=verify_ssl)
+            verify_ssl = False if ('.gov.in' in url or '.nic.in' in url) else True
+            
+            res = requests.get(target_url, headers=headers, timeout=18, verify=verify_ssl)
+            
+            # If standard request failed and we didn't use the bridge yet, try the bridge as fallback
+            if res.status_code != 200 and not is_gov_or_protected:
+                res = requests.get(f"https://r.jina.ai/{url}", headers=headers, timeout=18)
+                
             res.raise_for_status()
 
+            # Handle PDF downloads
             if 'application/pdf' in res.headers.get('Content-Type', '') or url.lower().endswith('.pdf'):
                 return "".join(page.extract_text() + "\n" for page in PdfReader(BytesIO(res.content)).pages[:10]).strip()
                 
             soup = BeautifulSoup(res.text, 'html.parser')
             for el in soup(["script", "style", "nav", "footer", "header"]): el.decompose()
-            return " ".join(soup.get_text(separator=" ", strip=True).split())[:12000]
+            return " ".join(soup.get_text(separator=" ", strip=True).split())[:6000]
+
         except Exception as e:
             logger.warning(f"Scrape failed [{url}]: {e}")
             return None
