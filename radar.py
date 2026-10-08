@@ -177,37 +177,66 @@ class QueryGenerator:
         }
 
 # ==========================================
-# 4. HARVESTER & SCRAPER (WITH EVASION)
+# 4. DATA ENGINE (Scraping & Search)
 # ==========================================
 class DataEngine:
-    def __init__(self, serper_keys):
-        self.keys = serper_keys
+    def __init__(self, key_manager):
+        self.serper_keys = key_manager
         self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
         ]
 
     def search(self, query):
-        logger.info(f"Searching: {query}")
+        logger.info(f"🔍 Executing Serper Query: {query}")
         results = []
-        payload = json.dumps({"q": query, "num": 10, "tbs": "qdr:w"})
+        max_retries = len(self.serper_keys.keys) if self.serper_keys.keys else 1
         
-        for _ in range(len(self.keys.keys)):
-            headers = {'X-API-KEY': self.keys.get_current(), 'Content-Type': 'application/json'}
+        url = "https://google.serper.dev/search"
+        payload = json.dumps({"q": query, "gl": "in", "num": 15})
+        
+        for attempt in range(max_retries):
+            current_key = self.serper_keys.get_current()
+            if not current_key:
+                logger.error("❌ No Serper API keys configured!")
+                return results
+
+            headers = {
+                'X-API-KEY': current_key,
+                'Content-Type': 'application/json'
+            }
+
             try:
-                res = requests.post("https://google.serper.dev/search", headers=headers, data=payload, timeout=15)
-                if res.status_code in [403, 429]: self.keys.rotate("Serper"); continue
-                if res.status_code == 200: results = res.json().get("organic", []); break
-            except: pass
-            
-        if not results and DDGS:
-            logger.info("Serper empty. Cascading to DuckDuckGo...")
-            try:
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    results = [{"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")} 
-                               for r in executor.submit(lambda: list(DDGS().text(query, timelimit="w", max_results=10))).result(timeout=15)]
-            except: pass
+                response = requests.request("POST", url, headers=headers, data=payload, timeout=15)
+                
+                # If Unauthorized or Quota Exceeded, rotate key immediately and retry
+                if response.status_code in [401, 403, 429]:
+                    logger.warning(f"⚠️ Serper Key failed (Status {response.status_code}). Rotating...")
+                    self.serper_keys.rotate("Serper")
+                    continue
+                    
+                response.raise_for_status()
+                data = response.json()
+                
+                if "organic" in data:
+                    for item in data["organic"]:
+                        link = item.get("link")
+                        snippet = item.get("snippet", "")
+                        if link:
+                            results.append({"link": link, "snippet": snippet})
+                    
+                    if results:
+                        return results # Success! Return immediately.
+                
+                # If we get here, the API worked but returned 0 results for this specific query.
+                logger.info("ℹ️ Serper returned 0 results for this specific query.")
+                return results 
+                
+            except Exception as e:
+                logger.error(f"🚨 Serper Connection Error: {e}")
+                self.serper_keys.rotate("Serper")
+                
+        logger.error("❌ All Serper keys failed for this query.")
         return results
 
     def fetch(self, url):
