@@ -114,19 +114,24 @@ class QueryGenerator:
             "TRACK_1_TENDERS": [
                 f'"{self.target}" ("{yr}" OR "{yr-1}") tender OR RFP site:eprocure.gov.in',
                 f'"{self.target}" "bid document" "{yr}" site:gem.gov.in',
-                f'"{self.target}" {self.ind} tender "{yr}" site:mahatenders.gov.in'
+                f'"{self.ind}" tender "{yr}" site:mahatenders.gov.in'
             ],
-            "TRACK_2_CAPEX": [
-                f'"{self.target}" "environmental clearance" "{yr}" site:environmentclearance.nic.in',
-                f'"{self.target}" ("land allotment" OR "industrial area") "{yr}" (MIDC OR GIDC OR SIPCOT)',
-                f'"{self.target}" ("capacity expansion" OR "greenfield project") "{yr}" "{self.loc}" filetype:pdf'
+            "TRACK_2_CAPEX_AND_PARTNERS": [
+                # Captures physical goods expansion
+                f'"{self.target}" ("capacity expansion" OR "greenfield project") "{yr}" "{self.loc}"',
+                f'"{self.target}" ("land allotment" OR "industrial area") "{yr}"',
+                # Captures software resellers AND hardware dealers
+                f'"{self.target}" ("authorized dealer" OR "reseller" OR "distributor") "{self.loc}"'
             ],
             "TRACK_3_MCA": [
+                # Captures new companies based purely on the industry cell in your sheet
                 f'"{self.ind}" "Incorporation Date" "{yr}" "{self.loc}" site:zaubacorp.com'
             ],
             "TRACK_4_COMMERCIAL": [
-                f'hiring ("{self.target}" OR "{self.ind}") (engineer OR specialist) "{yr}" site:naukri.com OR site:linkedin.com',
-                f'"{self.target}" service provider OR consultant "{yr}" "{self.loc}"'
+                # Captures hiring intents for ANY target (software developers, pump engineers, etc.)
+                f'hiring "{self.target}" (engineer OR specialist OR manager OR operator) "{yr}" site:naukri.com OR site:linkedin.com',
+                # Captures B2B service queries
+                f'"{self.target}" (service provider OR consultant OR agency) "{yr}" "{self.loc}"'
             ]
         }
 
