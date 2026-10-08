@@ -101,7 +101,6 @@ def save_to_cache(link):
 # 3. DYNAMIC AI QUERY GENERATOR
 # ==========================================
 class QueryGenerator:
-    # We now pass the AI client and models directly into the generator
     def __init__(self, target, ind, country, loc, ai_client, ai_models):
         self.target = target.strip()
         self.ind = ind.strip() if ind and ind != "Unknown" else ""
@@ -114,7 +113,7 @@ class QueryGenerator:
     def build_tracks(self):
         logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
         
-       prompt = f"""
+        prompt = f"""
         You are an elite OSINT and B2B Data Analyst. Your task is to generate highly optimized Google Search queries (Dorks) to find B2B leads for the following product:
         
         TARGET PRODUCT: {self.target}
@@ -171,7 +170,10 @@ class QueryGenerator:
             "TRACK_1_TENDERS": [f'"{self.target}" tender "{yr}" site:eprocure.gov.in'],
             "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" ("authorized dealer" OR "reseller") "{self.loc}"'],
             "TRACK_3_MCA": [f'"{self.ind}" "Incorporation" "{yr}" "{self.loc}" site:zaubacorp.com'],
-            "TRACK_4_COMMERCIAL": [f'hiring "{self.target}" "{yr}" site:naukri.com']
+            "TRACK_4_COMMERCIAL": [
+                f'hiring "{self.target}" "{yr}" site:naukri.com',
+                f'"careers" "{self.target}" "{self.loc}" -naukri -linkedin -indeed'
+            ]
         }
 
 # ==========================================
