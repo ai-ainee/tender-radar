@@ -188,41 +188,66 @@ class DataEngine:
         ]
 
     def search(self, query):
-        logger.info(f"Searching Serper.dev: {query}")
+        logger.info(f"🔍 Executing Serper Query: {query}")
         results = []
+        max_retries = len(self.serper_keys.keys) if self.serper_keys.keys else 1
         
-        if not self.serper_keys:
-            logger.error("No Serper keys available!")
-            return results
-            
-        current_key = self.serper_keys.get_current()
         url = "https://google.serper.dev/search"
-        payload = json.dumps({"q": query, "gl": "in", "num": 10})
-        headers = {
-            'X-API-KEY': current_key,
-            'Content-Type': 'application/json'
-        }
         
-        try:
-            response = requests.request("POST", url, headers=headers, data=payload, timeout=15)
-            response.raise_for_status()
-            data = response.json()
+        for attempt in range(max_retries):
+            current_key = self.serper_keys.get_current()
+            if not current_key:
+                logger.error("❌ No Serper API keys configured!")
+                return results
+
+            headers = {
+                'X-API-KEY': current_key,
+                'Content-Type': 'application/json'
+            }
             
-            # Extract organic results
-            if "organic" in data:
-                for item in data["organic"]:
-                    link = item.get("link")
-                    snippet = item.get("snippet", "")
-                    if link:
-                        results.append({"link": link, "snippet": snippet})
-                        
-            if not results:
-                logger.warning(f"Serper returned 0 organic links for: {query}")
+            # Using exact standard Serper.dev formatting.
+            # No extra parameters that might trigger a 400 Bad Request.
+            payload = json.dumps({
+                "q": query,
+                "num": 15
+            })
+
+            try:
+                # Add strict timeout to prevent hanging
+                response = requests.request("POST", url, headers=headers, data=payload, timeout=15)
                 
-        except Exception as e:
-            logger.error(f"Serper API Error: {e}")
-            self.serper_keys.rotate("Serper") # Rotate key if rate limited
-            
+                # Check for Bad Request (400) specifically
+                if response.status_code == 400:
+                    logger.error(f"❌ Serper 400 Bad Request. Query was: {query}. The query formatting was rejected by Serper.")
+                    return results # Do not rotate keys, the query itself is the problem.
+                
+                # If Quota Exceeded/Unauthorized, rotate key and retry
+                if response.status_code in [401, 403, 429]:
+                    logger.warning(f"⚠️ Serper Key failed (Status {response.status_code}). Rotating...")
+                    self.serper_keys.rotate("Serper")
+                    continue
+                    
+                response.raise_for_status()
+                data = response.json()
+                
+                if "organic" in data:
+                    for item in data["organic"]:
+                        link = item.get("link")
+                        snippet = item.get("snippet", "")
+                        if link:
+                            results.append({"link": link, "snippet": snippet})
+                    
+                    if results:
+                        return results
+                
+                logger.info("ℹ️ Serper returned 0 results for this specific query.")
+                return results 
+                
+            except Exception as e:
+                logger.error(f"🚨 Serper Connection Error: {e}")
+                self.serper_keys.rotate("Serper")
+                
+        logger.error("❌ All Serper keys failed for this query.")
         return results
 
     def fetch(self, url):
