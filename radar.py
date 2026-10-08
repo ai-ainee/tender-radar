@@ -188,55 +188,41 @@ class DataEngine:
         ]
 
     def search(self, query):
-        logger.info(f"🔍 Executing Serper Query: {query}")
+        logger.info(f"Searching Serper.dev: {query}")
         results = []
-        max_retries = len(self.serper_keys.keys) if self.serper_keys.keys else 1
         
+        if not self.serper_keys:
+            logger.error("No Serper keys available!")
+            return results
+            
+        current_key = self.serper_keys.get_current()
         url = "https://google.serper.dev/search"
-        payload = json.dumps({"q": query, "gl": "in", "num": 15})
+        payload = json.dumps({"q": query, "gl": "in", "num": 10})
+        headers = {
+            'X-API-KEY': current_key,
+            'Content-Type': 'application/json'
+        }
         
-        for attempt in range(max_retries):
-            current_key = self.serper_keys.get_current()
-            if not current_key:
-                logger.error("❌ No Serper API keys configured!")
-                return results
-
-            headers = {
-                'X-API-KEY': current_key,
-                'Content-Type': 'application/json'
-            }
-
-            try:
-                response = requests.request("POST", url, headers=headers, data=payload, timeout=15)
+        try:
+            response = requests.request("POST", url, headers=headers, data=payload, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract organic results
+            if "organic" in data:
+                for item in data["organic"]:
+                    link = item.get("link")
+                    snippet = item.get("snippet", "")
+                    if link:
+                        results.append({"link": link, "snippet": snippet})
+                        
+            if not results:
+                logger.warning(f"Serper returned 0 organic links for: {query}")
                 
-                # If Unauthorized or Quota Exceeded, rotate key immediately and retry
-                if response.status_code in [401, 403, 429]:
-                    logger.warning(f"⚠️ Serper Key failed (Status {response.status_code}). Rotating...")
-                    self.serper_keys.rotate("Serper")
-                    continue
-                    
-                response.raise_for_status()
-                data = response.json()
-                
-                if "organic" in data:
-                    for item in data["organic"]:
-                        link = item.get("link")
-                        snippet = item.get("snippet", "")
-                        if link:
-                            results.append({"link": link, "snippet": snippet})
-                    
-                    if results:
-                        return results # Success! Return immediately.
-                
-                # If we get here, the API worked but returned 0 results for this specific query.
-                logger.info("ℹ️ Serper returned 0 results for this specific query.")
-                return results 
-                
-            except Exception as e:
-                logger.error(f"🚨 Serper Connection Error: {e}")
-                self.serper_keys.rotate("Serper")
-                
-        logger.error("❌ All Serper keys failed for this query.")
+        except Exception as e:
+            logger.error(f"Serper API Error: {e}")
+            self.serper_keys.rotate("Serper") # Rotate key if rate limited
+            
         return results
 
     def fetch(self, url):
