@@ -211,6 +211,7 @@ class DossierEngine:
 # 3. DECISION MAKER HUNTER
 # ==========================================
 class WaterfallEnrichment:
+    
     def domain_accepts_email(domain):
     """100% free check to ensure domain has active mail exchange (MX) records."""
     try:
