@@ -516,7 +516,22 @@ if __name__ == "__main__":
         cache_buster = int(time.time())
         settings_url = f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={cache_buster}"
         
-        raw_response = requests.get(settings_url, timeout=30)
+        # Upgraded Fetcher: 60-second timeout with 3 automatic retries
+        raw_response = None
+        for attempt in range(3):
+            try:
+                logger.info(f"Connecting to Google Sheets CRM (Attempt {attempt+1}/3)...")
+                raw_response = requests.get(settings_url, timeout=60)
+                if raw_response.status_code == 200:
+                    break
+            except Exception as e:
+                logger.warning(f"Google Webhook slow to respond. Retrying... ({e})")
+                time.sleep(4)
+                
+        if not raw_response or raw_response.status_code != 200:
+            logger.error(f"🚨 Google Apps Script failed to respond after 3 attempts.")
+            exit()
+            
         try:
             settings_req = raw_response.json()
         except Exception:
