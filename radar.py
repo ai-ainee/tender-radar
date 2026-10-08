@@ -520,17 +520,26 @@ if __name__ == "__main__":
                     if not link or link in seen_links: continue
                     scanned_links += 1
                     
-                    # 1. Check if the link belongs to a Protected Domain
+                   # 1. Check if the link belongs to a Protected Domain
                     is_protected = any(pd in link for pd in PROTECTED_DOMAINS if pd)
                     
                     # 2. Only apply Ban Filters if the domain is NOT protected
                     if not is_protected:
-                        if any(bd in link for bd in BANNED_SITES if bd) or any(bx in snippet for bx in BANNED_KW if bx):
+                        if any(bd in link for bd in BANNED_SITES if bd):
+                            # ADDED PRINT: Tell us if a site was banned
+                            print(f"🚫 Dropped (Banned Site): {link}")
+                            save_to_cache(link); seen_links.add(link); continue
+                            
+                        if any(bx in snippet for bx in BANNED_KW if bx):
+                            # ADDED PRINT: Tell us if a keyword was banned
+                            print(f"🚫 Dropped (Banned Keyword): {link}")
                             save_to_cache(link); seen_links.add(link); continue
 
                     # 3. Date Filter (Check if it's too old)
                     years = [int(y) for y in re.findall(r'\b(?:202[0-9])\b', f"{link} {snippet}")]
                     if years and max(years) < datetime.now().year - 1:
+                        # ADDED PRINT: Tell us if the date is too old
+                        print(f"⏳ Dropped (Too Old): {link} (Max Year: {max(years)})")
                         save_to_cache(link); seen_links.add(link); continue
 
                     save_to_cache(link); seen_links.add(link)
