@@ -23,6 +23,17 @@ logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ==========================================
+# 0. FREE DNS MX CHECKER
+# ==========================================
+def domain_accepts_email(domain):
+    """100% free check to ensure domain has active mail exchange (MX) records."""
+    try:
+        records = dns.resolver.resolve(domain, 'MX')
+        return len(records) > 0
+    except Exception:
+        return False
+
+# ==========================================
 # 1. CREDENTIALS & SYSTEM ALERTS
 # ==========================================
 class APIKeyManager:
@@ -75,10 +86,7 @@ class DossierEngine:
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         
         self.current_gemini_key = self.keys.get_current()
-        # NEW SDK: Initialize Client
         self.client = genai.Client(api_key=self.current_gemini_key)
-        
-        # Dynamically build the model stack on startup
         self.gemini_models = self._get_flash_model_stack()
         
         self.user_agents = [
@@ -165,7 +173,6 @@ class DossierEngine:
                 try:
                     logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
                     
-                    # NEW SDK: generate_content
                     response = self.client.models.generate_content(
                         model=model_name,
                         contents=prompt
@@ -211,15 +218,6 @@ class DossierEngine:
 # 3. DECISION MAKER HUNTER
 # ==========================================
 class WaterfallEnrichment:
-    
-    def domain_accepts_email(domain):
-    """100% free check to ensure domain has active mail exchange (MX) records."""
-    try:
-        records = dns.resolver.resolve(domain, 'MX')
-        return len(records) > 0
-    except Exception:
-        return False
-        
     def __init__(self, key_manager):
         self.keys = key_manager
 
@@ -265,7 +263,6 @@ class WaterfallEnrichment:
         if contact_data["website"]:
             domain = contact_data["website"].replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "")
             
-            # Check if domain can actually receive emails
             if domain_accepts_email(domain):
                 if contact_data["dm_name"] != "Unknown":
                     contact_data["email"] = f"{contact_data['dm_name'].split(' ')[0].lower()}@{domain}"
@@ -273,6 +270,8 @@ class WaterfallEnrichment:
                     contact_data["email"] = f"info@{domain}"
             else:
                 contact_data["email"] = "N/A (No MX Record)"
+
+        return contact_data
 
 # ==========================================
 # 4. MASTER EXECUTION
