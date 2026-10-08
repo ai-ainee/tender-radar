@@ -15,6 +15,9 @@ from datetime import datetime
 from google import genai
 from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
+from curl_cffi import requests as cureq
+import pytesseract
+from pdf2image import convert_from_bytes
 
 # --- CONFIGURATION & LOGGING ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -83,6 +86,26 @@ def load_hybrid_cache():
 
 def save_to_cache(link):
     with open(CACHE_FILE, 'a') as f: f.write(link + '\n')
+
+def prune_relevant_text(raw_text, keywords, window=400):
+    if len(raw_text) < 2500:
+        return raw_text
+    snippets = []
+    text_lower = raw_text.lower()
+    for kw in keywords:
+        if not kw or kw == "Unknown": continue
+        start = 0
+        while True:
+            idx = text_lower.find(kw.lower(), start)
+            if idx == -1: break
+            snippet_start = max(0, idx - window)
+            snippet_end = min(len(raw_text), idx + window)
+            snippets.append(raw_text[snippet_start:snippet_end])
+            start = idx + len(kw) + window
+            if len(snippets) >= 4: break
+    if snippets:
+        return " ... \n".join(snippets)
+    return raw_text[:3000]
 
 # ==========================================
 # 3. DYNAMIC AI QUERY GENERATOR
@@ -245,8 +268,6 @@ class DataEngine:
 
     def fetch(self, url):
         time.sleep(random.uniform(1.5, 3.0))
-        
-        # 1. If it's a known anti-bot / gov site, route directly through the free reader bridge
         is_gov_or_protected = any(k in url.lower() for k in [".gov.in", ".nic.in", "zaubacorp", "gem.gov.in"])
         target_url = f"https://r.jina.ai/{url}" if is_gov_or_protected else url
 
@@ -254,21 +275,34 @@ class DataEngine:
             headers = {"User-Agent": random.choice(self.user_agents)}
             verify_ssl = False if ('.gov.in' in url or '.nic.in' in url) else True
             
-            res = requests.get(target_url, headers=headers, timeout=18, verify=verify_ssl)
+            # 1. Use curl_cffi to bypass Cloudflare/403s
+            res = cureq.get(target_url, impersonate="chrome120", headers=headers, timeout=20, verify=verify_ssl)
             
-            # If standard request failed and we didn't use the bridge yet, try the bridge as fallback
+            # 2. Fallback to Jina Reader if still blocked
             if res.status_code != 200 and not is_gov_or_protected:
-                res = requests.get(f"https://r.jina.ai/{url}", headers=headers, timeout=18)
+                res = cureq.get(f"https://r.jina.ai/{url}", impersonate="chrome120", headers=headers, timeout=20)
                 
-            res.raise_for_status()
+            if res.status_code != 200: return None
 
-            # Handle PDF downloads
+            # 3. Handle PDFs with Free OCR
             if 'application/pdf' in res.headers.get('Content-Type', '') or url.lower().endswith('.pdf'):
-                return "".join(page.extract_text() + "\n" for page in PdfReader(BytesIO(res.content)).pages[:10]).strip()
+                pdf_bytes = res.content
+                reader = PdfReader(BytesIO(pdf_bytes))
+                extracted = "".join(page.extract_text() or "" for page in reader.pages[:5]).strip()
+                
+                # If PDF is an image (blank text), run free Tesseract OCR
+                if len(extracted) < 100:
+                    logger.info("📄 Scanned PDF detected. Running free Tesseract OCR...")
+                    try:
+                        images = convert_from_bytes(pdf_bytes, first_page=1, last_page=2)
+                        extracted = "\n".join(pytesseract.image_to_string(img) for img in images).strip()
+                    except Exception as e:
+                        logger.warning(f"OCR failed: {e}")
+                return extracted
                 
             soup = BeautifulSoup(res.text, 'html.parser')
             for el in soup(["script", "style", "nav", "footer", "header"]): el.decompose()
-            return " ".join(soup.get_text(separator=" ", strip=True).split())[:6000]
+            return " ".join(soup.get_text(separator=" ", strip=True).split())
 
         except Exception as e:
             logger.warning(f"Scrape failed [{url}]: {e}")
@@ -558,7 +592,9 @@ if __name__ == "__main__":
                     content = engine.fetch(link)
                     
                     if content:
-                        docs_to_evaluate.append({"track": track_name, "url": link, "raw_text": content})
+                        # Prune text to save AI API Tokens
+                        pruned_content = prune_relevant_text(content, [TARGET, IND])
+                        docs_to_evaluate.append({"track": track_name, "url": link, "raw_text": pruned_content})
                         
             if docs_to_evaluate:
                 logger.info(f"Batched {len(docs_to_evaluate)} documents for AI analysis.")
