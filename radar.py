@@ -186,24 +186,54 @@ class DataEngine:
 # ==========================================
 # 5. AI BATCH EVALUATOR (USING GOOGLE-GENAI & OPENAI FALLBACK)
 # ==========================================
+# ==========================================
+# 5. AI BATCH EVALUATOR
+# ==========================================
 class BatchedSplitBrain:
     def __init__(self, key_manager):
         self.keys = key_manager
-        self.gemini_models = [
-            'gemini-1.5-pro-latest',    # Stable Pro 
-            'gemini-1.5-flash-latest',  # Stable Flash
-            'gemini-3.1-pro-preview'    # The preview model we know exists
-        ]
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
-        self.current_gemini_key = self.keys.get_api_key()
-        self.client = genai.Client(api_key=self.current_gemini_key)
+        
+        self.current_gemini_key = self.keys.get_current()
+        genai.configure(api_key=self.current_gemini_key)
+        
+        # Dynamically build the model stack on startup
+        self.gemini_models = self._get_flash_model_stack()
+
+    def _get_flash_model_stack(self):
+        try:
+            valid_models = []
+            # Dynamically fetch available models directly from Google's API
+            for m in genai.list_models():
+                # Clean the name (remove 'models/' prefix if present)
+                name = m.name.lower().replace("models/", "")
+                banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
+                
+                # Filter for flash models and ensure no banned keywords exist
+                if "flash" in name and not any(bad in name for bad in banned_keywords):
+                    if name not in valid_models:
+                        valid_models.append(name)
+            
+            if valid_models:
+                valid_models.sort(reverse=True)
+                # Elevate preferred models to the top of the stack if they exist
+                for preferred in ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]:
+                    if preferred in valid_models:
+                        valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
+                
+                logger.info(f"🧠 Dynamic Model Stack Built: {valid_models}")
+                return valid_models
+        except Exception as e:
+            logger.warning("⚠️ Could not fetch live model list. Using fallbacks.")
+        
+        return ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
 
     def _rotate_gemini_key(self):
-        new_key = self.keys.get_backup_key()
+        new_key = self.keys.rotate("Gemini")
         if new_key and new_key != self.current_gemini_key:
             logger.info("🔑 Rotating to a backup Gemini API Key...")
             self.current_gemini_key = new_key
-            self.client = genai.Client(api_key=self.current_gemini_key)
+            genai.configure(api_key=self.current_gemini_key)
             return True
         logger.warning("⚠️ No more backup Gemini keys available.")
         return False
@@ -236,36 +266,37 @@ class BatchedSplitBrain:
             for attempt in range(max_retries):
                 try:
                     logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
-                    response = self.client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    model = genai.GenerativeModel(model_name)
+                    
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=genai.GenerationConfig(response_mime_type="application/json")
                     )
                     
                     if response.text:
                         data = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
                         return data.get("leads", data) if isinstance(data, dict) else data
 
-                except Exception as e:
-                    err = str(e).lower()
-                    if "429" in err or "quota" in err or "resource_exhausted" in err:
-                        logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
-                        if self._rotate_gemini_key():
-                            time.sleep(1)
-                        else:
-                            time.sleep(delay)
-                            delay *= 2
+                except ResourceExhausted as e:
+                    logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
+                    if self._rotate_gemini_key():
+                        time.sleep(1)
                     else:
-                        logger.warning(f"⚠️ Gemini API Error on {model_name}: {e}")
-                        if attempt < max_retries - 1:
-                            time.sleep(delay)
-                            delay *= 2
-                        else:
-                            break # Move to next model on permanent failure (like 404)
+                        time.sleep(delay)
+                        delay *= 2
+                except GoogleAPIError as e:
+                    logger.warning(f"⚠️ Gemini API Error: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
+                except Exception as e:
+                    logger.error(f"🔌 Unexpected connection error: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
             
             logger.info(f"⏭️ Moving to next Gemini model...\n")
 
-        # 2. ब्रह्मास्त्र: OpenAI Fallback
         if self.openai_key:
             logger.warning("🚨 CRITICAL: All Gemini options exhausted. Activating OpenAI Fallback...")
             try:
@@ -273,8 +304,7 @@ class BatchedSplitBrain:
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"},
-                    timeout=30.0
+                    response_format={"type": "json_object"}
                 )
                 logger.info("✅ Successfully recovered using OpenAI!")
                 data = json.loads(response.choices[0].message.content.strip())
@@ -351,71 +381,93 @@ if __name__ == "__main__":
     scanned_links = 0
     
     try:
-        # 1. Add a random timestamp parameter to bypass network caching
         cache_buster = int(time.time())
         settings_url = f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={cache_buster}"
-        
         settings_req = requests.get(settings_url, timeout=30).json()
-        TARGET = settings_req.get("target_product")
-        if not TARGET or TARGET == "Unknown": raise ValueError("No target defined.")
-        IND = settings_req.get("industry_keywords", "Unknown")
-        LOC = settings_req.get("target_states", "")
-        COUNTRY = settings_req.get("target_country", "India")
-        BANNED_KW = [k.strip().lower() for k in str(settings_req.get("banned_keywords", "")).split(',')]
-        BANNED_SITES = [s.strip().lower() for s in str(settings_req.get("banned_websites", "")).split(',')]
+        
+        # 1. Base Arrays
+        TARGETS = settings_req.get("target_products", [])
+        if not TARGETS: raise ValueError("No target products defined in Column A.")
+        
+        INDUSTRIES = settings_req.get("industry_keywords", [])
+        COUNTRIES = settings_req.get("target_countries", [])
+        STATES = settings_req.get("target_states", [])
+        
+        # 2. Banned Lists (used for filtering links and text)
+        BANNED_KW = [k.lower() for k in settings_req.get("banned_keywords", [])]
+        BANNED_SITES = [s.lower() for s in settings_req.get("banned_websites", [])]
+        PROTECTED_DOMAINS = [d.lower() for d in settings_req.get("protected_domains", [])]
+        
+        # 3. Smart Search Bundling (Wraps multiple items in OR statements for Google Dorks)
+        IND = "(" + " OR ".join(INDUSTRIES) + ")" if INDUSTRIES else "Unknown"
+        COUNTRY = "(" + " OR ".join(COUNTRIES) + ")" if COUNTRIES else "India"
+        LOC = "(" + " OR ".join(STATES) + ")" if STATES else ""
+
     except Exception as e:
         system_monitor.send(f"🚨 *Radar Scout Halted*: Could not fetch parameters from Google Sheet.\nError: `{e}`")
         logger.error(f"Settings Error: {e}"); exit()
 
-    generator = QueryGenerator(TARGET, IND, COUNTRY, LOC)
     engine = DataEngine(serper_keys)
     evaluator = BatchedSplitBrain(gemini_keys)
     router = WebhookRouter(WEBHOOK_URL, WEBHOOK_SECRET)
     seen_links = load_hybrid_cache()
     
-    tracks = generator.build_tracks()
-
-    for track_name, queries in tracks.items():
-        logger.info(f"\n=== Initiating {track_name} ===")
-        docs_to_evaluate = []
+    # NEW: Run a dedicated pipeline for EVERY product in Column A
+    for TARGET in TARGETS:
+        logger.info(f"\n==============================================")
+        logger.info(f"🚀 LAUNCHING PIPELINE FOR TARGET: {TARGET}")
+        logger.info(f"==============================================")
         
-        for query in queries:
-            for res in engine.search(query):
-                link, snippet = res.get("link", "").lower(), res.get("snippet", "").lower()
-                
-                if not link or link in seen_links: continue
-                scanned_links += 1
-                
-                if any(bd in link for bd in BANNED_SITES if bd) or any(bx in snippet for bx in BANNED_KW if bx):
-                    save_to_cache(link); seen_links.add(link); continue
+        generator = QueryGenerator(TARGET, IND, COUNTRY, LOC)
+        tracks = generator.build_tracks()
 
-                years = [int(y) for y in re.findall(r'\b(?:202[0-9])\b', f"{link} {snippet}")]
-                if years and max(years) < datetime.now().year - 1:
-                    save_to_cache(link); seen_links.add(link); continue
-
-                save_to_cache(link); seen_links.add(link)
-                content = engine.fetch(link)
-                
-                if content:
-                    docs_to_evaluate.append({"track": track_name, "url": link, "raw_text": content})
+        for track_name, queries in tracks.items():
+            logger.info(f"\n=== Initiating {track_name} for {TARGET} ===")
+            docs_to_evaluate = []
+            
+            for query in queries:
+                for res in engine.search(query):
+                    link, snippet = res.get("link", "").lower(), res.get("snippet", "").lower()
                     
-        if docs_to_evaluate:
-            logger.info(f"Batched {len(docs_to_evaluate)} documents for AI analysis.")
-            for i in range(0, len(docs_to_evaluate), 5):
-                batch = docs_to_evaluate[i:i+5]
-                ai_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, BANNED_KW)
-                
-                for verdict in ai_verdicts:
-                    idx = verdict.get("item_index")
-                    if idx is not None and idx < len(batch):
-                        dest = router.route_and_push(batch[idx], verdict, TARGET)
-                        if dest in ["📥 Inbox", "⚠️ Needs Review"]:
-                            leads_pushed += 1
+                    if not link or link in seen_links: continue
+                    scanned_links += 1
+                    
+                    # 1. Check if the link belongs to a Protected Domain
+                    is_protected = any(pd in link for pd in PROTECTED_DOMAINS if pd)
+                    
+                    # 2. Only apply Ban Filters if the domain is NOT protected
+                    if not is_protected:
+                        if any(bd in link for bd in BANNED_SITES if bd) or any(bx in snippet for bx in BANNED_KW if bx):
+                            save_to_cache(link); seen_links.add(link); continue
+
+                    # 3. Date Filter (Check if it's too old)
+                    years = [int(y) for y in re.findall(r'\b(?:202[0-9])\b', f"{link} {snippet}")]
+                    if years and max(years) < datetime.now().year - 1:
+                        save_to_cache(link); seen_links.add(link); continue
+
+                    save_to_cache(link); seen_links.add(link)
+                    content = engine.fetch(link)
+                    
+                    if content:
+                        docs_to_evaluate.append({"track": track_name, "url": link, "raw_text": content})
+                        
+            if docs_to_evaluate:
+                logger.info(f"Batched {len(docs_to_evaluate)} documents for AI analysis.")
+                for i in range(0, len(docs_to_evaluate), 5):
+                    batch = docs_to_evaluate[i:i+5]
+                    ai_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, BANNED_KW)
+                    
+                    for verdict in ai_verdicts:
+                        idx = verdict.get("item_index")
+                        if idx is not None and idx < len(batch):
+                            dest = router.route_and_push(batch[idx], verdict, TARGET)
+                            if dest in ["📥 Inbox", "⚠️ Needs Review"]:
+                                leads_pushed += 1
 
     duration = str(datetime.now() - start_time).split('.')[0]
     summary_msg = (
         f"🏁 *Radar Scout Run Complete*\n"
-        f"• Target: `{TARGET}`\n"
+        f"• Targets Processed: `{len(TARGETS)}`\n"
         f"• New Links Scanned: `{scanned_links}`\n"
         f"• Leads Sent to CRM: `{leads_pushed}`\n"
         f"• Duration: `{duration}`"
