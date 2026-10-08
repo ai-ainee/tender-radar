@@ -5,6 +5,7 @@ import urllib3
 import random
 import logging
 import time
+import dns.resolver
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
@@ -210,6 +211,14 @@ class DossierEngine:
 # 3. DECISION MAKER HUNTER
 # ==========================================
 class WaterfallEnrichment:
+    def domain_accepts_email(domain):
+    """100% free check to ensure domain has active mail exchange (MX) records."""
+    try:
+        records = dns.resolver.resolve(domain, 'MX')
+        return len(records) > 0
+    except Exception:
+        return False
+        
     def __init__(self, key_manager):
         self.keys = key_manager
 
@@ -251,15 +260,18 @@ class WaterfallEnrichment:
             contact_data["website"] = top_place.get("website", "")
             contact_data["phone"] = top_place.get("phoneNumber", "")
 
-        # 3. Domain Email Generation
+        # 3. Domain Email Generation & DNS Verification
         if contact_data["website"]:
             domain = contact_data["website"].replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "")
-            if contact_data["dm_name"] != "Unknown":
-                contact_data["email"] = f"{contact_data['dm_name'].split(' ')[0].lower()}@{domain}"
+            
+            # Check if domain can actually receive emails
+            if domain_accepts_email(domain):
+                if contact_data["dm_name"] != "Unknown":
+                    contact_data["email"] = f"{contact_data['dm_name'].split(' ')[0].lower()}@{domain}"
+                else:
+                    contact_data["email"] = f"info@{domain}"
             else:
-                contact_data["email"] = f"info@{domain}"
-
-        return contact_data
+                contact_data["email"] = "N/A (No MX Record)"
 
 # ==========================================
 # 4. MASTER EXECUTION
