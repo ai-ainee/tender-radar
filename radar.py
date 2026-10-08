@@ -114,7 +114,7 @@ class QueryGenerator:
     def build_tracks(self):
         logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
         
-        prompt = f"""
+       prompt = f"""
         You are an elite OSINT and B2B Data Analyst. Your task is to generate highly optimized Google Search queries (Dorks) to find B2B leads for the following product:
         
         TARGET PRODUCT: {self.target}
@@ -127,7 +127,9 @@ class QueryGenerator:
         TRACK 1 (TENDERS): Government portals, RFPs. (e.g., use site:eprocure.gov.in, site:gem.gov.in)
         TRACK 2 (CAPEX/PARTNERS): Factory expansions, OR Authorized dealers/distributors.
         TRACK 3 (MCA): Corporate registrations for new companies in this space. (e.g., site:zaubacorp.com)
-        TRACK 4 (COMMERCIAL): Job boards indicating hiring (site:naukri.com, site:linkedin.com/jobs) OR B2B directories.
+        TRACK 4 (COMMERCIAL): You MUST generate exactly 2 distinct strategies here:
+           - Query 1: Target job aggregators (e.g., site:naukri.com OR site:linkedin.com/jobs)
+           - Query 2: Target direct corporate websites by using negative keywords to block job boards (e.g., "careers" "{self.target}" "{self.loc}" -naukri -linkedin -indeed -glassdoor -ambitionbox)
         
         CRITICAL RULES:
         - Keep EVERY query under 15 words to prevent search engine crashes.
