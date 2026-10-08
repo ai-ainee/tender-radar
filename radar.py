@@ -124,29 +124,32 @@ class QueryGenerator:
         logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
         
         prompt = f"""
-        You are an elite OSINT and B2B Data Analyst. Your task is to generate highly optimized Google Search queries (Dorks) to find B2B leads for the following product:
+        You are an elite B2B Data Analyst. Generate natural language Google Search queries to find B2B leads for the following product:
         
         TARGET PRODUCT: {self.target}
         INDUSTRY CONTEXT: {self.ind}
-        LOCATION: {self.loc} / {self.country}
+        LOCATION: {self.country}
         CURRENT YEAR: {self.year}
         
-        Based on what this product is (Software vs Physical Hardware vs Service), generate the most lethal search queries for these 4 tracks:
+        Generate exactly 2 simple queries for these 4 tracks.
         
-        TRACK 1 (TENDERS): Government portals, RFPs. (e.g., use site:eprocure.gov.in, site:gem.gov.in)
-        TRACK 2 (CAPEX/PARTNERS): Factory expansions, OR Authorized dealers/distributors.
-        TRACK 3 (MCA): Corporate registrations for new companies in this space. (e.g., site:zaubacorp.com)
-        TRACK 4 (COMMERCIAL): You MUST generate exactly 2 distinct strategies here:
-           - Query 1: Target job aggregators (e.g., site:naukri.com OR site:linkedin.com/jobs)
-           - Query 2: Target direct corporate websites by using negative keywords to block job boards.
+        TRACK 1 (TENDERS): Government tenders, e-procurement bids, or RFPs. 
+        (Example: "official {self.target} tender document {self.year} {self.country}")
+        
+        TRACK 2 (CAPEX/PARTNERS): Factory expansions, authorized dealers, or resellers.
+        (Example: "authorized distributor for {self.target} in {self.country}")
+        
+        TRACK 3 (MCA): New corporate registrations or business directories.
+        (Example: "newly incorporated {self.ind} company {self.year} {self.country}")
+        
+        TRACK 4 (COMMERCIAL): Job listings or corporate careers pages.
+        (Example: "now hiring {self.target} engineers {self.country}")
         
         CRITICAL RULES:
-        - Keep EVERY query under 15 words to prevent search engine crashes.
-        - Only use a maximum of 2 'OR' conditions per query.
-        - Generate exactly 2 queries per track.
-        - Use exact match quotes "" for the product name.
-        - MANDATORY GEOGRAPHY: You must include the exact word "{self.country}" or "{self.loc}" as a standalone keyword in every single query. 
-        - DO NOT restrict searches using site:.in or site:.co.in. We want to find companies regardless of their domain extension.
+        - Keep EVERY query under 10 words.
+        - DO NOT use advanced operators like "site:", "OR", or "-". 
+        - DO NOT use quotation marks around words.
+        - You must include the word {self.country} in every query.
         
         Respond STRICTLY with a valid JSON object matching this exact structure:
         {{
@@ -179,12 +182,12 @@ class QueryGenerator:
     def _fallback_tracks(self):
         yr = self.year
         return {
-            "TRACK_1_TENDERS": [f'"{self.target}" tender "{yr}" "{self.country}"', f'"{self.target}" RFP "{self.country}"'],
-            "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" ("authorized dealer" OR "reseller") "{self.country}"'],
-            "TRACK_3_MCA": [f'"{self.ind}" "Incorporation" "{yr}" "{self.loc}"'],
+            "TRACK_1_TENDERS": [f"{self.target} tender document {yr} {self.country}", f"{self.target} rfp {self.country}"],
+            "TRACK_2_CAPEX_AND_PARTNERS": [f"authorized dealer for {self.target} {self.country}"],
+            "TRACK_3_MCA": [f"new {self.ind} company incorporated {yr} {self.country}"],
             "TRACK_4_COMMERCIAL": [
-                f'hiring "{self.target}" "{yr}" site:naukri.com',
-                f'"careers" "{self.target}" "{self.country}" -naukri -linkedin -indeed'
+                f"hiring {self.target} expert {yr} {self.country}",
+                f"careers {self.target} jobs {self.country}"
             ]
         }
 
