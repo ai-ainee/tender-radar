@@ -74,7 +74,8 @@ class DossierEngine:
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         
         self.current_gemini_key = self.keys.get_current()
-        genai.configure(api_key=self.current_gemini_key)
+        # NEW SDK: Initialize Client
+        self.client = genai.Client(api_key=self.current_gemini_key)
         
         # Dynamically build the model stack on startup
         self.gemini_models = self._get_flash_model_stack()
@@ -87,7 +88,7 @@ class DossierEngine:
     def _get_flash_model_stack(self):
         try:
             valid_models = []
-            for m in genai.list_models():
+            for m in self.client.models.list():
                 name = m.name.lower().replace("models/", "")
                 banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
                 
@@ -104,7 +105,7 @@ class DossierEngine:
                 logger.info(f"🧠 Dynamic Model Stack Built: {valid_models}")
                 return valid_models
         except Exception as e:
-            logger.warning("⚠️ Could not fetch live model list. Using fallbacks.")
+            logger.warning(f"⚠️ Could not fetch live model list: {e}. Using fallbacks.")
         
         return ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
 
@@ -113,7 +114,7 @@ class DossierEngine:
         if new_key and new_key != self.current_gemini_key:
             logger.info("🔑 Rotating to a backup Gemini API Key...")
             self.current_gemini_key = new_key
-            genai.configure(api_key=self.current_gemini_key)
+            self.client = genai.Client(api_key=self.current_gemini_key)
             return True
         logger.warning("⚠️ No more backup Gemini keys available.")
         return False
@@ -162,30 +163,30 @@ class DossierEngine:
             for attempt in range(max_retries):
                 try:
                     logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
-                    model = genai.GenerativeModel(model_name)
                     
-                    response = model.generate_content(prompt)
+                    # NEW SDK: generate_content
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=prompt
+                    )
                     
                     if response.text:
                         return response.text.strip()
 
-                except ResourceExhausted as e:
-                    logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
-                    if self._rotate_gemini_key():
-                        time.sleep(1)
-                    else:
-                        time.sleep(delay)
-                        delay *= 2
-                except GoogleAPIError as e:
-                    logger.warning(f"⚠️ Gemini API Error: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(delay)
-                        delay *= 2
                 except Exception as e:
-                    logger.error(f"🔌 Unexpected connection error: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(delay)
-                        delay *= 2
+                    error_msg = str(e).lower()
+                    if "429" in error_msg or "quota" in error_msg or "exhausted" in error_msg:
+                        logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
+                        if self._rotate_gemini_key():
+                            time.sleep(1)
+                        else:
+                            time.sleep(delay)
+                            delay *= 2
+                    else:
+                        logger.warning(f"⚠️ Gemini API Error: {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(delay)
+                            delay *= 2
             
             logger.info(f"⏭️ Moving to next Gemini model...\n")
         
