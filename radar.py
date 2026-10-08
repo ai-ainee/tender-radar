@@ -107,6 +107,25 @@ def prune_relevant_text(raw_text, keywords, window=400):
         return " ... \n".join(snippets)
     return raw_text[:3000]
 
+def is_deadline_expired(deadline_str):
+    """Returns True if the extracted deadline string is a date in the past."""
+    if not deadline_str or deadline_str.lower() in ["unknown", "n/a", "none"]:
+        return False
+    
+    try:
+        deadline_clean = deadline_str.strip()
+        for fmt in ("%d %B %Y", "%d %b %Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                dt = datetime.strptime(deadline_clean, fmt)
+                if dt.date() < datetime.now().date():
+                    return True  # Expired!
+                break
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    return False
+
 # ==========================================
 # 3. DYNAMIC AI QUERY GENERATOR
 # ==========================================
@@ -642,6 +661,13 @@ if __name__ == "__main__":
                     for verdict in ai_verdicts:
                         idx = verdict.get("item_index")
                         if idx is not None and idx < len(batch):
+                            deadline = verdict.get("deadline", "Unknown")
+                            
+                            # PROGRAMMATIC EXPIRED DEADLINE KILL SWITCH
+                            if is_deadline_expired(deadline):
+                                logger.info(f"🗑️ Dropping expired lead ({verdict.get('organization')}) with past deadline: {deadline}")
+                                continue # Skip pushing this lead entirely!
+                            
                             dest = router.route_and_push(batch[idx], verdict, TARGET)
                             if dest in ["📥 Inbox", "⚠️ Needs Review"]:
                                 leads_pushed += 1
