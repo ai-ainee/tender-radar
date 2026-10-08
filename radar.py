@@ -460,8 +460,18 @@ if __name__ == "__main__":
     try:
         cache_buster = int(time.time())
         settings_url = f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={cache_buster}"
-        settings_req = requests.get(settings_url, timeout=30).json()
         
+        # 1. Fetch the raw response first
+        raw_response = requests.get(settings_url, timeout=30)
+        
+        # 2. Try to parse it, but print the raw HTML if it fails so we can see the exact error
+        try:
+            settings_req = raw_response.json()
+        except Exception:
+            print("🚨 GOOGLE WEBHOOK RETURNED HTML INSTEAD OF JSON! Here is what Google said:")
+            print(raw_response.text[:1000])  # Print the first 1000 characters of the error
+            exit()
+            
         # 1. Base Arrays
         TARGETS = settings_req.get("target_products", [])
         if not TARGETS: raise ValueError("No target products defined in Column A.")
