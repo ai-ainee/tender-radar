@@ -351,7 +351,11 @@ if __name__ == "__main__":
     scanned_links = 0
     
     try:
-        settings_req = requests.get(f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings", timeout=30).json()
+        # 1. Add a random timestamp parameter to bypass network caching
+        cache_buster = int(time.time())
+        settings_url = f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={cache_buster}"
+        
+        settings_req = requests.get(settings_url, timeout=30).json()
         TARGET = settings_req.get("target_product")
         if not TARGET or TARGET == "Unknown": raise ValueError("No target defined.")
         IND = settings_req.get("industry_keywords", "Unknown")
