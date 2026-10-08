@@ -184,9 +184,6 @@ class DataEngine:
             return None
 
 # ==========================================
-# 5. AI BATCH EVALUATOR (USING GOOGLE-GENAI & OPENAI FALLBACK)
-# ==========================================
-# ==========================================
 # 5. AI BATCH EVALUATOR
 # ==========================================
 class BatchedSplitBrain:
@@ -195,7 +192,8 @@ class BatchedSplitBrain:
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         
         self.current_gemini_key = self.keys.get_current()
-        genai.configure(api_key=self.current_gemini_key)
+        # NEW SDK: Initialize Client directly instead of genai.configure()
+        self.client = genai.Client(api_key=self.current_gemini_key) 
         
         # Dynamically build the model stack on startup
         self.gemini_models = self._get_flash_model_stack()
@@ -203,20 +201,17 @@ class BatchedSplitBrain:
     def _get_flash_model_stack(self):
         try:
             valid_models = []
-            # Dynamically fetch available models directly from Google's API
-            for m in genai.list_models():
-                # Clean the name (remove 'models/' prefix if present)
+            # NEW SDK: Use client.models.list()
+            for m in self.client.models.list():
                 name = m.name.lower().replace("models/", "")
                 banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
                 
-                # Filter for flash models and ensure no banned keywords exist
                 if "flash" in name and not any(bad in name for bad in banned_keywords):
                     if name not in valid_models:
                         valid_models.append(name)
             
             if valid_models:
                 valid_models.sort(reverse=True)
-                # Elevate preferred models to the top of the stack if they exist
                 for preferred in ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]:
                     if preferred in valid_models:
                         valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
@@ -224,7 +219,7 @@ class BatchedSplitBrain:
                 logger.info(f"🧠 Dynamic Model Stack Built: {valid_models}")
                 return valid_models
         except Exception as e:
-            logger.warning("⚠️ Could not fetch live model list. Using fallbacks.")
+            logger.warning(f"⚠️ Could not fetch live model list: {e}. Using fallbacks.")
         
         return ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
 
@@ -233,7 +228,8 @@ class BatchedSplitBrain:
         if new_key and new_key != self.current_gemini_key:
             logger.info("🔑 Rotating to a backup Gemini API Key...")
             self.current_gemini_key = new_key
-            genai.configure(api_key=self.current_gemini_key)
+            # NEW SDK: Reinitialize client with new key
+            self.client = genai.Client(api_key=self.current_gemini_key)
             return True
         logger.warning("⚠️ No more backup Gemini keys available.")
         return False
@@ -266,34 +262,32 @@ class BatchedSplitBrain:
             for attempt in range(max_retries):
                 try:
                     logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
-                    model = genai.GenerativeModel(model_name)
                     
-                    response = model.generate_content(
-                        prompt,
-                        generation_config=genai.GenerationConfig(response_mime_type="application/json")
+                    # NEW SDK: generate_content via client with response format
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config={'response_mime_type': 'application/json'}
                     )
                     
                     if response.text:
                         data = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
                         return data.get("leads", data) if isinstance(data, dict) else data
 
-                except ResourceExhausted as e:
-                    logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
-                    if self._rotate_gemini_key():
-                        time.sleep(1)
-                    else:
-                        time.sleep(delay)
-                        delay *= 2
-                except GoogleAPIError as e:
-                    logger.warning(f"⚠️ Gemini API Error: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(delay)
-                        delay *= 2
                 except Exception as e:
-                    logger.error(f"🔌 Unexpected connection error: {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(delay)
-                        delay *= 2
+                    error_msg = str(e).lower()
+                    if "429" in error_msg or "quota" in error_msg or "exhausted" in error_msg:
+                        logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
+                        if self._rotate_gemini_key():
+                            time.sleep(1)
+                        else:
+                            time.sleep(delay)
+                            delay *= 2
+                    else:
+                        logger.warning(f"⚠️ Gemini API Error: {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(delay)
+                            delay *= 2
             
             logger.info(f"⏭️ Moving to next Gemini model...\n")
 
