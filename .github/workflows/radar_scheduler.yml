@@ -2,9 +2,23 @@ name: Radar Scout Automation Engine
 
 on:
   schedule:
-    - cron: '30 2 * * *' # 8:00 AM IST
-    - cron: '30 5 * * *' # 11:00 AM IST
+    # 7:15 AM IST (01:45 UTC) - Once every 24 hours for Radar Scout
+    - cron: '45 1 * * *'
+    
+    # Every 2 hours between 8:00 AM IST and 8:00 PM IST (02:30, 04:30, 06:30, 08:30, 10:30, 12:30, 14:30 UTC)
+    - cron: '30 2,4,6,8,10,12,14 * * *'
+
   workflow_dispatch:
+    inputs:
+      target_job:
+        description: 'Select process to trigger manually'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - scout
+          - enrichment
 
 env:
   TZ: 'Asia/Kolkata'
@@ -12,8 +26,9 @@ env:
 jobs:
   run-radar-scout:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # Safety kill switch to prevent hanging runs
     permissions:
-      contents: write  # Grants git push write access for seen_links.txt
+      contents: write   # Grants git push write access for seen_links.txt
 
     steps:
       - name: Checkout Code
@@ -25,12 +40,20 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run Harvester (8:00 AM IST)
-        if: github.event.schedule == '30 2 * * *' || github.event_name == 'workflow_dispatch'
+      # -------------------------------------------------------------------
+      # 1. SCOUT HARVESTER (Runs at 7:15 AM IST or Manual Trigger)
+      # -------------------------------------------------------------------
+      - name: Run Harvester (7:15 AM IST)
+        if: >
+          github.event.schedule == '45 1 * * *' ||
+          (github.event_name == 'workflow_dispatch' && (inputs.target_job == 'both' || inputs.target_job == 'scout'))
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
@@ -38,25 +61,33 @@ jobs:
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} # Added for Fallback
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python radar.py
 
-      - name: Run Enrichment Worker (11:00 AM IST)
-        if: github.event.schedule == '30 5 * * *' || github.event_name == 'workflow_dispatch'
+      # -------------------------------------------------------------------
+      # 2. ENRICHMENT WORKER (Runs every 2 hrs from 8 AM to 8 PM IST)
+      # -------------------------------------------------------------------
+      - name: Run Enrichment Worker (8:00 AM - 8:00 PM IST)
+        if: >
+          github.event.schedule == '30 2,4,6,8,10,12,14 * * *' ||
+          (github.event_name == 'workflow_dispatch' && (inputs.target_job == 'both' || inputs.target_job == 'enrichment'))
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }} # Added for alerts
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}     # Added for alerts
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} # Added for Fallback
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python enrichment_worker.py
 
+      # -------------------------------------------------------------------
+      # 3. CACHE SYNC (Preserves seen_links.txt across cloud runs)
+      # -------------------------------------------------------------------
       - name: Save Cache to Repository
-        if: always()  # Saves cache even if run is terminated or errors occur
+        if: always()
         run: |
           git config --global user.name "Radar Scout Bot"
           git config --global user.email "bot@radarscout.local"
           git add seen_links.txt
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update scraped links cache" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update scraped links cache [skip ci]" && git push)
