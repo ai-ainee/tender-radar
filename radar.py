@@ -276,7 +276,8 @@ class DataEngine:
 
         try:
             headers = {"User-Agent": random.choice(self.user_agents)}
-            verify_ssl = False if ('.gov.in' in url or '.nic.in' in url) else True
+            # Expand the SSL bypass to include all .in and eproc domains
+            verify_ssl = False if ('.in' in url or 'eproc' in url or 'gem' in url) else True
             
             # 1. Use curl_cffi to bypass Cloudflare/403s
             res = cureq.get(target_url, impersonate="chrome120", headers=headers, timeout=20, verify=verify_ssl)
@@ -616,13 +617,23 @@ if __name__ == "__main__":
                         
             if docs_to_evaluate:
                 logger.info(f"Batched {len(docs_to_evaluate)} documents for AI analysis.")
+                
+                # FORCE BATCH SIZE TO 2
                 for i in range(0, len(docs_to_evaluate), 2):
                     batch = docs_to_evaluate[i:i+2]
-                    # Pass the geo and ban rules explicitly to the AI batch processor
+                    
                     ai_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
                     
-                    # MANDATORY COOLDOWN to protect free-tier Gemini keys
-                    time.sleep(4) 
+                    for verdict in ai_verdicts:
+                        idx = verdict.get("item_index")
+                        if idx is not None and idx < len(batch):
+                            dest = router.route_and_push(batch[idx], verdict, TARGET)
+                            if dest in ["📥 Inbox", "⚠️ Needs Review"]:
+                                leads_pushed += 1
+                                
+                    # INCREASE COOLDOWN TO 10 SECONDS FOR CLOUD RUNNERS
+                    logger.info("⏳ Cooling down AI API for 10 seconds to prevent Rate Limits...")
+                    time.sleep(10)
                     
                     for verdict in ai_verdicts:
                         idx = verdict.get("item_index")
