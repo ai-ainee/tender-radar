@@ -200,28 +200,25 @@ class DataEngine:
                 logger.error("❌ No Serper API keys configured!")
                 return results
 
+            # CRITICAL FIX 1: .strip() removes any hidden \n or \r characters from the API key
             headers = {
-                'X-API-KEY': current_key,
+                'X-API-KEY': str(current_key).strip(),
                 'Content-Type': 'application/json'
             }
             
-            # Using exact standard Serper.dev formatting.
-            # No extra parameters that might trigger a 400 Bad Request.
+            # Keep it to the absolute minimum required parameters
             payload = json.dumps({
-                "q": query,
-                "num": 15
+                "q": str(query).strip()
             })
 
             try:
-                # Add strict timeout to prevent hanging
                 response = requests.request("POST", url, headers=headers, data=payload, timeout=15)
                 
-                # Check for Bad Request (400) specifically
+                # CRITICAL FIX 2: If it 400s again, print the EXACT error message from Serper's servers
                 if response.status_code == 400:
-                    logger.error(f"❌ Serper 400 Bad Request. Query was: {query}. The query formatting was rejected by Serper.")
-                    return results # Do not rotate keys, the query itself is the problem.
+                    logger.error(f"❌ Serper 400 Error. Query: {query} | Serper says: {response.text}")
+                    return results
                 
-                # If Quota Exceeded/Unauthorized, rotate key and retry
                 if response.status_code in [401, 403, 429]:
                     logger.warning(f"⚠️ Serper Key failed (Status {response.status_code}). Rotating...")
                     self.serper_keys.rotate("Serper")
