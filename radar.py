@@ -98,41 +98,78 @@ def save_to_cache(link):
     with open(CACHE_FILE, 'a') as f: f.write(link + '\n')
 
 # ==========================================
-# 3. QUERY GENERATOR
+# 3. DYNAMIC AI QUERY GENERATOR
 # ==========================================
 class QueryGenerator:
-    def __init__(self, target, industry, country, states):
-        self.target = target
-        self.ind = industry if industry != "Unknown" else target
-        self.country = country
-        self.loc = states if states else country
+    # We now pass the AI client and models directly into the generator
+    def __init__(self, target, ind, country, loc, ai_client, ai_models):
+        self.target = target.strip()
+        self.ind = ind.strip() if ind and ind != "Unknown" else ""
+        self.loc = loc.strip() if loc else ""
+        self.country = country.strip() if country else "India"
         self.year = datetime.now().year
+        self.client = ai_client
+        self.models = ai_models
 
     def build_tracks(self):
+        logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
+        
+        prompt = f"""
+        You are an elite OSINT and B2B Data Analyst. Your task is to generate highly optimized Google Search queries (Dorks) to find B2B leads for the following product:
+        
+        TARGET PRODUCT: {self.target}
+        INDUSTRY CONTEXT: {self.ind}
+        LOCATION: {self.loc} / {self.country}
+        CURRENT YEAR: {self.year}
+        
+        Based on what this product is (Software vs Physical Hardware vs Service), generate the most lethal search queries for these 4 tracks:
+        
+        TRACK 1 (TENDERS): Government portals, RFPs. (e.g., use site:eprocure.gov.in, site:gem.gov.in)
+        TRACK 2 (CAPEX/PARTNERS): Factory expansions, OR Authorized dealers/distributors.
+        TRACK 3 (MCA): Corporate registrations for new companies in this space. (e.g., site:zaubacorp.com)
+        TRACK 4 (COMMERCIAL): Job boards indicating hiring (site:naukri.com, site:linkedin.com/jobs) OR B2B directories.
+        
+        CRITICAL RULES:
+        - Keep EVERY query under 15 words to prevent search engine crashes.
+        - Only use a maximum of 2 'OR' conditions per query.
+        - Generate exactly 2 queries per track.
+        - Use exact match quotes "" for the product name.
+        
+        Respond STRICTLY with a valid JSON object matching this exact structure:
+        {{
+            "TRACK_1_TENDERS": ["query 1", "query 2"],
+            "TRACK_2_CAPEX_AND_PARTNERS": ["query 1", "query 2"],
+            "TRACK_3_MCA": ["query 1", "query 2"],
+            "TRACK_4_COMMERCIAL": ["query 1", "query 2"]
+        }}
+        """
+        
+        for model_name in self.models:
+            try:
+                response = self.client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config={'response_mime_type': 'application/json'}
+                )
+                
+                if response.text:
+                    tracks = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
+                    logger.info("✅ AI successfully generated custom search tracks!")
+                    return tracks
+            except Exception as e:
+                logger.warning(f"⚠️ AI Query Gen failed with {model_name}, trying next...")
+                continue
+                
+        logger.warning("🚨 AI Query Gen failed. Falling back to universal static tracks.")
+        return self._fallback_tracks()
+
+    def _fallback_tracks(self):
         yr = self.year
         return {
-            "TRACK_1_TENDERS": [
-                f'"{self.target}" ("{yr}" OR "{yr-1}") tender OR RFP site:eprocure.gov.in',
-                f'"{self.target}" "bid document" "{yr}" site:gem.gov.in',
-                f'"{self.ind}" tender "{yr}" site:mahatenders.gov.in'
-            ],
-            "TRACK_2_CAPEX_AND_PARTNERS": [
-                # Captures physical goods expansion
-                f'"{self.target}" ("capacity expansion" OR "greenfield project") "{yr}" "{self.loc}"',
-                f'"{self.target}" ("land allotment" OR "industrial area") "{yr}"',
-                # Captures software resellers AND hardware dealers
-                f'"{self.target}" ("authorized dealer" OR "reseller" OR "distributor") "{self.loc}"'
-            ],
-            "TRACK_3_MCA": [
-                # Captures new companies based purely on the industry cell in your sheet
-                f'"{self.ind}" "Incorporation Date" "{yr}" "{self.loc}" site:zaubacorp.com'
-            ],
-            "TRACK_4_COMMERCIAL": [
-                # Captures hiring intents for ANY target (software developers, pump engineers, etc.)
-                f'hiring "{self.target}" (engineer OR specialist OR manager OR operator) "{yr}" site:naukri.com OR site:linkedin.com',
-                # Captures B2B service queries
-                f'"{self.target}" (service provider OR consultant OR agency) "{yr}" "{self.loc}"'
-            ]
+            "TRACK_1_TENDERS": [f'"{self.target}" tender "{yr}" site:eprocure.gov.in'],
+            "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" ("authorized dealer" OR "reseller") "{self.loc}"'],
+            "TRACK_3_MCA": [f'"{self.ind}" "Incorporation" "{yr}" "{self.loc}" site:zaubacorp.com'],
+            "TRACK_4_COMMERCIAL": [f'hiring "{self.target}" "{yr}" site:naukri.com']
         }
 
 # ==========================================
@@ -417,7 +454,8 @@ if __name__ == "__main__":
         logger.info(f"🚀 LAUNCHING PIPELINE FOR TARGET: {TARGET}")
         logger.info(f"==============================================")
         
-        generator = QueryGenerator(TARGET, IND, COUNTRY, LOC)
+        # Pass the initialized Gemini client and dynamic model stack to the Query Generator
+        generator = QueryGenerator(TARGET, IND, COUNTRY, LOC, evaluator.client, evaluator.gemini_models)
         tracks = generator.build_tracks()
 
         for track_name, queries in tracks.items():
