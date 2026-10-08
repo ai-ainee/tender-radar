@@ -66,29 +66,54 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default_secret")
 system_monitor = SystemAlertNotifier()
 
 # ==========================================
-# 2. DEEP DOSSIER GENERATOR (USING GOOGLE-GENAI & OPENAI FALLBACK)
+# 2. DEEP DOSSIER GENERATOR
 # ==========================================
 class DossierEngine:
     def __init__(self, key_manager):
         self.keys = key_manager
-        self.gemini_models = ['gemini-3.8-flash', 'gemini-3.5-flash']
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         
-        self.current_gemini_key = self.keys.get_api_key()
-        self.client = genai.Client(api_key=self.current_gemini_key)
+        self.current_gemini_key = self.keys.get_current()
+        genai.configure(api_key=self.current_gemini_key)
+        
+        # Dynamically build the model stack on startup
+        self.gemini_models = self._get_flash_model_stack()
         
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
         ]
 
+    def _get_flash_model_stack(self):
+        try:
+            valid_models = []
+            for m in genai.list_models():
+                name = m.name.lower().replace("models/", "")
+                banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
+                
+                if "flash" in name and not any(bad in name for bad in banned_keywords):
+                    if name not in valid_models:
+                        valid_models.append(name)
+            
+            if valid_models:
+                valid_models.sort(reverse=True)
+                for preferred in ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]:
+                    if preferred in valid_models:
+                        valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
+                
+                logger.info(f"🧠 Dynamic Model Stack Built: {valid_models}")
+                return valid_models
+        except Exception as e:
+            logger.warning("⚠️ Could not fetch live model list. Using fallbacks.")
+        
+        return ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+
     def _rotate_gemini_key(self):
-        new_key = self.keys.get_backup_key()
+        new_key = self.keys.rotate("Gemini")
         if new_key and new_key != self.current_gemini_key:
             logger.info("🔑 Rotating to a backup Gemini API Key...")
             self.current_gemini_key = new_key
-            self.client = genai.Client(api_key=self.current_gemini_key)
+            genai.configure(api_key=self.current_gemini_key)
             return True
         logger.warning("⚠️ No more backup Gemini keys available.")
         return False
@@ -137,42 +162,40 @@ class DossierEngine:
             for attempt in range(max_retries):
                 try:
                     logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
-                    response = self.client.models.generate_content(
-                        model=model_name,
-                        contents=prompt
-                    )
+                    model = genai.GenerativeModel(model_name)
+                    
+                    response = model.generate_content(prompt)
                     
                     if response.text:
                         return response.text.strip()
 
-                except Exception as e:
-                    err = str(e).lower()
-                    if "429" in err or "quota" in err or "resource_exhausted" in err:
-                        logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
-                        if self._rotate_gemini_key():
-                            time.sleep(1)
-                        else:
-                            time.sleep(delay)
-                            delay *= 2
+                except ResourceExhausted as e:
+                    logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
+                    if self._rotate_gemini_key():
+                        time.sleep(1)
                     else:
-                        logger.warning(f"⚠️ Gemini API Error on {model_name}: {e}")
-                        if attempt < max_retries - 1:
-                            time.sleep(delay)
-                            delay *= 2
-                        else:
-                            break
+                        time.sleep(delay)
+                        delay *= 2
+                except GoogleAPIError as e:
+                    logger.warning(f"⚠️ Gemini API Error: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
+                except Exception as e:
+                    logger.error(f"🔌 Unexpected connection error: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                        delay *= 2
             
             logger.info(f"⏭️ Moving to next Gemini model...\n")
         
-        # 2. ब्रह्मास्त्र: OpenAI Fallback
         if self.openai_key:
             logger.warning("🚨 CRITICAL: All Gemini options exhausted. Activating OpenAI Fallback...")
             try:
                 client = OpenAI(api_key=self.openai_key)
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=30.0
+                    messages=[{"role": "user", "content": prompt}]
                 )
                 logger.info("✅ Successfully recovered using OpenAI!")
                 return response.choices[0].message.content.strip()
