@@ -550,10 +550,17 @@ if __name__ == "__main__":
                         
             if docs_to_evaluate:
                 logger.info(f"Batched {len(docs_to_evaluate)} documents for AI analysis.")
-                for i in range(0, len(docs_to_evaluate), 5):
-                    batch = docs_to_evaluate[i:i+5]
+                for i in range(0, len(docs_to_evaluate), 2):
+                    batch = docs_to_evaluate[i:i+2]
                     # Pass the geo and ban rules explicitly to the AI batch processor
                     ai_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
+                    
+                    # MANDATORY COOLDOWN to protect free-tier Gemini keys
+                    time.sleep(4) 
+                    
+                    for verdict in ai_verdicts:
+                        idx = verdict.get("item_index")
+                        # ...
                     
                     for verdict in ai_verdicts:
                         idx = verdict.get("item_index")
