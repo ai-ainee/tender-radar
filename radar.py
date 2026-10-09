@@ -21,12 +21,14 @@ from ddgs import DDGS
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("RadarScout")
+
+# Silence noisy background libraries
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+logging.getLogger("google.genai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("duckduckgo_search").setLevel(logging.ERROR)
 logging.getLogger("ddgs").setLevel(logging.ERROR)
 logging.getLogger("pypdf").setLevel(logging.ERROR)
-logging.getLogger("google.genai").setLevel(logging.ERROR)
 
 class APIKeyManager:
     def __init__(self, env_string):
@@ -120,12 +122,10 @@ class DataEngine:
         self.serper_keys, self.user_agents = key_manager, ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"]
 
     def search(self, query, country_name="India"):
-        # --- THE SANITIZER: Forcefully strips forbidden free-tier operators ---
         clean_q = re.sub(r'(site:|intitle:|inurl:)\S+', '', str(query), flags=re.IGNORECASE)
         clean_q = re.sub(r'[-"()]', ' ', clean_q)
         clean_q = re.sub(r'\bOR\b', ' ', clean_q)
         clean_q = " ".join(clean_q.split())
-        # ----------------------------------------------------------------------
         
         logger.info(f"🔍 Executing Query: {clean_q}")
         results = []
@@ -155,7 +155,6 @@ class DataEngine:
         logger.error("❌ All Serper keys failed. Falling back to DuckDuckGo...")
         try:
             with DDGS() as ddgs:
-                # Reverted back to .text() since .html() was removed from the library
                 for item in ddgs.text(f"{clean_q} {country_name}", region='wt-wt', max_results=15): 
                     results.append({"link": item.get("href"), "snippet": item.get("body", "")})
             if results: logger.info("✅ Recovered using free DDGS Search.")
@@ -185,7 +184,9 @@ class BatchedSplitBrain:
     def __init__(self, key_manager):
         self.keys, self.openai_key = key_manager, os.getenv("OPENAI_API_KEY", "")
         self.client = genai.Client(api_key=self.keys.get_current()) 
+        # --- REVERTED TO YOUR EXACT ORIGINAL MODELS ---
         self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+        # ----------------------------------------------
 
     def evaluate_batch(self, batch, target, ind, country, states, geo_rule, ban_rule):
         if not batch: return []
@@ -241,10 +242,25 @@ class BatchedSplitBrain:
                     error_str = str(e).lower()
                     if "429" in error_str or "quota" in error_str:
                         logger.warning(f"⏳ Gemini Rate Limit Hit ({model_name}). Sleeping for 15 seconds to recover...")
-                        time.sleep(15) # Force a long sleep to let the 15-RPM quota reset
+                        time.sleep(15)
                     else:
                         logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
                         time.sleep(3)
+
+        if self.openai_key:
+            try:
+                response = OpenAI(api_key=self.openai_key).chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"}
+                )
+                time.sleep(2) 
+                data = json.loads(response.choices[0].message.content.strip())
+                return data.get("leads", data) if isinstance(data, dict) else data
+            except OpenAIError as e:
+                logger.error(f"OpenAI Error: {e}")
+        
+        return []
 
 class WebhookRouter:
     def __init__(self, url, secret):
@@ -292,7 +308,6 @@ if __name__ == "__main__":
         INDUSTRIES, COUNTRIES, STATES = settings_req.get("industry_keywords", []), settings_req.get("target_countries", []), settings_req.get("target_states", [])
         BANNED_KW, BANNED_SITES, PROTECTED_DOMAINS = [k.lower() for k in settings_req.get("banned_keywords", [])], [s.lower() for s in settings_req.get("banned_websites", [])], [d.lower() for d in settings_req.get("protected_domains", [])]
         
-        # FIX: Only extract the FIRST country and industry so Serper doesn't crash on parentheses
         IND = INDUSTRIES[0] if INDUSTRIES else "Unknown"
         COUNTRY = COUNTRIES[0] if COUNTRIES else "India"
         LOC = STATES[0] if STATES else ""
@@ -336,6 +351,10 @@ if __name__ == "__main__":
                     batch = docs_to_evaluate[i:i+2]
                     raw_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
                     time.sleep(6) 
+                    
+                    if not raw_verdicts:
+                        logger.warning(f"⚠️ Skipping batch due to total AI ecosystem failure.")
+                        continue
                     
                     ai_verdicts = raw_verdicts if isinstance(raw_verdicts, list) else [raw_verdicts]
                     
