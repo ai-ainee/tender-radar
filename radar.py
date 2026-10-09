@@ -22,7 +22,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("RadarScout")
 
-# Silence noisy background libraries
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("google.genai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
@@ -50,8 +49,10 @@ class SystemAlertNotifier:
         try: requests.post(f"https://api.telegram.org/bot{self.token}/sendMessage", json={"chat_id": self.chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
         except Exception: pass
 
-serper_keys, gemini_keys = APIKeyManager(os.getenv("SERPER_API_KEYS", "")), APIKeyManager(os.getenv("GEMINI_API_KEYS", ""))
-WEBHOOK_URL, WEBHOOK_SECRET = os.getenv("WEBHOOK_URL", ""), os.getenv("WEBHOOK_SECRET", "default_secret")
+serper_keys = APIKeyManager(os.getenv("SERPER_API_KEYS", ""))
+gemini_keys = APIKeyManager(os.getenv("GEMINI_API_KEYS", ""))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default_secret")
 system_monitor = SystemAlertNotifier()
 
 CACHE_FILE = "seen_links.txt"
@@ -84,8 +85,13 @@ def save_to_cache(link):
 
 class QueryGenerator:
     def __init__(self, target, ind, country, loc, ai_client, ai_models):
-        self.target, self.ind, self.loc, self.country = target.strip(), ind.strip() if ind and ind != "Unknown" else "", loc.strip() if loc else "", country.strip() if country else "India"
-        self.year, self.client, self.models = datetime.now().year, ai_client, ai_models
+        self.target = target.strip()
+        self.ind = ind.strip() if ind and ind != "Unknown" else ""
+        self.loc = loc.strip() if loc else ""
+        self.country = country.strip() if country else "India"
+        self.year = datetime.now().year
+        self.client = ai_client
+        self.models = ai_models
 
     def build_tracks(self):
         logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
@@ -119,7 +125,11 @@ class QueryGenerator:
 
 class DataEngine:
     def __init__(self, key_manager):
-        self.serper_keys, self.user_agents = key_manager, ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"]
+        self.serper_keys = key_manager
+        self.user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
+        ]
 
     def search(self, query, country_name="India"):
         clean_q = re.sub(r'(site:|intitle:|inurl:)\S+', '', str(query), flags=re.IGNORECASE)
@@ -167,7 +177,8 @@ class DataEngine:
         target_url = f"https://r.jina.ai/{url}" if is_gov_or_protected else url
 
         try:
-            headers, verify_ssl = {"User-Agent": random.choice(self.user_agents)}, False if '.gov.in' in url else True
+            headers = {"User-Agent": random.choice(self.user_agents)}
+            verify_ssl = False if '.gov.in' in url else True
             res = requests.get(target_url, headers=headers, timeout=18, verify=verify_ssl)
             if res.status_code != 200 and not is_gov_or_protected: res = requests.get(f"https://r.jina.ai/{url}", headers=headers, timeout=18)
             res.raise_for_status()
@@ -182,11 +193,18 @@ class DataEngine:
 
 class BatchedSplitBrain:
     def __init__(self, key_manager):
-        self.keys, self.openai_key = key_manager, os.getenv("OPENAI_API_KEY", "")
-        self.client = genai.Client(api_key=self.keys.get_current()) 
-        # --- REVERTED TO YOUR EXACT ORIGINAL MODELS ---
+        self.keys = key_manager
+        self.openai_key = os.getenv("OPENAI_API_KEY", "")
         self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
-        # ----------------------------------------------
+        self._init_client()
+
+    def _init_client(self):
+        self.client = genai.Client(api_key=self.keys.get_current())
+
+    def rotate_key(self):
+        new_key = self.keys.rotate("Gemini")
+        self.client = genai.Client(api_key=new_key)
+        return new_key
 
     def evaluate_batch(self, batch, target, ind, country, states, geo_rule, ban_rule):
         if not batch: return []
@@ -231,21 +249,34 @@ class BatchedSplitBrain:
         DATA BATCH:
         {items_block}
         """
+
         for model_name in self.gemini_models:
-            for attempt in range(3):
+            for key_attempt in range(len(self.keys.keys) or 1):
                 try:
-                    response = self.client.models.generate_content(model=model_name, contents=prompt, config={'response_mime_type': 'application/json'})
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config={'response_mime_type': 'application/json'}
+                    )
                     if response.text:
                         data = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
                         return data.get("leads", data) if isinstance(data, dict) else data
                 except Exception as e:
                     error_str = str(e).lower()
                     if "429" in error_str or "quota" in error_str:
-                        logger.warning(f"⏳ Gemini Rate Limit Hit ({model_name}). Sleeping for 15 seconds to recover...")
-                        time.sleep(15)
+                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating to next Gemini key...")
+                        self.rotate_key()
+                        time.sleep(1)
+                        continue
+                    elif "503" in error_str or "unavailable" in error_str:
+                        logger.warning(f"⚠️ Gemini 503 Overloaded ({model_name}). Switching model immediately...")
+                        break
+                    elif "404" in error_str or "not_found" in error_str:
+                        logger.warning(f"⚠️ Gemini 404 ({model_name}). Skipping model immediately...")
+                        break
                     else:
                         logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
-                        time.sleep(3)
+                        time.sleep(2)
 
         if self.openai_key:
             try:
@@ -280,12 +311,19 @@ class WebhookRouter:
                 return "DUPLICATE"
         except Exception: pass
 
-        capture_date, is_valid, confidence, role = datetime.now().strftime("%Y-%m-%d %H:%M"), ai_result.get('is_valid', False), ai_result.get('confidence', 'LOW'), ai_result.get('entity_role', 'IRRELEVANT')
+        capture_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+        is_valid = ai_result.get('is_valid', False)
+        confidence = ai_result.get('confidence', 'LOW')
+        role = ai_result.get('entity_role', 'IRRELEVANT')
+
         target_sheet = "🗑 AI_Trash" if not is_valid else ("🤝 Partners & Suppliers" if role == "SELLER" else ("⚠️ Needs Review" if confidence == "LOW" else "📥 Inbox"))
         
-        if target_sheet == "🗑 AI_Trash": row_data = [capture_date, company_name, ai_result.get('why_engage_now', ''), doc['url'], doc['track'], ""]
-        elif target_sheet == "🤝 Partners & Suppliers": row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
-        else: row_data = [capture_date, ai_result.get('upcoming_events', 'Unknown'), role, "Unknown", ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), company_name, target_product, ai_result.get('why_engage_now', ''), doc['url'], ai_result.get('product_usage', ''), f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"]
+        if target_sheet == "🗑 AI_Trash": 
+            row_data = [capture_date, company_name, ai_result.get('why_engage_now', ''), doc['url'], doc['track'], ""]
+        elif target_sheet == "🤝 Partners & Suppliers": 
+            row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
+        else: 
+            row_data = [capture_date, ai_result.get('upcoming_events', 'Unknown'), role, "Unknown", ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), company_name, target_product, ai_result.get('why_engage_now', ''), doc['url'], ai_result.get('product_usage', ''), f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"]
 
         logger.info(f"[*] Routing {company_name} [{role}] -> {target_sheet}")
         requests.post(self.url, json={"secret": self.secret, "action": "insert_lead", "target_sheet": target_sheet, "company_name": company_name, "signal_brief": ai_result.get('why_engage_now', ''), "row_data": row_data}, timeout=15)
@@ -317,7 +355,9 @@ if __name__ == "__main__":
         ban_rule = f"Do not qualify domains: {', '.join(BANNED_SITES)}" if BANNED_SITES else ""
     except Exception as e: logger.error(f"Settings Error: {e}"); exit()
 
-    engine, evaluator, router = DataEngine(serper_keys), BatchedSplitBrain(gemini_keys), WebhookRouter(WEBHOOK_URL, WEBHOOK_SECRET)
+    engine = DataEngine(serper_keys)
+    evaluator = BatchedSplitBrain(gemini_keys)
+    router = WebhookRouter(WEBHOOK_URL, WEBHOOK_SECRET)
     
     for TARGET in TARGETS:
         session_companies = set()
@@ -350,7 +390,7 @@ if __name__ == "__main__":
                 for i in range(0, len(docs_to_evaluate), 2):
                     batch = docs_to_evaluate[i:i+2]
                     raw_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
-                    time.sleep(6) 
+                    time.sleep(4) 
                     
                     if not raw_verdicts:
                         logger.warning(f"⚠️ Skipping batch due to total AI ecosystem failure.")
@@ -367,6 +407,7 @@ if __name__ == "__main__":
                                 continue
                             
                             session_companies.add(comp_name)
-                            if router.route_and_push(batch[idx], verdict, TARGET) in ["📥 Inbox", "⚠️ Needs Review"]: leads_pushed += 1
+                            if router.route_and_push(batch[idx], verdict, TARGET) in ["📥 Inbox", "⚠️ Needs Review"]: 
+                                leads_pushed += 1
 
     system_monitor.send(f"🏁 *Radar Scout Complete*\n• Links Scanned: `{scanned_links}`\n• Sent to CRM: `{leads_pushed}`\n• Duration: `{str(datetime.now() - start_time).split('.')[0]}`")
