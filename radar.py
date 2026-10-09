@@ -222,10 +222,16 @@ class BatchedSplitBrain:
 
         if self.openai_key:
             try:
-                response = OpenAI(api_key=self.openai_key).chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
+                response = OpenAI(api_key=self.openai_key).chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"}
+                )
+                time.sleep(2) # Mandatory cool down to prevent 429 rate limits on free/low-tier keys
                 data = json.loads(response.choices[0].message.content.strip())
                 return data.get("leads", data) if isinstance(data, dict) else data
-            except OpenAIError: pass
+            except OpenAIError as e:
+                logger.error(f"OpenAI Error: {e}")
         return []
 
 class WebhookRouter:
