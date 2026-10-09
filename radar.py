@@ -84,44 +84,48 @@ def save_to_cache(link):
     with open(CACHE_FILE, 'a') as f: f.write(link + '\n')
 
 class QueryGenerator:
-    def __init__(self, target, ind, country, loc, ai_client, ai_models):
+    def __init__(self, target, ind, country, states, ai_client, ai_models):
         self.target = target.strip()
-        self.ind = ind.strip() if ind and ind != "Unknown" else ""
-        self.loc = loc.strip() if loc else ""
+        self.ind = ind.strip() if ind and ind != "Unknown" else "AEC / Construction"
         self.country = country.strip() if country else "India"
+        self.states = [s.strip() for s in states if s.strip()] if states else ["Maharashtra", "Karnataka", "Delhi NCR", "Gujarat", "Tamil Nadu"]
         self.year = datetime.now().year
         self.client = ai_client
         self.models = ai_models
 
     def build_tracks(self):
-        logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
-        prompt = f"""
-        You are an elite OSINT and B2B Data Analyst. Generate exactly 2 Google Search queries per track to find B2B buyers for '{self.target}' in {self.country}:
-        TRACK 1 (TENDERS): Government portals, RFPs. Use plain words (e.g., eprocure {self.target} tender).
-        TRACK 2 (CAPEX_AND_PARTNERS): Target factory expansions. Use plain words (e.g., {self.target} case study OR {self.target} implementation).
-        TRACK 3 (MCA): Corporate registrations. Use plain words (e.g., zaubacorp {self.ind} incorporation).
-        TRACK 4 (COMMERCIAL): 
-           - Query 1: Job aggregators hiring '{self.target}' skills. Use plain words (e.g., naukri {self.target} hiring).
-           - Query 2: Direct corporate websites. Use plain words (e.g., {self.target} careers apply now).
-        CRITICAL RULES: Max 15 words. Include "{self.country}" exactly in every query.
-        NEVER use advanced operators like site:, intitle:, or minus signs (-). DO NOT use quotes ("") or parentheses (). Use plain text ONLY.
-        Respond STRICTLY with a JSON object containing the 4 keys: TRACK_1_TENDERS, TRACK_2_CAPEX_AND_PARTNERS, TRACK_3_MCA, TRACK_4_COMMERCIAL.
-        """
-        for model_name in self.models:
-            try:
-                response = self.client.models.generate_content(model=model_name, contents=prompt, config={'response_mime_type': 'application/json'})
-                if response.text: return json.loads(response.text.strip())
-            except Exception: continue
-        return self._fallback_tracks()
-
-    def _fallback_tracks(self):
+        logger.info(f"🧠 Generating Corporate & Govt search matrices for: {self.target}...")
+        sample_state = random.choice(self.states)
         yr = self.year
-        return {
-            "TRACK_1_TENDERS": [f'eprocure {self.target} tender {yr} {self.country}', f'gem {self.target} RFP {self.country}'],
-            "TRACK_2_CAPEX_AND_PARTNERS": [f'{self.target} case study {self.country}', f'{self.target} capacity expansion {self.country}'],
-            "TRACK_3_MCA": [f'zaubacorp {self.ind} incorporation {yr} {self.loc}'],
-            "TRACK_4_COMMERCIAL": [f'naukri hiring {self.target} {yr} {self.country}', f'careers {self.target} {self.country} apply now']
+        t = self.target
+
+        tracks = {
+            # 1. GOVERNMENT & MUNICIPAL BIDDING
+            "TRACK_1_GOVT_TENDERS": [
+                f'eprocure {sample_state} {t} tender {yr}',
+                f'gem portal {t} RFP {self.country}',
+                f'metro rail corporation {t} BIM tender {self.country}'
+            ],
+            # 2. CORPORATE DEVELOPERS & BUILDERS
+            "TRACK_2_CORPORATE_DEVELOPERS": [
+                f'commercial developer {sample_state} {t} BIM mandate project',
+                f'residential tower construction {t} turnkey contract {self.country}',
+                f'general contractor {sample_state} {t} modeling requirement'
+            ],
+            # 3. INDUSTRIAL & COMMERCIAL EXPANSIONS
+            "TRACK_3_CORPORATE_CAPEX": [
+                f'data center construction {t} BIM {self.country} {yr}',
+                f'semiconductor manufacturing plant expansion {t} {self.country}',
+                f'pharma industrial facility warehouse {t} project {sample_state}'
+            ],
+            # 4. CORPORATE IN-HOUSE HIRING SIGNALS
+            "TRACK_4_CORPORATE_BUYERS": [
+                f'site:naukri.com OR site:linkedin.com {t} BIM Manager hiring {sample_state}',
+                f'corporate careers {t} modeler engineer {self.country} {yr}',
+                f'infrastructure EPC contractor {t} team expansion {sample_state}'
+            ]
         }
+        return tracks
 
 class DataEngine:
     def __init__(self, key_manager):
@@ -131,48 +135,100 @@ class DataEngine:
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
         ]
 
-    def search(self, query, country_name="India"):
+    def search_until_leads_found(self, query, seen_links_cache, country_name="India", target_new_urls=5):
         clean_q = re.sub(r'(site:|intitle:|inurl:)\S+', '', str(query), flags=re.IGNORECASE)
         clean_q = re.sub(r'[-"()]', ' ', clean_q)
         clean_q = re.sub(r'\bOR\b', ' ', clean_q)
         clean_q = " ".join(clean_q.split())
         
-        logger.info(f"🔍 Executing Query: {clean_q}")
+        logger.info(f"🔍 Deep Crawling (Paginating until fresh leads are found): {clean_q}")
         results = []
         gl_code = {"india": "in", "united states": "us", "uk": "gb", "uae": "ae"}.get(str(country_name).strip().lower(), "us")
-        payload_dict = {"q": clean_q, "gl": gl_code, "num": 15}
-        if "tender" in clean_q.lower() or "rfp" in clean_q.lower(): payload_dict["tbs"] = "qdr:m"
 
-        for attempt in range(len(self.serper_keys.keys) or 1):
-            current_key = self.serper_keys.get_current()
-            if not current_key: break
-            try:
-                response = requests.post("https://google.serper.dev/search", headers={'X-API-KEY': current_key, 'Content-Type': 'application/json'}, json=payload_dict, timeout=15)
-                if response.status_code != 200:
-                    logger.error(f"❌ Serper API Rejected Key (Status {response.status_code}). Serper says: {response.text}")
+        page_num = 1
+        new_urls_found = 0
+
+        # Continuous loop: keeps advancing page by page until enough unseen links are found
+        while True:
+            # Google's global organic search index terminates at Page 10 (100 results)
+            if page_num > 10:
+                logger.info(f"🏁 Reached Google's max index depth (Page 10) for: {clean_q}")
+                break
+
+            payload_dict = {
+                "q": clean_q,
+                "gl": gl_code,
+                "num": 10,
+                "page": page_num
+            }
+            if any(k in clean_q.lower() for k in ["tender", "rfp", "bid"]):
+                payload_dict["tbs"] = "qdr:m"
+
+            page_success = False
+            organic = []
+            
+            for attempt in range(len(self.serper_keys.keys) or 1):
+                current_key = self.serper_keys.get_current()
+                if not current_key: break
+                try:
+                    response = requests.post(
+                        "https://google.serper.dev/search",
+                        headers={'X-API-KEY': current_key, 'Content-Type': 'application/json'},
+                        json=payload_dict,
+                        timeout=15
+                    )
+                    if response.status_code != 200:
+                        logger.error(f"❌ Serper Key Rejected on Page {page_num} (Status {response.status_code}). Rotating...")
+                        self.serper_keys.rotate("Serper")
+                        continue
+                    
+                    data = response.json()
+                    organic = data.get("organic", [])
+                    page_success = True
+                    break
+                except Exception as e:
+                    logger.error(f"❌ Serper Error on Page {page_num}: {e}")
                     self.serper_keys.rotate("Serper")
-                    continue
-                data = response.json()
-                if "organic" in data:
-                    for item in data["organic"]:
-                        if item.get("link"): results.append({"link": item.get("link"), "snippet": item.get("snippet", "")})
-                    if results: return results
-                return results 
-            except Exception as e:
-                logger.error(f"❌ Serper Network Error: {e}")
-                self.serper_keys.rotate("Serper")
-                
-        logger.error("❌ All Serper keys failed. Falling back to DuckDuckGo...")
-        try:
-            with DDGS() as ddgs:
-                for item in ddgs.text(f"{clean_q} {country_name}", region='wt-wt', max_results=15): 
-                    results.append({"link": item.get("href"), "snippet": item.get("body", "")})
-            if results: logger.info("✅ Recovered using free DDGS Search.")
-        except Exception as ddg_err: logger.error(f"🚨 DDGS Fallback failed: {ddg_err}")
+
+            # Google has no more results for this query
+            if not page_success or not organic:
+                logger.info(f"📄 Google results exhausted at Page {page_num - 1}.")
+                break
+
+            # Process every link on this page against the cache
+            page_fresh_count = 0
+            for item in organic:
+                link = item.get("link", "")
+                if link:
+                    c_url = clean_url(link)
+                    results.append({"link": link, "snippet": item.get("snippet", "")})
+                    if c_url not in seen_links_cache:
+                        new_urls_found += 1
+                        page_fresh_count += 1
+
+            logger.info(f"   [Page {page_num}] {len(organic)} results returned, {page_fresh_count} brand-new (Total new found: {new_urls_found})")
+
+            # If we've gathered enough fresh leads for this query, move on to the next
+            if new_urls_found >= target_new_urls:
+                logger.info(f"✅ Found {new_urls_found} new active leads. Proceeding to evaluation...")
+                break
+
+            page_num += 1
+            time.sleep(0.5)
+
+        # Fallback to DDGS if Serper failed
+        if not results:
+            try:
+                with DDGS() as ddgs:
+                    for item in ddgs.text(f"{clean_q} {country_name}", region='wt-wt', max_results=15): 
+                        results.append({"link": item.get("href"), "snippet": item.get("body", "")})
+            except Exception as ddg_err:
+                logger.error(f"🚨 DDGS Fallback failed: {ddg_err}")
+
         return results
 
     def fetch(self, url):
-        time.sleep(random.uniform(1.5, 3.0))
+        time.sleep(random.uniform(1.2, 2.5))
         is_gov_or_protected = any(k in url.lower() for k in [".gov.in", ".nic.in", "zaubacorp", "gem.gov.in"])
         target_url = f"https://r.jina.ai/{url}" if is_gov_or_protected else url
 
@@ -211,42 +267,39 @@ class BatchedSplitBrain:
         items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:6000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
 
         prompt = f"""
-        Your Role: You are a ruthless, senior B2B sales strategist and research analyst.
+        Your Role: You are an elite B2B sales strategist identifying prospective buyers and users of {target}.
         TARGET SOLUTION / PRODUCT: {target}
-        INDUSTRY SEGMENT: {ind}
+        INDUSTRY: {ind}
+        TARGET GEOGRAPHY: {country} (Active in states: {', '.join(states[:5])})
         {geo_rule}
         {ban_rule}
 
-        STEP 1 - THE QUALIFICATION LENS:
-        Before classifying, look for the problem the segment is solving, urgency drivers (Why now?), and target outcomes.
+        QUALIFICATION RULES:
+        1. VALID PROSPECTS:
+           - Corporate General Contractors, Builders, Real Estate Developers, EPC Firms actively managing large construction or infrastructure projects.
+           - Industrial or Manufacturing companies expanding factories, data centers, or logistics facilities requiring {target}/BIM.
+           - Government, Municipal, or Infrastructure bodies issuing active bids or RFPs for design/construction.
+           - Corporate organizations expanding in-house BIM/VDC/Revit engineering teams.
+        2. STRICT EXCLUSIONS:
+           - Generic news articles with no identifiable enterprise entity.
+           - Software training institutes, third-party CAD coaching centers, or freelance drafting service providers.
+           - Expired bids where the submission deadline has passed.
+        3. PRODUCT USAGE STATUS:
+           - Evaluate whether they are: [Confirmed User - Evidence], [Prospective Buyer - Evidence], [Competitor Tech - Evidence], or [Unknown].
 
-        STEP 2 - RESEARCH & EXTRACTION:
-        Analyze the raw web scrapes. Identify real, verifiable companies matching our segment and extract their details. 
-        PRIORITY SCORING CRITERIA:
-        - HIGH: No confirmed usage of our specific {target} + active project pipeline/urgency + matches segment profile closely.
-        - MEDIUM: Unknown product usage or partial match.
-        - LOW: Confirmed existing user (upsell only) or highly incomplete data.
-
-        STEP 3 - QUALITY CHECKLIST:
-        - EVERY company must be real and verifiable. 
-        - "Why Engage Now" MUST reference specific, concrete signals from the text — NO generic claims.
-        - DIRECTORY HANDLING: If the text is a directory listing multiple companies, extract the single most prominent buyer actively seeking '{target}'.
-        - TENDER EXPIRY RULE: If the scraped text is a government tender, RFP, or bid, check the deadline. If the submission closing date has passed relative to today, set `is_valid` to false.
-
-        STEP 4 - OUTPUT FORMAT (STRICT JSON SCHEMA):
-        Respond STRICTLY with a JSON object containing a single key "leads" which maps to an array of objects with these exact keys:
-        "item_index": (integer) matches the input item,
-        "is_valid": (boolean) true if a real company lead is found,
+        OUTPUT SCHEMA:
+        Return STRICT JSON with key "leads" containing an array of objects:
+        "item_index": (integer) matching the input index,
+        "is_valid": (boolean) true if a genuine commercial buyer/enterprise lead is present,
         "confidence": (string) "HIGH", "MEDIUM", or "LOW",
         "entity_role": (string) "BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER", or "IRRELEVANT",
-        "organization": (string) Official trading name of the company,
+        "organization": (string) Exact corporate trading name,
         "city": (string), "state": (string),
-        "why_engage_now": (string) 2-3 sentences: why this company is a compelling target right now,
-        "product_usage": (string) Format: [Confirmed User / Unknown / Competitor] - [Cite Evidence],
-        "solutions_to_push": (string) Specific use-cases of {target} that fit this profile,
-        "upcoming_events": (string) Any trade shows, conferences, or deadlines (or 'Unknown')
-        
-        DATA BATCH:
+        "why_engage_now": (string) 2-3 sentences: concrete commercial signal and strategic angle,
+        "product_usage": (string) e.g., 'Prospective Buyer - Active 50-acre industrial project kickoff',
+        "upcoming_events": (string) Tender closing date, project completion target, or 'Unknown'
+
+        BATCH:
         {items_block}
         """
 
@@ -264,12 +317,12 @@ class BatchedSplitBrain:
                 except Exception as e:
                     error_str = str(e).lower()
                     if "429" in error_str or "quota" in error_str:
-                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating to next Gemini key...")
+                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating to next key...")
                         self.rotate_key()
                         time.sleep(1)
                         continue
                     elif "503" in error_str or "unavailable" in error_str:
-                        logger.warning(f"⚠️ Gemini 503 Overloaded ({model_name}). Skipping model...")
+                        logger.warning(f"⚠️ Gemini 503 ({model_name}). Skipping model...")
                         break
                     elif "404" in error_str or "not_found" in error_str:
                         logger.warning(f"⚠️ Gemini 404 ({model_name}). Skipping model...")
@@ -298,16 +351,19 @@ class WebhookRouter:
         self.url, self.secret = url, secret
 
     def normalize_company(self, name):
-        if not name or not isinstance(name, str): name = "Unknown"
+        if not name or not isinstance(name, str): return "Unknown"
         return re.sub(r'[^a-zA-Z0-9\s]', '', re.sub(r'(?i)\b(ltd|pvt|limited|private|inc|corp|llc)\b\.?', '', name)).strip().title()
 
     @retry(wait=wait_exponential(multiplier=2, min=4, max=10), stop=stop_after_attempt(3))
     def route_and_push(self, doc, ai_result, target_product):
         company_name = self.normalize_company(ai_result.get('organization', 'Unknown'))
+        if company_name.lower() in ["unknown", "unknown firm", ""]:
+            return "SKIPPED_UNKNOWN"
+
         try:
             check = requests.post(self.url, json={"secret": self.secret, "action": "pre_flight_check", "company_name": company_name}, timeout=15).json()
             if check.get("exists") is True:
-                logger.info(f"[-] Dropped Duplicate: {company_name}")
+                logger.info(f"[-] Dropped Duplicate in CRM: {company_name}")
                 return "DUPLICATE"
         except Exception: pass
 
@@ -318,7 +374,6 @@ class WebhookRouter:
         product_usage = str(ai_result.get('product_usage', 'Unknown')).strip()
 
         target_sheet = "🗑 AI_Trash" if not is_valid else ("🤝 Partners & Suppliers" if role == "SELLER" else ("⚠️ Needs Review" if confidence == "LOW" else "📥 Inbox"))
-        
         lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"
 
         if target_sheet == "🗑 AI_Trash": 
@@ -326,20 +381,20 @@ class WebhookRouter:
         elif target_sheet == "🤝 Partners & Suppliers": 
             row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
         else: 
-            # EXACT 13-COLUMN MAPPING
+            # 13-COLUMN MAPPING
             row_data = [
                 capture_date,                                   # Col 1: Capture Date
                 ai_result.get('upcoming_events', 'Unknown'),    # Col 2: Deadline / Post Date
                 role,                                           # Col 3: Signal Category
-                ai_result.get('industry', 'AEC / Engineering'), # Col 4: Sector / Industry
+                ai_result.get('industry', 'AEC / Construction'),# Col 4: Sector / Industry
                 ai_result.get('state', 'N/A'),                  # Col 5: State
                 ai_result.get('city', 'N/A'),                   # Col 6: City
                 company_name,                                   # Col 7: Organization
                 target_product,                                 # Col 8: Target Product
-                ai_result.get('why_engage_now', ''),            # Col 9: AI Intent Brief (Pure pitch)
+                ai_result.get('why_engage_now', ''),            # Col 9: AI Intent Brief
                 doc['url'],                                     # Col 10: Source Link
-                product_usage,                                  # Col 11: Product Usage / Status (Dedicated column)
-                "",                                             # Col 12: Action / Move To (BLANK - DROPDOWN PRESERVED)
+                product_usage,                                  # Col 11: Product Usage / Status
+                "",                                             # Col 12: Action / Move To (BLANK - PRESERVES DROPDOWN)
                 lead_id                                         # Col 13: Lead ID & Fingerprint
             ]
 
@@ -348,29 +403,32 @@ class WebhookRouter:
         return target_sheet
 
 if __name__ == "__main__":
-    logger.info("=== Waking Up: Radar Scout ===")
+    logger.info("=== Waking Up: Radar Scout (Continuous Deep Crawl) ===")
     start_time, leads_pushed, scanned_links = datetime.now(), 0, 0
     
     try: seen_links = load_hybrid_cache()
     except Exception as e:
-        system_monitor.send(f"🚨 *Radar Scout Halted*: Critical Failure. Could not load seen_links cache.\nError: `{e}`")
-        logger.error("System exit triggered to prevent duplicate scraping and quota drain."); exit(1)
+        system_monitor.send(f"🚨 *Radar Scout Halted*: Cache failure.\nError: `{e}`")
+        logger.error("System exit triggered."); exit(1)
         
     try:
         settings_req = requests.get(f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={int(time.time())}", timeout=30).json()
         TARGETS = settings_req.get("target_products", [])
         if not TARGETS: raise ValueError("No target products defined in Column A.")
         
-        INDUSTRIES, COUNTRIES, STATES = settings_req.get("industry_keywords", []), settings_req.get("target_countries", []), settings_req.get("target_states", [])
-        BANNED_KW, BANNED_SITES, PROTECTED_DOMAINS = [k.lower() for k in settings_req.get("banned_keywords", [])], [s.lower() for s in settings_req.get("banned_websites", [])], [d.lower() for d in settings_req.get("protected_domains", [])]
+        INDUSTRIES = settings_req.get("industry_keywords", [])
+        COUNTRIES = settings_req.get("target_countries", [])
+        STATES = settings_req.get("target_states", [])
         
-        IND = INDUSTRIES[0] if INDUSTRIES else "Unknown"
+        BANNED_KW = [k.lower() for k in settings_req.get("banned_keywords", [])]
+        BANNED_SITES = [s.lower() for s in settings_req.get("banned_websites", [])]
+        PROTECTED_DOMAINS = [d.lower() for d in settings_req.get("protected_domains", [])]
+        
+        IND = INDUSTRIES[0] if INDUSTRIES else "AEC / Construction"
         COUNTRY = COUNTRIES[0] if COUNTRIES else "India"
-        LOC = STATES[0] if STATES else ""
         
-        country_name = COUNTRIES[0] if COUNTRIES else "India"
-        geo_rule = f"CRITICAL GEOGRAPHY CHECK: Target country is {country_name}. Multinational companies are 100% VALID if the text proves they have a physical office, active project, or are hiring INSIDE {country_name}. If they are ONLY located outside {country_name} with NO local operations, you MUST reject it by setting is_valid to false."
-        ban_rule = f"Do not qualify domains: {', '.join(BANNED_SITES)}" if BANNED_SITES else ""
+        geo_rule = f"GEOGRAPHY RULE: Must have verifiable commercial operations or active projects in {COUNTRY}."
+        ban_rule = f"Banned domains: {', '.join(BANNED_SITES)}" if BANNED_SITES else ""
     except Exception as e: logger.error(f"Settings Error: {e}"); exit()
 
     engine = DataEngine(serper_keys)
@@ -379,12 +437,15 @@ if __name__ == "__main__":
     
     for TARGET in TARGETS:
         session_companies = set()
-        tracks = QueryGenerator(TARGET, IND, COUNTRY, LOC, evaluator.client, evaluator.gemini_models).build_tracks()
+        tracks = QueryGenerator(TARGET, IND, COUNTRY, STATES, evaluator.client, evaluator.gemini_models).build_tracks()
 
         for track_name, queries in tracks.items():
             docs_to_evaluate = []
             for query in queries:
-                for res in engine.search(query, country_name=country_name):
+                # Digs through Google pages until at least 5 new, unseen links are found per query
+                search_results = engine.search_until_leads_found(query, seen_links_cache=seen_links, country_name=COUNTRY, target_new_urls=5)
+                
+                for res in search_results:
                     link, snippet = res.get("link", "").lower(), res.get("snippet", "").lower()
                     c_link = clean_url(link)
                     
@@ -395,23 +456,19 @@ if __name__ == "__main__":
                         if any(bd in link for bd in BANNED_SITES if bd) or any(bx in snippet for bx in BANNED_KW if bx):
                             save_to_cache(c_link); seen_links.add(c_link); continue
                             
-                    if "tender" in query and "TRACK_1" in track_name:
-                        years = [int(y) for y in re.findall(r'\b(?:202[0-9])\b', f"{link} {snippet}")]
-                        if years and max(years) < datetime.now().year - 1:
-                            save_to_cache(c_link); seen_links.add(c_link); continue
-
                     save_to_cache(c_link); seen_links.add(c_link)
                     content = engine.fetch(link)
-                    if content: docs_to_evaluate.append({"track": track_name, "url": link, "raw_text": content})
+                    if content: 
+                        docs_to_evaluate.append({"track": track_name, "url": link, "raw_text": content})
                         
             if docs_to_evaluate:
                 for i in range(0, len(docs_to_evaluate), 2):
                     batch = docs_to_evaluate[i:i+2]
-                    raw_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
-                    time.sleep(4) 
+                    raw_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, STATES, geo_rule, ban_rule)
+                    time.sleep(3) 
                     
                     if not raw_verdicts:
-                        logger.warning(f"⚠️ Skipping batch due to total AI ecosystem failure.")
+                        logger.warning(f"⚠️ Batch skipped due to temporary AI rate limit.")
                         continue
                     
                     ai_verdicts = raw_verdicts if isinstance(raw_verdicts, list) else [raw_verdicts]
@@ -420,6 +477,8 @@ if __name__ == "__main__":
                         idx = verdict.get("item_index")
                         if idx is not None and idx < len(batch):
                             comp_name = router.normalize_company(verdict.get('organization', ''))
+                            if comp_name.lower() in ["unknown", "unknown firm", ""]:
+                                continue
                             if comp_name in session_companies:
                                 logger.info(f"[-] Dropped In-Flight Duplicate: {comp_name}")
                                 continue
