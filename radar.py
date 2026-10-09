@@ -12,31 +12,24 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from io import BytesIO
 from datetime import datetime
+from urllib.parse import urlparse
 from google import genai
 from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
-from curl_cffi import requests as cureq
-import pytesseract
-from pdf2image import convert_from_bytes
+from duckduckgo_search import DDGS
 
-# --- CONFIGURATION & LOGGING ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("RadarScout")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# ==========================================
-# 1. CREDENTIALS & SYSTEM ALERTS
-# ==========================================
 class APIKeyManager:
     def __init__(self, env_string):
         self.keys = [k.strip() for k in env_string.split(',') if k.strip()]
         self.index = 0
         if not self.keys: raise ValueError("No API keys found. Check GitHub Secrets.")
-
     def get_current(self): return self.keys[self.index]
-
     def rotate(self, service_name):
         self.index = (self.index + 1) % len(self.keys)
         logger.warning(f"{service_name} Quota hit. Rotating to Key #{self.index + 1} of {len(self.keys)}...")
@@ -44,248 +37,110 @@ class APIKeyManager:
 
 class SystemAlertNotifier:
     def __init__(self):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-        
+        self.token, self.chat_id = os.getenv("TELEGRAM_BOT_TOKEN", ""), os.getenv("TELEGRAM_CHAT_ID", "")
     def send(self, message):
         if not self.token or not self.chat_id: return
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{self.token}/sendMessage", 
-                json={"chat_id": self.chat_id, "text": message, "parse_mode": "Markdown"}, 
-                timeout=5
-            )
-        except Exception as e:
-            logger.error(f"Telegram alert delivery failed: {e}")
+        try: requests.post(f"https://api.telegram.org/bot{self.token}/sendMessage", json={"chat_id": self.chat_id, "text": message, "parse_mode": "Markdown"}, timeout=5)
+        except Exception: pass
 
-serper_keys = APIKeyManager(os.getenv("SERPER_API_KEYS", ""))
-gemini_keys = APIKeyManager(os.getenv("GEMINI_API_KEYS", ""))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default_secret")
+serper_keys, gemini_keys = APIKeyManager(os.getenv("SERPER_API_KEYS", "")), APIKeyManager(os.getenv("GEMINI_API_KEYS", ""))
+WEBHOOK_URL, WEBHOOK_SECRET = os.getenv("WEBHOOK_URL", ""), os.getenv("WEBHOOK_SECRET", "default_secret")
 system_monitor = SystemAlertNotifier()
 
-# ==========================================
-# 2. CACHE MANAGER
-# ==========================================
 CACHE_FILE = "seen_links.txt"
 if not os.path.exists(CACHE_FILE): open(CACHE_FILE, 'w').close()
 
+def clean_url(url):
+    try:
+        p = urlparse(url.strip().lower())
+        return f"{p.netloc.replace('www.', '')}{p.path.rstrip('/')}"
+    except Exception: return url.strip().lower()
+
+@retry(wait=wait_exponential(multiplier=2, min=4, max=10), stop=stop_after_attempt(3), reraise=True)
 def load_hybrid_cache():
     seen = set()
     try:
-        with open(CACHE_FILE, 'r') as f: seen.update(line.strip().lower() for line in f if line.strip())
-    except: pass
-    
-    try:
-        res = requests.post(WEBHOOK_URL, json={"secret": WEBHOOK_SECRET, "action": "get_all_urls"}, timeout=15)
-        if res.status_code == 200:
-            seen.update(u.strip().lower() for u in res.json().get("urls", []) if u.strip())
-            logger.info(f"Cloud cache synced. Total memory: {len(seen)} links.")
-    except Exception: pass
+        with open(CACHE_FILE, 'r') as f: seen.update(clean_url(line) for line in f if line.strip())
+    except Exception as e: logger.warning(f"Local cache unreadable: {e}")
+        
+    logger.info("🔄 Fetching cloud cache (seen links) from Google Sheets...")
+    res = requests.post(WEBHOOK_URL, json={"secret": WEBHOOK_SECRET, "action": "get_all_urls"}, timeout=20)
+    res.raise_for_status() 
+    data = res.json()
+    if data.get("status") != "success": raise ValueError(f"Webhook error: {data.get('message', 'Unknown error')}")
+    seen.update(clean_url(u) for u in data.get("urls", []) if u.strip())
+    logger.info(f"✅ Cloud cache synchronized. Total memory: {len(seen)} links.")
     return seen
 
 def save_to_cache(link):
     with open(CACHE_FILE, 'a') as f: f.write(link + '\n')
 
-def prune_relevant_text(raw_text, keywords, window=400):
-    if len(raw_text) < 2500:
-        return raw_text
-    snippets = []
-    text_lower = raw_text.lower()
-    for kw in keywords:
-        if not kw or kw == "Unknown": continue
-        start = 0
-        while True:
-            idx = text_lower.find(kw.lower(), start)
-            if idx == -1: break
-            snippet_start = max(0, idx - window)
-            snippet_end = min(len(raw_text), idx + window)
-            snippets.append(raw_text[snippet_start:snippet_end])
-            start = idx + len(kw) + window
-            if len(snippets) >= 4: break
-    if snippets:
-        return " ... \n".join(snippets)
-    return raw_text[:3000]
-
-def is_deadline_expired(deadline_str):
-    """Returns True if the extracted deadline string is a date in the past."""
-    if not deadline_str or deadline_str.lower() in ["unknown", "n/a", "none"]:
-        return False
-    
-    try:
-        deadline_clean = deadline_str.strip()
-        for fmt in ("%d %B %Y", "%d %b %Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
-            try:
-                dt = datetime.strptime(deadline_clean, fmt)
-                if dt.date() < datetime.now().date():
-                    return True  # Expired!
-                break
-            except ValueError:
-                continue
-    except Exception:
-        pass
-    return False
-
-# ==========================================
-# 3. DYNAMIC AI QUERY GENERATOR
-# ==========================================
 class QueryGenerator:
     def __init__(self, target, ind, country, loc, ai_client, ai_models):
-        self.target = target.strip()
-        self.ind = ind.strip() if ind and ind != "Unknown" else ""
-        self.loc = loc.strip() if loc else ""
-        self.country = country.strip() if country else "India"
-        self.year = datetime.now().year
-        self.client = ai_client
-        self.models = ai_models
+        self.target, self.ind, self.loc, self.country = target.strip(), ind.strip() if ind and ind != "Unknown" else "", loc.strip() if loc else "", country.strip() if country else "India"
+        self.year, self.client, self.models = datetime.now().year, ai_client, ai_models
 
     def build_tracks(self):
         logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
-        
         prompt = f"""
-        You are an elite B2B Data Analyst. Generate natural language Google Search queries to find B2B leads for the following product:
-        
-        TARGET PRODUCT: {self.target}
-        INDUSTRY CONTEXT: {self.ind}
-        LOCATION: {self.country}
-        CURRENT YEAR: {self.year}
-        
-        Generate exactly 2 simple queries for these 4 tracks.
-        
-        TRACK 1 (TENDERS): Government tenders, e-procurement bids, or RFPs. 
-        (Example: "official {self.target} tender document {self.year} {self.country}")
-        
-        TRACK 2 (CAPEX/PARTNERS): Factory expansions, authorized dealers, or resellers.
-        (Example: "authorized distributor for {self.target} in {self.country}")
-        
-        TRACK 3 (MCA): New corporate registrations or business directories.
-        (Example: "newly incorporated {self.ind} company {self.year} {self.country}")
-        
-        TRACK 4 (COMMERCIAL): Job listings or corporate careers pages.
-        (Example: "now hiring {self.target} engineers {self.country}")
-        
-        CRITICAL RULES:
-        - Keep EVERY query under 10 words.
-        - DO NOT use advanced operators like "site:", "OR", or "-". 
-        - DO NOT use quotation marks around words.
-        - You must include the word {self.country} in every query.
-        
-        Respond STRICTLY with a valid JSON object matching this exact structure:
-        {{
-            "TRACK_1_TENDERS": ["query 1", "query 2"],
-            "TRACK_2_CAPEX_AND_PARTNERS": ["query 1", "query 2"],
-            "TRACK_3_MCA": ["query 1", "query 2"],
-            "TRACK_4_COMMERCIAL": ["query 1", "query 2"]
-        }}
+        You are an elite OSINT and B2B Data Analyst. Generate exactly 2 lethal Google Search queries per track to find B2B buyers for '{self.target}' in {self.country}:
+        TRACK 1 (TENDERS): Government portals, RFPs. Use negative keywords (-awarded -cancelled -archive).
+        TRACK 2 (CAPEX_AND_PARTNERS): Target factory expansions or tech upgrades. Use keywords like ("case study" OR "implementation" OR "expansion").
+        TRACK 3 (MCA): Corporate registrations for new companies.
+        TRACK 4 (COMMERCIAL): 
+           - Query 1: Job aggregators hiring '{self.target}' skills (-consulting -agency).
+           - Query 2: Direct corporate websites (-naukri -linkedin).
+        CRITICAL RULES: Max 15 words. Max 2 'OR' conditions per query. Include "{self.country}" or "{self.loc}" exactly in every query.
+        Respond STRICTLY with a JSON object containing the 4 keys: TRACK_1_TENDERS, TRACK_2_CAPEX_AND_PARTNERS, TRACK_3_MCA, TRACK_4_COMMERCIAL.
         """
-        
         for model_name in self.models:
             try:
-                response = self.client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config={'response_mime_type': 'application/json'}
-                )
-                
-                if response.text:
-                    tracks = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
-                    logger.info("✅ AI successfully generated custom search tracks!")
-                    return tracks
-            except Exception as e:
-                logger.warning(f"⚠️ AI Query Gen failed with {model_name}, trying next...")
-                continue
-                
-        logger.warning("🚨 AI Query Gen failed. Falling back to universal static tracks.")
+                response = self.client.models.generate_content(model=model_name, contents=prompt, config={'response_mime_type': 'application/json'})
+                if response.text: return json.loads(response.text.strip())
+            except Exception: continue
         return self._fallback_tracks()
 
     def _fallback_tracks(self):
         yr = self.year
         return {
-            "TRACK_1_TENDERS": [f"{self.target} tender document {yr} {self.country}", f"{self.target} rfp {self.country}"],
-            "TRACK_2_CAPEX_AND_PARTNERS": [f"authorized dealer for {self.target} {self.country}"],
-            "TRACK_3_MCA": [f"new {self.ind} company incorporated {yr} {self.country}"],
-            "TRACK_4_COMMERCIAL": [
-                f"hiring {self.target} expert {yr} {self.country}",
-                f"careers {self.target} jobs {self.country}"
-            ]
+            "TRACK_1_TENDERS": [f'"{self.target}" tender "{yr}" "{self.country}" -awarded -cancelled', f'"{self.target}" RFP "{self.country}" -archive'],
+            "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" ("case study" OR "implementation") "{self.country}"', f'"{self.target}" ("infrastructure" OR "capacity expansion") "{self.country}"'],
+            "TRACK_3_MCA": [f'"{self.ind}" "Incorporation" "{yr}" "{self.loc}"'],
+            "TRACK_4_COMMERCIAL": [f'hiring "{self.target}" "{yr}" site:naukri.com -consulting -agency', f'"careers" "{self.target}" "{self.country}" -naukri -linkedin']
         }
 
-# ==========================================
-# 4. DATA ENGINE (Scraping & Search)
-# ==========================================
 class DataEngine:
     def __init__(self, key_manager):
-        self.serper_keys = key_manager
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15"
-        ]
+        self.serper_keys, self.user_agents = key_manager, ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"]
 
     def search(self, query, country_name="India"):
-        logger.info(f"🔍 Executing Serper Query: {query}")
+        logger.info(f"🔍 Executing Query: {query}")
         results = []
-        max_retries = len(self.serper_keys.keys) if self.serper_keys.keys else 1
-        
-        url = "https://google.serper.dev/search"
-        
-        gl_map = {
-            "india": "in", "united states": "us", "usa": "us",
-            "uk": "gb", "united kingdom": "gb", "uae": "ae",
-            "united arab emirates": "ae", "australia": "au",
-            "canada": "ca", "singapore": "sg", "germany": "de"
-        }
-        gl_code = gl_map.get(str(country_name).strip().lower(), "us")
+        gl_code = {"india": "in", "united states": "us", "uk": "gb", "uae": "ae"}.get(str(country_name).strip().lower(), "us")
+        payload_dict = {"q": str(query).strip(), "gl": gl_code, "num": 15}
+        if "tender" in query.lower() or "rfp" in query.lower(): payload_dict["tbs"] = "qdr:m"
 
-        for attempt in range(max_retries):
+        for attempt in range(len(self.serper_keys.keys) or 1):
             current_key = self.serper_keys.get_current()
-            if not current_key:
-                logger.error("❌ No Serper API keys configured!")
-                return results
-
-            headers = {
-                'X-API-KEY': str(current_key).strip(),
-                'Content-Type': 'application/json'
-            }
-            
-            payload = json.dumps({
-                "q": str(query).strip(),
-                "gl": gl_code,
-                "num": 15
-            })
-
+            if not current_key: break
             try:
-                response = requests.request("POST", url, headers=headers, data=payload, timeout=15)
-                
-                if response.status_code == 400:
-                    logger.error(f"❌ Serper 400 Error. Query: {query} | Serper says: {response.text}")
-                    return results
-                
-                if response.status_code in [401, 403, 429]:
-                    logger.warning(f"⚠️ Serper Key failed (Status {response.status_code}). Rotating...")
-                    self.serper_keys.rotate("Serper")
-                    continue
-                    
+                response = requests.post("https://google.serper.dev/search", headers={'X-API-KEY': current_key, 'Content-Type': 'application/json'}, json=payload_dict, timeout=15)
+                if response.status_code in [401, 403, 429]: self.serper_keys.rotate("Serper"); continue
                 response.raise_for_status()
                 data = response.json()
-                
                 if "organic" in data:
                     for item in data["organic"]:
-                        link = item.get("link")
-                        snippet = item.get("snippet", "")
-                        if link:
-                            results.append({"link": link, "snippet": snippet})
-                    
-                    if results:
-                        return results
-                
-                logger.info("ℹ️ Serper returned 0 results for this specific query.")
+                        if item.get("link"): results.append({"link": item.get("link"), "snippet": item.get("snippet", "")})
+                    if results: return results
                 return results 
+            except Exception: self.serper_keys.rotate("Serper")
                 
-            except Exception as e:
-                logger.error(f"🚨 Serper Connection Error: {e}")
-                self.serper_keys.rotate("Serper")
-                
-        logger.error("❌ All Serper keys failed for this query.")
+        logger.error("❌ All Serper keys failed. Falling back to DuckDuckGo...")
+        try:
+            with DDGS() as ddgs:
+                for item in ddgs.text(f"{query} {country_name}", region='wt-wt', max_results=15): results.append({"link": item.get("href"), "snippet": item.get("body", "")})
+            if results: logger.info("✅ Recovered using free DDGS Search.")
+        except Exception as ddg_err: logger.error(f"🚨 DDGS Fallback failed: {ddg_err}")
         return results
 
     def fetch(self, url):
@@ -294,120 +149,51 @@ class DataEngine:
         target_url = f"https://r.jina.ai/{url}" if is_gov_or_protected else url
 
         try:
-            headers = {"User-Agent": random.choice(self.user_agents)}
-            # Expand the SSL bypass to include all .in and eproc domains
-            verify_ssl = False if ('.in' in url or 'eproc' in url or 'gem' in url) else True
-            
-            # 1. Use curl_cffi to bypass Cloudflare/403s
-            res = cureq.get(target_url, impersonate="chrome120", headers=headers, timeout=20, verify=verify_ssl)
-            
-            # 2. Fallback to Jina Reader if still blocked
-            if res.status_code != 200 and not is_gov_or_protected:
-                res = cureq.get(f"https://r.jina.ai/{url}", impersonate="chrome120", headers=headers, timeout=20)
-                
-            if res.status_code != 200: return None
+            headers, verify_ssl = {"User-Agent": random.choice(self.user_agents)}, False if '.gov.in' in url else True
+            res = requests.get(target_url, headers=headers, timeout=18, verify=verify_ssl)
+            if res.status_code != 200 and not is_gov_or_protected: res = requests.get(f"https://r.jina.ai/{url}", headers=headers, timeout=18)
+            res.raise_for_status()
 
-            # 3. Handle PDFs with Free OCR
             if 'application/pdf' in res.headers.get('Content-Type', '') or url.lower().endswith('.pdf'):
-                pdf_bytes = res.content
-                reader = PdfReader(BytesIO(pdf_bytes))
-                extracted = "".join(page.extract_text() or "" for page in reader.pages[:5]).strip()
-                
-                # If PDF is an image (blank text), run free Tesseract OCR
-                if len(extracted) < 100:
-                    logger.info("📄 Scanned PDF detected. Running free Tesseract OCR...")
-                    try:
-                        images = convert_from_bytes(pdf_bytes, first_page=1, last_page=2)
-                        extracted = "\n".join(pytesseract.image_to_string(img) for img in images).strip()
-                    except Exception as e:
-                        logger.warning(f"OCR failed: {e}")
-                return extracted
+                return "".join(page.extract_text() + "\n" for page in PdfReader(BytesIO(res.content)).pages[:10]).strip()
                 
             soup = BeautifulSoup(res.text, 'html.parser')
-            for el in soup(["script", "style", "nav", "footer", "header"]): el.decompose()
-            return " ".join(soup.get_text(separator=" ", strip=True).split())
+            for el in soup(["script", "style", "nav", "footer", "header", "aside"]): el.decompose()
+            return "\n".join([line.strip() for line in soup.get_text(separator="\n", strip=True).splitlines() if line.strip()])[:8000]
+        except Exception: return None
 
-        except Exception as e:
-            logger.warning(f"Scrape failed [{url}]: {e}")
-            return None
-
-# ==========================================
-# 5. MASTER AI EVALUATOR
-# ==========================================
 class BatchedSplitBrain:
     def __init__(self, key_manager):
-        self.keys = key_manager
-        self.openai_key = os.getenv("OPENAI_API_KEY", "")
-        self.current_gemini_key = self.keys.get_current()
-        self.client = genai.Client(api_key=self.current_gemini_key) 
-        self.gemini_models = self._get_flash_model_stack()
-
-    def _get_flash_model_stack(self):
-        try:
-            valid_models = []
-            for m in self.client.models.list():
-                name = m.name.lower().replace("models/", "")
-                banned_keywords = ["audio", "tts", "image", "omni", "vision", "native", "preview", "thinking", "2.5"]
-                
-                if "flash" in name and not any(bad in name for bad in banned_keywords):
-                    if name not in valid_models:
-                        valid_models.append(name)
-            
-            if valid_models:
-                valid_models.sort(reverse=True)
-                for preferred in ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]:
-                    if preferred in valid_models:
-                        valid_models.insert(0, valid_models.pop(valid_models.index(preferred)))
-                
-                logger.info(f"🧠 Dynamic Model Stack Built: {valid_models}")
-                return valid_models
-        except Exception as e:
-            logger.warning(f"⚠️ Could not fetch live model list: {e}. Using fallbacks.")
-        return ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
-
-    def _rotate_gemini_key(self):
-        new_key = self.keys.rotate("Gemini")
-        if new_key and new_key != self.current_gemini_key:
-            logger.info("🔑 Rotating to a backup Gemini API Key...")
-            self.current_gemini_key = new_key
-            self.client = genai.Client(api_key=self.current_gemini_key)
-            return True
-        logger.warning("⚠️ No more backup Gemini keys available.")
-        return False
+        self.keys, self.openai_key = key_manager, os.getenv("OPENAI_API_KEY", "")
+        self.client = genai.Client(api_key=self.keys.get_current()) 
+        self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
 
     def evaluate_batch(self, batch, target, ind, country, states, geo_rule, ban_rule):
         if not batch: return []
-        
-        items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:5000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
+        items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:6000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
 
         prompt = f"""
-        Your Role: You are a ruthless, senior sales executive at a B2B business transformation and digital advisory firm.
-        Your Mission: Analyze the raw web scrapes below to identify and qualify real companies that match our target segment, and produce highly structured, actionable intelligence ready for outreach.
-
-        TARGET PRODUCT/OFFERING: {target}
-        INDUSTRY CONTEXT & SEGMENT: {ind}
+        Your Role: You are a ruthless, senior B2B sales strategist and research analyst.
+        TARGET SOLUTION / PRODUCT: {target}
+        INDUSTRY SEGMENT: {ind}
         {geo_rule}
         {ban_rule}
 
         STEP 1 - THE QUALIFICATION LENS:
-        Before classifying, internalize what this segment is trying to solve. Look for urgency drivers in the scraped text: project pipelines, digital maturity signals, public tenders, hiring patterns, capacity expansions, or regulatory pressures. 
+        Before classifying, look for the problem the segment is solving, urgency drivers (Why now?), and target outcomes.
 
-        STEP 2 - CRITICAL CLASSIFICATION LOGIC & RESEARCH:
-        If the text reveals a real company, extract their details and classify their role:
-        1. THE "HIRING" SIGNAL: Job postings hiring someone with '{target}' skills. -> Set entity_role to "SERVICE_USER".
-        2. THE "TENDER" SIGNAL: Company/gov issuing a tender, RFP, or seeking vendors for '{target}'. -> Set entity_role to "BUYER".
-        3. THE "PARTNER" SIGNAL: Reseller, distributor, consultant, or service provider for '{target}'. -> Set entity_role to "SELLER".
-        4. THE "EXPANSION" SIGNAL: Building a new plant, expanding capacity, or environmental clearance. -> Set entity_role to "PROJECT_BUYER".
+        STEP 2 - RESEARCH & EXTRACTION:
+        Analyze the raw web scrapes. Identify real, verifiable companies matching our segment and extract their details. 
+        PRIORITY SCORING CRITERIA:
+        - HIGH: No confirmed usage of our specific {target} + active project pipeline/urgency + matches segment profile closely.
+        - MEDIUM: Unknown product usage or partial match.
+        - LOW: Confirmed existing user (upsell only) or highly incomplete data.
 
-        FATAL ERRORS TO AVOID (STRICT - VIOLATION RESULTS IN TERMINATION):
-        - STRICT GEOGRAPHY: The lead MUST have operations, projects, or hiring actively occurring in the TARGET COUNTRY. Multinational companies with global headquarters elsewhere ARE PERFECTLY VALID as long as they are operating, hiring, or buying within the TARGET COUNTRY. If the text proves the lead is EXCLUSIVELY operating outside the TARGET COUNTRY with zero local presence, set is_valid to false and entity_role to "IRRELEVANT".
-        - DO NOT list job boards (Naukri, LinkedIn) or government portals as the "organization". Extract the ACTUAL company name.
-        - If the text is a generic directory of links with no specific company context, set is_valid to false and entity_role to "IRRELEVANT".
-
-        STEP 3 - PRIORITY SCORING:
-        - "HIGH": Not using our product (or using a competitor) + active project pipeline + matches segment closely.
-        - "MEDIUM": Unknown product usage, partial match to segment profile, or contact hard to reach.
-        - "LOW": Confirmed existing user (upsell only) or incomplete qualifying information.
+        STEP 3 - QUALITY CHECKLIST (FATAL ERRORS TO AVOID):
+        - EVERY company must be real and verifiable. 
+        - "Why Engage Now" MUST reference specific, concrete signals from the text — NO generic claims.
+        - DIRECTORY HANDLING: If the text is a directory listing multiple companies, DO NOT mark it invalid. Extract the single most prominent buyer actively seeking '{target}'.
+        - TENDER EXPIRY RULE: If the scraped text is a government tender, RFP, or bid, check the deadline. If the submission closing date has passed relative to today, set `is_valid` to false. Do not qualify closed bids.
 
         STEP 4 - OUTPUT FORMAT (STRICT JSON SCHEMA):
         Respond STRICTLY with a JSON object containing a single key "leads" which maps to an array of objects with these exact keys:
@@ -416,269 +202,132 @@ class BatchedSplitBrain:
         "confidence": (string) "HIGH", "MEDIUM", or "LOW",
         "entity_role": (string) "BUYER", "PROJECT_BUYER", "SERVICE_USER", "SELLER", or "IRRELEVANT",
         "organization": (string) Official trading name of the company,
-        "city": (string) City and region (if found),
-        "state": (string) Website domain or state (if found),
-        "intent_brief": (string) Format exactly: [Activity: ...] | [Why Engage Now: ...],
-        "deadline": (string) Upcoming events, trade shows, deadlines, or 'Unknown',
-        "reason": (string) Format exactly: [Product Usage: ...] | [Solutions to Push: ...] | [Contact: ...]
+        "city": (string), "state": (string),
+        "why_engage_now": (string) 2-3 sentences: why this company is a compelling target right now,
+        "product_usage": (string) Format: [Confirmed User / Unknown / Competitor] - [Cite Evidence],
+        "solutions_to_push": (string) Specific use-cases of {target} that fit this profile,
+        "upcoming_events": (string) Any trade shows, conferences, or deadlines (or 'Unknown')
         
         DATA BATCH:
         {items_block}
         """
-
-        max_retries = 3
         for model_name in self.gemini_models:
-            delay = 2
-            for attempt in range(max_retries):
+            for attempt in range(3):
                 try:
-                    logger.info(f"🔄 Trying Gemini: {model_name} (Attempt {attempt + 1}/{max_retries})...")
-                    
-                    response = self.client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config={'response_mime_type': 'application/json'}
-                    )
-                    
+                    response = self.client.models.generate_content(model=model_name, contents=prompt, config={'response_mime_type': 'application/json'})
                     if response.text:
                         data = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
                         return data.get("leads", data) if isinstance(data, dict) else data
-
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    if "429" in error_msg or "quota" in error_msg or "exhausted" in error_msg:
-                        logger.warning(f"🚨 Rate Limit Exceeded for {model_name}.")
-                        if self._rotate_gemini_key(): time.sleep(1)
-                        else: time.sleep(delay); delay *= 2
-                    else:
-                        logger.warning(f"⚠️ Gemini API Error: {e}")
-                        if attempt < max_retries - 1: time.sleep(delay); delay *= 2
-            
-            logger.info(f"⏭️ Moving to next Gemini model...\n")
+                except Exception: time.sleep(2)
 
         if self.openai_key:
-            logger.warning("🚨 CRITICAL: All Gemini options exhausted. Activating OpenAI Fallback...")
             try:
-                client = OpenAI(api_key=self.openai_key)
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
-                )
-                logger.info("✅ Successfully recovered using OpenAI!")
+                response = OpenAI(api_key=self.openai_key).chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
                 data = json.loads(response.choices[0].message.content.strip())
                 return data.get("leads", data) if isinstance(data, dict) else data
-            except OpenAIError as e:
-                logger.error(f"🚨 TOTAL SYSTEM FAILURE: Gemini and OpenAI both failed. OpenAI Error: {e}")
-
-        system_monitor.send("⚠️ *Radar Scout Warning*: TOTAL API FAILURE. Both Gemini and OpenAI failed.")
+            except OpenAIError: pass
         return []
 
-# ==========================================
-# 6. ROUTER (PUSH TO SHEET)
-# ==========================================
 class WebhookRouter:
     def __init__(self, url, secret):
-        self.url = url
-        self.secret = secret
+        self.url, self.secret = url, secret
 
     def normalize_company(self, name):
         if not name or not isinstance(name, str): name = "Unknown"
-        clean = re.sub(r'(?i)\b(ltd|pvt|limited|private|inc|corp|llc)\b\.?', '', name)
-        return re.sub(r'[^a-zA-Z0-9\s]', '', clean).strip().title()
+        return re.sub(r'[^a-zA-Z0-9\s]', '', re.sub(r'(?i)\b(ltd|pvt|limited|private|inc|corp|llc)\b\.?', '', name)).strip().title()
 
     @retry(wait=wait_exponential(multiplier=2, min=4, max=10), stop=stop_after_attempt(3))
     def route_and_push(self, doc, ai_result, target_product):
-        raw_name = ai_result.get('organization', 'Unknown')
-        company_name = self.normalize_company(raw_name)
-        
+        company_name = self.normalize_company(ai_result.get('organization', 'Unknown'))
         try:
-            check = requests.post(self.url, json={"secret": self.secret, "action": "pre_flight_check", "company_name": company_name}, timeout=15)
-            if check.json().get("status") in ["exists", "duplicate"]:
+            check = requests.post(self.url, json={"secret": self.secret, "action": "pre_flight_check", "company_name": company_name}, timeout=15).json()
+            if check.get("exists") is True:
                 logger.info(f"[-] Dropped Duplicate: {company_name}")
                 return "DUPLICATE"
-        except: pass
+        except Exception: pass
 
-        capture_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-        is_valid = ai_result.get('is_valid', False)
-        confidence = ai_result.get('confidence', 'LOW')
-        role = ai_result.get('entity_role', 'IRRELEVANT')
-        reason = ai_result.get('reason', '')
-        
+        capture_date, is_valid, confidence, role = datetime.now().strftime("%Y-%m-%d %H:%M"), ai_result.get('is_valid', False), ai_result.get('confidence', 'LOW'), ai_result.get('entity_role', 'IRRELEVANT')
         target_sheet = "🗑 AI_Trash" if not is_valid else ("🤝 Partners & Suppliers" if role == "SELLER" else ("⚠️ Needs Review" if confidence == "LOW" else "📥 Inbox"))
         
-        if target_sheet == "🗑 AI_Trash":
-            row_data = [capture_date, company_name, reason, doc['url'], doc['track'], ""]
-        elif target_sheet == "🤝 Partners & Suppliers":
-            row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
-        else:
-            row_data = [
-                capture_date, ai_result.get('deadline', 'N/A'), role, "Unknown", 
-                ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), company_name, 
-                target_product, ai_result.get('intent_brief', ''), doc['url'], "", 
-                f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"
-            ]
+        if target_sheet == "🗑 AI_Trash": row_data = [capture_date, company_name, ai_result.get('why_engage_now', ''), doc['url'], doc['track'], ""]
+        elif target_sheet == "🤝 Partners & Suppliers": row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
+        else: row_data = [capture_date, ai_result.get('upcoming_events', 'Unknown'), role, "Unknown", ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), company_name, target_product, ai_result.get('why_engage_now', ''), doc['url'], ai_result.get('product_usage', ''), f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"]
 
         logger.info(f"[*] Routing {company_name} [{role}] -> {target_sheet}")
-        requests.post(self.url, json={
-            "secret": self.secret, "action": "insert_lead", "target_sheet": target_sheet,
-            "company_name": company_name, "signal_brief": ai_result.get('intent_brief', ''), "row_data": row_data
-        }, timeout=15)
-        
+        requests.post(self.url, json={"secret": self.secret, "action": "insert_lead", "target_sheet": target_sheet, "company_name": company_name, "signal_brief": ai_result.get('why_engage_now', ''), "row_data": row_data}, timeout=15)
         return target_sheet
 
-# ==========================================
-# 7. MASTER EXECUTION
-# ==========================================
 if __name__ == "__main__":
     logger.info("=== Waking Up: Radar Scout ===")
-    start_time = datetime.now()
-    leads_pushed = 0
-    scanned_links = 0
+    start_time, leads_pushed, scanned_links = datetime.now(), 0, 0
     
-    try:
-        cache_buster = int(time.time())
-        settings_url = f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={cache_buster}"
+    # KILL SWITCH ENFORCEMENT
+    try: seen_links = load_hybrid_cache()
+    except Exception as e:
+        system_monitor.send(f"🚨 *Radar Scout Halted*: Critical Failure. Could not load seen_links cache.\nError: `{e}`")
+        logger.error("System exit triggered to prevent duplicate scraping and quota drain."); exit(1)
         
-        # Upgraded Fetcher: 60-second timeout with 3 automatic retries
-        raw_response = None
-        for attempt in range(3):
-            try:
-                logger.info(f"Connecting to Google Sheets CRM (Attempt {attempt+1}/3)...")
-                raw_response = requests.get(settings_url, timeout=60)
-                if raw_response.status_code == 200:
-                    break
-            except Exception as e:
-                logger.warning(f"Google Webhook slow to respond. Retrying... ({e})")
-                time.sleep(4)
-                
-        if not raw_response or raw_response.status_code != 200:
-            logger.error(f"🚨 Google Apps Script failed to respond after 3 attempts.")
-            exit()
-            
-        try:
-            settings_req = raw_response.json()
-        except Exception:
-            print("🚨 GOOGLE WEBHOOK RETURNED HTML INSTEAD OF JSON! Here is what Google said:")
-            print(raw_response.text[:1000])
-            exit()
-            
+    try:
+        settings_req = requests.get(f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={int(time.time())}", timeout=30).json()
         TARGETS = settings_req.get("target_products", [])
         if not TARGETS: raise ValueError("No target products defined in Column A.")
         
-        INDUSTRIES = settings_req.get("industry_keywords", [])
-        COUNTRIES = settings_req.get("target_countries", [])
-        STATES = settings_req.get("target_states", [])
-        BANNED_KW = [k.lower() for k in settings_req.get("banned_keywords", [])]
-        BANNED_SITES = [s.lower() for s in settings_req.get("banned_websites", [])]
-        PROTECTED_DOMAINS = [d.lower() for d in settings_req.get("protected_domains", [])]
+        INDUSTRIES, COUNTRIES, STATES = settings_req.get("industry_keywords", []), settings_req.get("target_countries", []), settings_req.get("target_states", [])
+        BANNED_KW, BANNED_SITES, PROTECTED_DOMAINS = [k.lower() for k in settings_req.get("banned_keywords", [])], [s.lower() for s in settings_req.get("banned_websites", [])], [d.lower() for d in settings_req.get("protected_domains", [])]
         
-        IND = "(" + " OR ".join(INDUSTRIES) + ")" if INDUSTRIES else "Unknown"
-        COUNTRY = "(" + " OR ".join(COUNTRIES) + ")" if COUNTRIES else "India"
-        LOC = "(" + " OR ".join(STATES) + ")" if STATES else ""
-        
-        # Define the exact Geographic and Banning rules for the AI
+        IND, COUNTRY, LOC = "(" + " OR ".join(INDUSTRIES) + ")" if INDUSTRIES else "Unknown", "(" + " OR ".join(COUNTRIES) + ")" if COUNTRIES else "India", "(" + " OR ".join(STATES) + ")" if STATES else ""
         country_name = COUNTRIES[0] if COUNTRIES else "India"
-        geo_rule = f"TARGET COUNTRY: {country_name}. Multinational companies are VALID as long as they have operations, active projects, or hiring taking place inside {country_name}. Only reject leads that are strictly operating outside of {country_name} with no local presence."
-        ban_rule = f"Do not qualify any of these domains: {', '.join(BANNED_SITES)}" if BANNED_SITES else ""
+        geo_rule = f"CRITICAL GEOGRAPHY CHECK: Target country is {country_name}. Multinational companies are 100% VALID if the text proves they have a physical office, active project, or are hiring INSIDE {country_name}. If they are ONLY located outside {country_name} with NO local operations, you MUST reject it by setting is_valid to false."
+        ban_rule = f"Do not qualify domains: {', '.join(BANNED_SITES)}" if BANNED_SITES else ""
+    except Exception as e: logger.error(f"Settings Error: {e}"); exit()
 
-    except Exception as e:
-        system_monitor.send(f"🚨 *Radar Scout Halted*: Could not fetch parameters from Google Sheet.\nError: `{e}`")
-        logger.error(f"Settings Error: {e}"); exit()
-
-    engine = DataEngine(serper_keys)
-    evaluator = BatchedSplitBrain(gemini_keys)
-    router = WebhookRouter(WEBHOOK_URL, WEBHOOK_SECRET)
-    seen_links = load_hybrid_cache()
+    engine, evaluator, router = DataEngine(serper_keys), BatchedSplitBrain(gemini_keys), WebhookRouter(WEBHOOK_URL, WEBHOOK_SECRET)
     
     for TARGET in TARGETS:
-        logger.info(f"\n==============================================")
-        logger.info(f"🚀 LAUNCHING PIPELINE FOR TARGET: {TARGET}")
-        logger.info(f"==============================================")
-        
-        generator = QueryGenerator(TARGET, IND, COUNTRY, LOC, evaluator.client, evaluator.gemini_models)
-        tracks = generator.build_tracks()
+        session_companies = set()
+        tracks = QueryGenerator(TARGET, IND, COUNTRY, LOC, evaluator.client, evaluator.gemini_models).build_tracks()
 
         for track_name, queries in tracks.items():
-            logger.info(f"\n=== Initiating {track_name} for {TARGET} ===")
             docs_to_evaluate = []
-            
             for query in queries:
-                # PASS THE DYNAMIC COUNTRY VARIABLE TO SERPER
                 for res in engine.search(query, country_name=country_name):
                     link, snippet = res.get("link", "").lower(), res.get("snippet", "").lower()
+                    c_link = clean_url(link)
                     
-                    if not link or link in seen_links: continue
+                    if not link or c_link in seen_links: continue
                     scanned_links += 1
                     
-                    is_protected = any(pd in link for pd in PROTECTED_DOMAINS if pd)
-                    
-                    if not is_protected:
-                        if any(bd in link for bd in BANNED_SITES if bd):
-                            print(f"🚫 Dropped (Banned Site): {link}")
-                            save_to_cache(link); seen_links.add(link); continue
+                    if not any(pd in link for pd in PROTECTED_DOMAINS if pd):
+                        if any(bd in link for bd in BANNED_SITES if bd) or any(bx in snippet for bx in BANNED_KW if bx):
+                            save_to_cache(c_link); seen_links.add(c_link); continue
                             
-                        if any(bx in snippet for bx in BANNED_KW if bx):
-                            print(f"🚫 Dropped (Banned Keyword): {link}")
-                            save_to_cache(link); seen_links.add(link); continue
+                    if "tender" in query and "TRACK_1" in track_name:
+                        years = [int(y) for y in re.findall(r'\b(?:202[0-9])\b', f"{link} {snippet}")]
+                        if years and max(years) < datetime.now().year - 1:
+                            save_to_cache(c_link); seen_links.add(c_link); continue
 
-                    years = [int(y) for y in re.findall(r'\b(?:202[0-9])\b', f"{link} {snippet}")]
-                    if years and max(years) < datetime.now().year - 1:
-                        print(f"⏳ Dropped (Too Old): {link} (Max Year: {max(years)})")
-                        save_to_cache(link); seen_links.add(link); continue
-
-                    save_to_cache(link); seen_links.add(link)
+                    save_to_cache(c_link); seen_links.add(c_link)
                     content = engine.fetch(link)
-                    
-                    if content:
-                        # Prune text to save AI API Tokens
-                        pruned_content = prune_relevant_text(content, [TARGET, IND])
-                        docs_to_evaluate.append({"track": track_name, "url": link, "raw_text": pruned_content})
+                    if content: docs_to_evaluate.append({"track": track_name, "url": link, "raw_text": content})
                         
             if docs_to_evaluate:
-                logger.info(f"Batched {len(docs_to_evaluate)} documents for AI analysis.")
-                
-                # FORCE BATCH SIZE TO 2
                 for i in range(0, len(docs_to_evaluate), 2):
                     batch = docs_to_evaluate[i:i+2]
+                    raw_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
+                    time.sleep(6) # Safe buffer for Gemini 15 RPM Rate Limit
                     
-                    ai_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
-                    
-                    for verdict in ai_verdicts:
-                        idx = verdict.get("item_index")
-                        if idx is not None and idx < len(batch):
-                            dest = router.route_and_push(batch[idx], verdict, TARGET)
-                            if dest in ["📥 Inbox", "⚠️ Needs Review"]:
-                                leads_pushed += 1
-                                
-                    # INCREASE COOLDOWN TO 10 SECONDS FOR CLOUD RUNNERS
-                    logger.info("⏳ Cooling down AI API for 10 seconds to prevent Rate Limits...")
-                    time.sleep(10)
-                    
-                    for verdict in ai_verdicts:
-                        idx = verdict.get("item_index")
-                        # ...
+                    # Anti-Hallucination Fix: Ensures ai_verdicts is always iterable
+                    ai_verdicts = raw_verdicts if isinstance(raw_verdicts, list) else [raw_verdicts]
                     
                     for verdict in ai_verdicts:
                         idx = verdict.get("item_index")
                         if idx is not None and idx < len(batch):
-                            deadline = verdict.get("deadline", "Unknown")
+                            comp_name = router.normalize_company(verdict.get('organization', ''))
+                            if comp_name in session_companies:
+                                logger.info(f"[-] Dropped In-Flight Duplicate: {comp_name}")
+                                continue
                             
-                            # PROGRAMMATIC EXPIRED DEADLINE KILL SWITCH
-                            if is_deadline_expired(deadline):
-                                logger.info(f"🗑️ Dropping expired lead ({verdict.get('organization')}) with past deadline: {deadline}")
-                                continue # Skip pushing this lead entirely!
-                            
-                            dest = router.route_and_push(batch[idx], verdict, TARGET)
-                            if dest in ["📥 Inbox", "⚠️ Needs Review"]:
-                                leads_pushed += 1
+                            session_companies.add(comp_name)
+                            if router.route_and_push(batch[idx], verdict, TARGET) in ["📥 Inbox", "⚠️ Needs Review"]: leads_pushed += 1
 
-    duration = str(datetime.now() - start_time).split('.')[0]
-    summary_msg = (
-        f"🏁 *Radar Scout Run Complete*\n"
-        f"• Targets Processed: `{len(TARGETS)}`\n"
-        f"• New Links Scanned: `{scanned_links}`\n"
-        f"• Leads Sent to CRM: `{leads_pushed}`\n"
-        f"• Duration: `{duration}`"
-    )
-    system_monitor.send(summary_msg)
-    logger.info("Radar Scout Cycle Complete.")
+    system_monitor.send(f"🏁 *Radar Scout Complete*\n• Links Scanned: `{scanned_links}`\n• Sent to CRM: `{leads_pushed}`\n• Duration: `{str(datetime.now() - start_time).split('.')[0]}`")
