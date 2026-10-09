@@ -13,7 +13,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("EnrichmentWorker")
 
-# Silence noisy background libraries
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("google.genai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
@@ -24,16 +23,25 @@ class APIKeyManager:
         self.keys = [k for k in clean_str.split(',') if k]
         self.index = 0
     def get_current(self): return self.keys[self.index] if self.keys else ""
-    def rotate(self, name): self.index = (self.index + 1) % len(self.keys); return self.get_current()
+    def rotate(self, name): 
+        self.index = (self.index + 1) % len(self.keys)
+        logger.warning(f"{name} Failover. Rotating to Key #{self.index + 1} of {len(self.keys)}...")
+        return self.get_current()
 
 class DossierEngine:
     def __init__(self, key_manager):
         self.keys = key_manager
-        self.client = genai.Client(api_key=self.keys.get_current())
-        # --- REVERTED TO YOUR EXACT ORIGINAL MODELS ---
         self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
-        # ----------------------------------------------
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
+        self._init_client()
+
+    def _init_client(self):
+        self.client = genai.Client(api_key=self.keys.get_current())
+
+    def rotate_key(self):
+        new_key = self.keys.rotate("Gemini")
+        self.client = genai.Client(api_key=new_key)
+        return new_key
 
     def generate(self, raw_text, company_name, segment_problems, partner_services):
         if not raw_text or "Manual Review" in raw_text: return "Source unavailable for deep analysis."
@@ -64,18 +72,26 @@ class DossierEngine:
         </scraped_data>
         """
         for model_name in self.gemini_models:
-            for attempt in range(3):
+            for key_attempt in range(len(self.keys.keys) or 1):
                 try:
                     res = self.client.models.generate_content(model=model_name, contents=prompt)
                     if res.text: return res.text.strip()
                 except Exception as e:
                     error_str = str(e).lower()
                     if "429" in error_str or "quota" in error_str:
-                        logger.warning(f"⏳ Gemini Rate Limit Hit ({model_name}). Sleeping for 15 seconds to recover...")
-                        time.sleep(15)
+                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating to next key...")
+                        self.rotate_key()
+                        time.sleep(1)
+                        continue
+                    elif "503" in error_str or "unavailable" in error_str:
+                        logger.warning(f"⚠️ Gemini 503 ({model_name}). Skipping model...")
+                        break
+                    elif "404" in error_str or "not_found" in error_str:
+                        logger.warning(f"⚠️ Gemini 404 ({model_name}). Skipping model...")
+                        break
                     else:
                         logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
-                        time.sleep(3)
+                        time.sleep(2)
 
         if self.openai_key:
             try: 
@@ -114,7 +130,8 @@ class WaterfallEnrichment:
 @retry(wait=wait_exponential(multiplier=2, min=4, max=10), stop=stop_after_attempt(3))
 def webhook_post(payload):
     res = requests.post(os.getenv("WEBHOOK_URL"), json=payload, timeout=15)
-    res.raise_for_status(); return res
+    res.raise_for_status()
+    return res
 
 def run_enrichment_worker():
     logger.info("=== Waking Up: Enrichment Worker ===")
@@ -126,11 +143,13 @@ def run_enrichment_worker():
         partnerServices = ", ".join(settings_req.get("partner_services", []))
         pending_leads = requests.get(f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_pending_leads", timeout=15).json().get("leads", [])
     except Exception as e:
-        logger.error(f"Worker Halted: Failed to fetch leads. {e}"); return
+        logger.error(f"Worker Halted: Failed to fetch leads. {e}")
+        return
 
     if not pending_leads: return
 
-    enricher, dossier_engine = WaterfallEnrichment(APIKeyManager(os.getenv("SERPER_API_KEYS"))), DossierEngine(APIKeyManager(os.getenv("GEMINI_API_KEYS")))
+    enricher = WaterfallEnrichment(APIKeyManager(os.getenv("SERPER_API_KEYS")))
+    dossier_engine = DossierEngine(APIKeyManager(os.getenv("GEMINI_API_KEYS")))
     
     for lead in pending_leads:
         org, lead_id = lead.get('organization', 'Unknown'), lead.get('lead_id', 'REF')
