@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from google import genai
 from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,9 +26,12 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class APIKeyManager:
     def __init__(self, env_string):
-        self.keys = [k.strip() for k in env_string.split(',') if k.strip()]
+        # Added aggressive replacement to strip accidental quotes if copied poorly into GitHub
+        clean_string = env_string.replace('"', '').replace("'", "")
+        self.keys = [k.strip() for k in clean_string.split(',') if k.strip()]
         self.index = 0
         if not self.keys: raise ValueError("No API keys found. Check GitHub Secrets.")
+            
     def get_current(self): return self.keys[self.index]
     def rotate(self, service_name):
         self.index = (self.index + 1) % len(self.keys)
@@ -125,7 +128,14 @@ class DataEngine:
             if not current_key: break
             try:
                 response = requests.post("https://google.serper.dev/search", headers={'X-API-KEY': current_key, 'Content-Type': 'application/json'}, json=payload_dict, timeout=15)
-                if response.status_code in [401, 403, 429]: self.serper_keys.rotate("Serper"); continue
+                
+                # --- NEW DEBUGGING BLOCK ---
+                if response.status_code in [401, 403, 429]: 
+                    logger.warning(f"Serper API Rejected Key (Status {response.status_code}). Serper says: {response.text}")
+                    self.serper_keys.rotate("Serper")
+                    continue
+                # ---------------------------
+                
                 response.raise_for_status()
                 data = response.json()
                 if "organic" in data:
