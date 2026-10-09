@@ -61,9 +61,17 @@ class DossierEngine:
                     res = self.client.models.generate_content(model=model_name, contents=prompt)
                     if res.text: return res.text.strip()
                 except Exception: time.sleep(2)
+
         if self.openai_key:
-            try: return OpenAI(api_key=self.openai_key).chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}]).choices[0].message.content.strip()
-            except OpenAIError: pass
+            try: 
+                response = OpenAI(api_key=self.openai_key).chat.completions.create(
+                    model="gpt-4o-mini", 
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                time.sleep(2) # Mandatory cool down to prevent 429 rate limits on free/low-tier keys
+                return response.choices[0].message.content.strip()
+            except OpenAIError as e:
+                logger.error(f"OpenAI Error: {e}")
         return "Failed: Ecosystem Exhausted."
 
 class WaterfallEnrichment:
