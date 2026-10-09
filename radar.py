@@ -22,20 +22,22 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("RadarScout")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.ERROR)
+# --- ADD THESE TWO LINES TO MUTE THE DDGS LOG SPAM ---
+logging.getLogger("duckduckgo_search").setLevel(logging.ERROR)
+logging.getLogger("ddgs").setLevel(logging.ERROR)
 
 class APIKeyManager:
     def __init__(self, env_string):
-        # Added aggressive replacement to strip accidental quotes if copied poorly into GitHub
-        clean_string = env_string.replace('"', '').replace("'", "")
-        self.keys = [k.strip() for k in clean_string.split(',') if k.strip()]
+        # Aggressively strip quotes, spaces, and hidden newline characters
+        clean_str = env_string.replace('"', '').replace("'", "").replace("\n", "").replace("\r", "").replace(" ", "")
+        self.keys = [k for k in clean_str.split(',') if k]
         self.index = 0
         if not self.keys: raise ValueError("No API keys found. Check GitHub Secrets.")
-            
     def get_current(self): return self.keys[self.index]
     def rotate(self, service_name):
         self.index = (self.index + 1) % len(self.keys)
-        logger.warning(f"{service_name} Quota hit. Rotating to Key #{self.index + 1} of {len(self.keys)}...")
+        logger.warning(f"{service_name} Failover. Rotating to Key #{self.index + 1} of {len(self.keys)}...")
         return self.get_current()
 
 class SystemAlertNotifier:
@@ -129,23 +131,23 @@ class DataEngine:
             try:
                 response = requests.post("https://google.serper.dev/search", headers={'X-API-KEY': current_key, 'Content-Type': 'application/json'}, json=payload_dict, timeout=15)
                 
-                # --- NEW DEBUGGING BLOCK ---
-                if response.status_code in [401, 403, 429]: 
-                    logger.warning(f"Serper API Rejected Key (Status {response.status_code}). Serper says: {response.text}")
+                # --- NEW TRUTH SERUM BLOCK ---
+                if response.status_code != 200:
+                    logger.error(f"❌ Serper API Rejected Key (Status {response.status_code}). Serper says: {response.text}")
                     self.serper_keys.rotate("Serper")
                     continue
-                # ---------------------------
+                # -----------------------------
                 
-                response.raise_for_status()
                 data = response.json()
                 if "organic" in data:
                     for item in data["organic"]:
                         if item.get("link"): results.append({"link": item.get("link"), "snippet": item.get("snippet", "")})
                     if results: return results
                 return results 
-            except Exception: self.serper_keys.rotate("Serper")
+            except Exception as e:
+                logger.error(f"❌ Serper Network Error: {e}")
+                self.serper_keys.rotate("Serper")
                 
-        logger.error("❌ All Serper keys failed. Falling back to DuckDuckGo...")
         try:
             with DDGS() as ddgs:
                 for item in ddgs.text(f"{query} {country_name}", region='wt-wt', max_results=15): results.append({"link": item.get("href"), "snippet": item.get("body", "")})
