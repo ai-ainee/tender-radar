@@ -23,13 +23,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("RadarScout")
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
-# --- ADD THESE TWO LINES TO MUTE THE DDGS LOG SPAM ---
 logging.getLogger("duckduckgo_search").setLevel(logging.ERROR)
 logging.getLogger("ddgs").setLevel(logging.ERROR)
 
 class APIKeyManager:
     def __init__(self, env_string):
-        # Aggressively strip quotes, spaces, and hidden newline characters
         clean_str = env_string.replace('"', '').replace("'", "").replace("\n", "").replace("\r", "").replace(" ", "")
         self.keys = [k for k in clean_str.split(',') if k]
         self.index = 0
@@ -89,17 +87,14 @@ class QueryGenerator:
         logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
         prompt = f"""
         You are an elite OSINT and B2B Data Analyst. Generate exactly 2 Google Search queries per track to find B2B buyers for '{self.target}' in {self.country}:
-        
-        TRACK 1 (TENDERS): Government portals, RFPs. Do NOT use minus signs or site: operators. Just use plain words (e.g., "eprocure {self.target} tender").
-        TRACK 2 (CAPEX_AND_PARTNERS): Target factory expansions or tech upgrades. Use plain words (e.g., "{self.target} case study" OR "{self.target} implementation").
-        TRACK 3 (MCA): Corporate registrations for new companies. Use plain words (e.g., "zaubacorp {self.ind} incorporation").
+        TRACK 1 (TENDERS): Government portals, RFPs. Use plain words (e.g., eprocure {self.target} tender).
+        TRACK 2 (CAPEX_AND_PARTNERS): Target factory expansions. Use plain words (e.g., {self.target} case study OR {self.target} implementation).
+        TRACK 3 (MCA): Corporate registrations. Use plain words (e.g., zaubacorp {self.ind} incorporation).
         TRACK 4 (COMMERCIAL): 
-           - Query 1: Job aggregators hiring '{self.target}' skills. Use plain words (e.g., "naukri {self.target} hiring").
-           - Query 2: Direct corporate websites hiring. Use plain words (e.g., "{self.target} careers apply now").
-        
-        CRITICAL RULES: Max 15 words. Max 2 'OR' conditions per query. Include "{self.country}" exactly in every query.
-        NEVER use advanced operators like site:, intitle:, inurl:, or minus signs (-). Use plain text ONLY.
-        
+           - Query 1: Job aggregators hiring '{self.target}' skills. Use plain words (e.g., naukri {self.target} hiring).
+           - Query 2: Direct corporate websites. Use plain words (e.g., {self.target} careers apply now).
+        CRITICAL RULES: Max 15 words. Include "{self.country}" exactly in every query.
+        NEVER use advanced operators like site:, intitle:, or minus signs (-). DO NOT use quotes ("") or parentheses (). Use plain text ONLY.
         Respond STRICTLY with a JSON object containing the 4 keys: TRACK_1_TENDERS, TRACK_2_CAPEX_AND_PARTNERS, TRACK_3_MCA, TRACK_4_COMMERCIAL.
         """
         for model_name in self.models:
@@ -112,10 +107,10 @@ class QueryGenerator:
     def _fallback_tracks(self):
         yr = self.year
         return {
-            "TRACK_1_TENDERS": [f'eprocure "{self.target}" tender "{yr}" "{self.country}"', f'gem "{self.target}" RFP "{self.country}"'],
-            "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" "case study" "{self.country}"', f'"{self.target}" "capacity expansion" "{self.country}"'],
-            "TRACK_3_MCA": [f'zaubacorp "{self.ind}" "Incorporation" "{yr}" "{self.loc}"'],
-            "TRACK_4_COMMERCIAL": [f'naukri hiring "{self.target}" "{yr}" "{self.country}"', f'careers "{self.target}" "{self.country}" apply now']
+            "TRACK_1_TENDERS": [f'eprocure {self.target} tender {yr} {self.country}', f'gem {self.target} RFP {self.country}'],
+            "TRACK_2_CAPEX_AND_PARTNERS": [f'{self.target} case study {self.country}', f'{self.target} capacity expansion {self.country}'],
+            "TRACK_3_MCA": [f'zaubacorp {self.ind} incorporation {yr} {self.loc}'],
+            "TRACK_4_COMMERCIAL": [f'naukri hiring {self.target} {yr} {self.country}', f'careers {self.target} {self.country} apply now']
         }
 
 class DataEngine:
@@ -123,25 +118,28 @@ class DataEngine:
         self.serper_keys, self.user_agents = key_manager, ["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"]
 
     def search(self, query, country_name="India"):
-        logger.info(f"🔍 Executing Query: {query}")
+        # --- THE SANITIZER: Forcefully strips forbidden free-tier operators ---
+        clean_q = re.sub(r'(site:|intitle:|inurl:)\S+', '', str(query), flags=re.IGNORECASE)
+        clean_q = re.sub(r'[-"()]', ' ', clean_q)
+        clean_q = re.sub(r'\bOR\b', ' ', clean_q)
+        clean_q = " ".join(clean_q.split())
+        # ----------------------------------------------------------------------
+        
+        logger.info(f"🔍 Executing Query: {clean_q}")
         results = []
         gl_code = {"india": "in", "united states": "us", "uk": "gb", "uae": "ae"}.get(str(country_name).strip().lower(), "us")
-        payload_dict = {"q": str(query).strip(), "gl": gl_code, "num": 15}
-        if "tender" in query.lower() or "rfp" in query.lower(): payload_dict["tbs"] = "qdr:m"
+        payload_dict = {"q": clean_q, "gl": gl_code, "num": 15}
+        if "tender" in clean_q.lower() or "rfp" in clean_q.lower(): payload_dict["tbs"] = "qdr:m"
 
         for attempt in range(len(self.serper_keys.keys) or 1):
             current_key = self.serper_keys.get_current()
             if not current_key: break
             try:
                 response = requests.post("https://google.serper.dev/search", headers={'X-API-KEY': current_key, 'Content-Type': 'application/json'}, json=payload_dict, timeout=15)
-                
-                # --- NEW TRUTH SERUM BLOCK ---
                 if response.status_code != 200:
                     logger.error(f"❌ Serper API Rejected Key (Status {response.status_code}). Serper says: {response.text}")
                     self.serper_keys.rotate("Serper")
                     continue
-                # -----------------------------
-                
                 data = response.json()
                 if "organic" in data:
                     for item in data["organic"]:
@@ -152,10 +150,11 @@ class DataEngine:
                 logger.error(f"❌ Serper Network Error: {e}")
                 self.serper_keys.rotate("Serper")
                 
+        logger.error("❌ All Serper keys failed. Falling back to DuckDuckGo...")
         try:
             with DDGS() as ddgs:
-                # Switched from ddgs.text to ddgs.html to bypass the DNS crash
-                for item in ddgs.html(f"{query} {country_name}", region='in-en', max_results=15): 
+                # Reverted back to .text() since .html() was removed from the library
+                for item in ddgs.text(f"{clean_q} {country_name}", region='wt-wt', max_results=15): 
                     results.append({"link": item.get("href"), "snippet": item.get("body", "")})
             if results: logger.info("✅ Recovered using free DDGS Search.")
         except Exception as ddg_err: logger.error(f"🚨 DDGS Fallback failed: {ddg_err}")
@@ -245,7 +244,7 @@ class BatchedSplitBrain:
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"}
                 )
-                time.sleep(2) # Mandatory cool down to prevent 429 rate limits on free/low-tier keys
+                time.sleep(2) 
                 data = json.loads(response.choices[0].message.content.strip())
                 return data.get("leads", data) if isinstance(data, dict) else data
             except OpenAIError as e:
@@ -285,7 +284,6 @@ if __name__ == "__main__":
     logger.info("=== Waking Up: Radar Scout ===")
     start_time, leads_pushed, scanned_links = datetime.now(), 0, 0
     
-    # KILL SWITCH ENFORCEMENT
     try: seen_links = load_hybrid_cache()
     except Exception as e:
         system_monitor.send(f"🚨 *Radar Scout Halted*: Critical Failure. Could not load seen_links cache.\nError: `{e}`")
@@ -299,7 +297,11 @@ if __name__ == "__main__":
         INDUSTRIES, COUNTRIES, STATES = settings_req.get("industry_keywords", []), settings_req.get("target_countries", []), settings_req.get("target_states", [])
         BANNED_KW, BANNED_SITES, PROTECTED_DOMAINS = [k.lower() for k in settings_req.get("banned_keywords", [])], [s.lower() for s in settings_req.get("banned_websites", [])], [d.lower() for d in settings_req.get("protected_domains", [])]
         
-        IND, COUNTRY, LOC = "(" + " OR ".join(INDUSTRIES) + ")" if INDUSTRIES else "Unknown", "(" + " OR ".join(COUNTRIES) + ")" if COUNTRIES else "India", "(" + " OR ".join(STATES) + ")" if STATES else ""
+        # FIX: Only extract the FIRST country and industry so Serper doesn't crash on parentheses
+        IND = INDUSTRIES[0] if INDUSTRIES else "Unknown"
+        COUNTRY = COUNTRIES[0] if COUNTRIES else "India"
+        LOC = STATES[0] if STATES else ""
+        
         country_name = COUNTRIES[0] if COUNTRIES else "India"
         geo_rule = f"CRITICAL GEOGRAPHY CHECK: Target country is {country_name}. Multinational companies are 100% VALID if the text proves they have a physical office, active project, or are hiring INSIDE {country_name}. If they are ONLY located outside {country_name} with NO local operations, you MUST reject it by setting is_valid to false."
         ban_rule = f"Do not qualify domains: {', '.join(BANNED_SITES)}" if BANNED_SITES else ""
@@ -338,9 +340,8 @@ if __name__ == "__main__":
                 for i in range(0, len(docs_to_evaluate), 2):
                     batch = docs_to_evaluate[i:i+2]
                     raw_verdicts = evaluator.evaluate_batch(batch, TARGET, IND, COUNTRY, LOC, geo_rule, ban_rule)
-                    time.sleep(6) # Safe buffer for Gemini 15 RPM Rate Limit
+                    time.sleep(6) 
                     
-                    # Anti-Hallucination Fix: Ensures ai_verdicts is always iterable
                     ai_verdicts = raw_verdicts if isinstance(raw_verdicts, list) else [raw_verdicts]
                     
                     for verdict in ai_verdicts:
