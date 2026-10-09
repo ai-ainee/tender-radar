@@ -25,6 +25,8 @@ logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("duckduckgo_search").setLevel(logging.ERROR)
 logging.getLogger("ddgs").setLevel(logging.ERROR)
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+logging.getLogger("google.genai").setLevel(logging.ERROR)
 
 class APIKeyManager:
     def __init__(self, env_string):
