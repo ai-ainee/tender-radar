@@ -13,9 +13,15 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("EnrichmentWorker")
 
+# Silence noisy background libraries
+logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+logging.getLogger("google.genai").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)
+
 class APIKeyManager:
     def __init__(self, env_string):
-        self.keys = [k.strip() for k in env_string.split(',') if k.strip()]
+        clean_str = env_string.replace('"', '').replace("'", "").replace("\n", "").replace("\r", "").replace(" ", "")
+        self.keys = [k for k in clean_str.split(',') if k]
         self.index = 0
     def get_current(self): return self.keys[self.index] if self.keys else ""
     def rotate(self, name): self.index = (self.index + 1) % len(self.keys); return self.get_current()
@@ -24,7 +30,9 @@ class DossierEngine:
     def __init__(self, key_manager):
         self.keys = key_manager
         self.client = genai.Client(api_key=self.keys.get_current())
+        # --- REVERTED TO YOUR EXACT ORIGINAL MODELS ---
         self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+        # ----------------------------------------------
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
 
     def generate(self, raw_text, company_name, segment_problems, partner_services):
@@ -60,7 +68,14 @@ class DossierEngine:
                 try:
                     res = self.client.models.generate_content(model=model_name, contents=prompt)
                     if res.text: return res.text.strip()
-                except Exception: time.sleep(2)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "429" in error_str or "quota" in error_str:
+                        logger.warning(f"⏳ Gemini Rate Limit Hit ({model_name}). Sleeping for 15 seconds to recover...")
+                        time.sleep(15)
+                    else:
+                        logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
+                        time.sleep(3)
 
         if self.openai_key:
             try: 
@@ -68,7 +83,7 @@ class DossierEngine:
                     model="gpt-4o-mini", 
                     messages=[{"role": "user", "content": prompt}]
                 )
-                time.sleep(2) # Mandatory cool down to prevent 429 rate limits on free/low-tier keys
+                time.sleep(2) 
                 return response.choices[0].message.content.strip()
             except OpenAIError as e:
                 logger.error(f"OpenAI Error: {e}")
@@ -91,7 +106,6 @@ class WaterfallEnrichment:
         if c["website"]:
             domain = c["website"].replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "")
             if c["dm_name"] != "Unknown":
-                # Strip common titles safely regardless of punctuation
                 clean_name = re.sub(r'(?i)^(Mr|Mrs|Ms|Dr|Prof|Capt)\.?\s*', '', c["dm_name"]).strip()
                 c["email"] = f"{clean_name.split(' ')[0].lower()}@{domain}"
             else: c["email"] = f"info@{domain}"
@@ -132,9 +146,7 @@ def run_enrichment_worker():
             
             tel_token, tel_chat = os.getenv('TELEGRAM_BOT_TOKEN'), os.getenv("TELEGRAM_CHAT_ID")
             if tel_token and tel_chat:
-                # Sanitizes callback tokens to prevent Telegram button crashes
                 safe_org = re.sub(r'[_*`\[\]()::]', ' ', org[:35]).strip()
-                
                 msg = f"🧠 <b>AI DOSSIER COMPLETE</b>\n\n🏢 <b>Company:</b> {org}\n👤 <b>Contact:</b> {contacts['dm_name']} ({contacts['dm_title']})\n📧 <b>Email:</b> {contacts['email']}\n📞 <b>Phone:</b> {contacts['phone']}\n\n📊 <b>Strategy Dossier:</b>\n{dossier[:1500]}\n"
                 keyboard = {"inline_keyboard": [[{"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{safe_org}"}, {"text": "📦 Archive", "callback_data": f"archive::{safe_org}"}]]}
                 requests.post(f"https://api.telegram.org/bot{tel_token}/sendMessage", json={"chat_id": tel_chat, "text": msg, "parse_mode": "HTML", "reply_markup": keyboard}, timeout=5)
