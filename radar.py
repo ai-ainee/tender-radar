@@ -237,21 +237,14 @@ class BatchedSplitBrain:
                     if response.text:
                         data = json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
                         return data.get("leads", data) if isinstance(data, dict) else data
-                except Exception: time.sleep(2)
-
-        if self.openai_key:
-            try:
-                response = OpenAI(api_key=self.openai_key).chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
-                )
-                time.sleep(2) 
-                data = json.loads(response.choices[0].message.content.strip())
-                return data.get("leads", data) if isinstance(data, dict) else data
-            except OpenAIError as e:
-                logger.error(f"OpenAI Error: {e}")
-        return []
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "429" in error_str or "quota" in error_str:
+                        logger.warning(f"⏳ Gemini Rate Limit Hit ({model_name}). Sleeping for 15 seconds to recover...")
+                        time.sleep(15) # Force a long sleep to let the 15-RPM quota reset
+                    else:
+                        logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
+                        time.sleep(3)
 
 class WebhookRouter:
     def __init__(self, url, secret):
