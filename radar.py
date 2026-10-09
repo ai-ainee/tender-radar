@@ -227,11 +227,11 @@ class BatchedSplitBrain:
         - MEDIUM: Unknown product usage or partial match.
         - LOW: Confirmed existing user (upsell only) or highly incomplete data.
 
-        STEP 3 - QUALITY CHECKLIST (FATAL ERRORS TO AVOID):
+        STEP 3 - QUALITY CHECKLIST:
         - EVERY company must be real and verifiable. 
         - "Why Engage Now" MUST reference specific, concrete signals from the text — NO generic claims.
-        - DIRECTORY HANDLING: If the text is a directory listing multiple companies, DO NOT mark it invalid. Extract the single most prominent buyer actively seeking '{target}'.
-        - TENDER EXPIRY RULE: If the scraped text is a government tender, RFP, or bid, check the deadline. If the submission closing date has passed relative to today, set `is_valid` to false. Do not qualify closed bids.
+        - DIRECTORY HANDLING: If the text is a directory listing multiple companies, extract the single most prominent buyer actively seeking '{target}'.
+        - TENDER EXPIRY RULE: If the scraped text is a government tender, RFP, or bid, check the deadline. If the submission closing date has passed relative to today, set `is_valid` to false.
 
         STEP 4 - OUTPUT FORMAT (STRICT JSON SCHEMA):
         Respond STRICTLY with a JSON object containing a single key "leads" which maps to an array of objects with these exact keys:
@@ -269,10 +269,10 @@ class BatchedSplitBrain:
                         time.sleep(1)
                         continue
                     elif "503" in error_str or "unavailable" in error_str:
-                        logger.warning(f"⚠️ Gemini 503 Overloaded ({model_name}). Switching model immediately...")
+                        logger.warning(f"⚠️ Gemini 503 Overloaded ({model_name}). Skipping model...")
                         break
                     elif "404" in error_str or "not_found" in error_str:
-                        logger.warning(f"⚠️ Gemini 404 ({model_name}). Skipping model immediately...")
+                        logger.warning(f"⚠️ Gemini 404 ({model_name}). Skipping model...")
                         break
                     else:
                         logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
@@ -315,15 +315,33 @@ class WebhookRouter:
         is_valid = ai_result.get('is_valid', False)
         confidence = ai_result.get('confidence', 'LOW')
         role = ai_result.get('entity_role', 'IRRELEVANT')
+        product_usage = str(ai_result.get('product_usage', 'Unknown')).strip()
 
         target_sheet = "🗑 AI_Trash" if not is_valid else ("🤝 Partners & Suppliers" if role == "SELLER" else ("⚠️ Needs Review" if confidence == "LOW" else "📥 Inbox"))
         
+        lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"
+
         if target_sheet == "🗑 AI_Trash": 
             row_data = [capture_date, company_name, ai_result.get('why_engage_now', ''), doc['url'], doc['track'], ""]
         elif target_sheet == "🤝 Partners & Suppliers": 
             row_data = [capture_date, "Dealer", ai_result.get('state', ''), ai_result.get('city', ''), company_name, "", "", target_product]
         else: 
-            row_data = [capture_date, ai_result.get('upcoming_events', 'Unknown'), role, "Unknown", ai_result.get('state', 'N/A'), ai_result.get('city', 'N/A'), company_name, target_product, ai_result.get('why_engage_now', ''), doc['url'], ai_result.get('product_usage', ''), f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"]
+            # EXACT 13-COLUMN MAPPING
+            row_data = [
+                capture_date,                                   # Col 1: Capture Date
+                ai_result.get('upcoming_events', 'Unknown'),    # Col 2: Deadline / Post Date
+                role,                                           # Col 3: Signal Category
+                ai_result.get('industry', 'AEC / Engineering'), # Col 4: Sector / Industry
+                ai_result.get('state', 'N/A'),                  # Col 5: State
+                ai_result.get('city', 'N/A'),                   # Col 6: City
+                company_name,                                   # Col 7: Organization
+                target_product,                                 # Col 8: Target Product
+                ai_result.get('why_engage_now', ''),            # Col 9: AI Intent Brief (Pure pitch)
+                doc['url'],                                     # Col 10: Source Link
+                product_usage,                                  # Col 11: Product Usage / Status (Dedicated column)
+                "",                                             # Col 12: Action / Move To (BLANK - DROPDOWN PRESERVED)
+                lead_id                                         # Col 13: Lead ID & Fingerprint
+            ]
 
         logger.info(f"[*] Routing {company_name} [{role}] -> {target_sheet}")
         requests.post(self.url, json={"secret": self.secret, "action": "insert_lead", "target_sheet": target_sheet, "company_name": company_name, "signal_brief": ai_result.get('why_engage_now', ''), "row_data": row_data}, timeout=15)
