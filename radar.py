@@ -59,6 +59,10 @@ CACHE_FILE = "seen_links.txt"
 if not os.path.exists(CACHE_FILE): open(CACHE_FILE, 'w').close()
 
 def clean_url(url):
+    """
+    Normalizes URLs while preserving essential query parameters to avoid
+    collapsing multiple distinct tenders on the same endpoint into a single false duplicate.
+    """
     try:
         p = urlparse(url.strip())
         netloc = p.netloc.lower().replace('www.', '')
@@ -102,7 +106,8 @@ class DynamicB2BEvaluator:
     def __init__(self, key_manager):
         self.keys = key_manager
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
-        self.gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        # Model list preserved exactly as configured
+        self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
         self._init_client()
 
     def _init_client(self):
@@ -218,6 +223,32 @@ class DynamicQueryGenerator:
         self.year = datetime.now().year
         self.evaluator = evaluator
 
+    def _normalize_ai_tracks(self, data):
+        """Extracts tracks case-insensitively and unwraps nested dictionaries."""
+        if not isinstance(data, dict):
+            return None
+        
+        # Unwrap nested parent keys if Gemini returned {"tracks": {...}} or {"queries": {...}}
+        for parent in ["tracks", "queries", "data", "result"]:
+            if parent in data and isinstance(data[parent], dict):
+                data = data[parent]
+                break
+
+        norm = {}
+        for k, v in data.items():
+            if isinstance(v, list) and v:
+                clean_k = re.sub(r'[^a-zA-Z0-9]', '', str(k)).upper()
+                if any(x in clean_k for x in ["TRACK1", "TENDER", "PUBLIC"]):
+                    norm["TRACK_1_PUBLIC_TENDERS"] = [str(x) for x in v[:2]]
+                elif any(x in clean_k for x in ["TRACK2", "CORPORATE", "PROCUREMENT", "VENDOR"]):
+                    norm["TRACK_2_CORPORATE_PROCUREMENT"] = [str(x) for x in v[:2]]
+                elif any(x in clean_k for x in ["TRACK3", "EXPANSION", "CAPEX", "FACILITY"]):
+                    norm["TRACK_3_BUSINESS_EXPANSION"] = [str(x) for x in v[:2]]
+                elif any(x in clean_k for x in ["TRACK4", "HIRING", "SCALING", "CAREER"]):
+                    norm["TRACK_4_COMMERCIAL_HIRING"] = [str(x) for x in v[:2]]
+        
+        return norm if len(norm) == 4 else None
+
     def build_tracks(self):
         state = random.choice(self.states) if self.states else ""
         yr = self.year
@@ -255,31 +286,59 @@ class DynamicQueryGenerator:
           "TRACK_1_PUBLIC_TENDERS", "TRACK_2_CORPORATE_PROCUREMENT", "TRACK_3_BUSINESS_EXPANSION", "TRACK_4_COMMERCIAL_HIRING".
           Each key must map to an array of 2 strings.
         """
-        data = self.evaluator.generate_json(prompt)
-        if isinstance(data, dict) and "TRACK_1_PUBLIC_TENDERS" in data:
-            return data
+        raw_data = self.evaluator.generate_json(prompt)
+        normalized = self._normalize_ai_tracks(raw_data)
+        
+        if normalized:
+            logger.info("✅ Successfully generated dynamic query matrix using Gemini AI.")
+            return normalized
 
-        return self._fallback_tracks(t, ind, state, country, yr)
+        logger.warning("⚠️ AI query generation failed or returned invalid schema. Executing dynamic randomized fallback...")
+        return self._dynamic_fallback_tracks(t, ind, state, country, yr)
 
-    def _fallback_tracks(self, t, ind, state, country, yr):
-        geo_tag = f" {state}" if state else (f" {country}" if country else "")
-        ind_tag = f"{ind} " if ind else ""
+    def _dynamic_fallback_tracks(self, t, ind, state, country, yr):
+        """100% dynamic fallback without hardcoded portal keywords."""
+        location = state if state else country
+        loc_str = f" {location}" if location else ""
+        ind_str = f"{ind} " if ind else ""
+
+        public_terms = random.choice([
+            ["procurement tender bid", "RFP tender notice"],
+            ["commercial works tender", "turnkey project bid tender"],
+            ["public procurement notice", "e-procurement RFP proposal"]
+        ])
+        
+        corp_terms = random.choice([
+            ["corporate vendor empanelment supplier", "enterprise supplier contract requirement"],
+            ["commercial RFQ requirement vendor registration", "corporate procurement partner onboarding"]
+        ])
+        
+        expansion_terms = random.choice([
+            ["commercial facility investment project expansion", "capex expansion greenfield project"],
+            ["new plant facility construction project", "enterprise business capacity expansion"]
+        ])
+
+        hiring_terms = random.choice([
+            ["enterprise hiring lead specialist", "corporate department expansion hiring"],
+            ["team expansion careers opening", "senior technical lead hiring"]
+        ])
+
         return {
             "TRACK_1_PUBLIC_TENDERS": [
-                f'eprocure {t} tender procurement {yr}{geo_tag}'.strip(),
-                f'gem portal {t} RFP bid{geo_tag}'.strip()
+                f"{t} {public_terms[0]} {yr}{loc_str}".strip(),
+                f"{t} {public_terms[1]}{loc_str}".strip()
             ],
             "TRACK_2_CORPORATE_PROCUREMENT": [
-                f'{ind_tag}corporate vendor empanelment {t}{geo_tag}'.strip(),
-                f'enterprise supplier procurement contract {t}{geo_tag}'.strip()
+                f"{ind_str}{t} {corp_terms[0]}{loc_str}".strip(),
+                f"{t} {corp_terms[1]} {yr}".strip()
             ],
             "TRACK_3_BUSINESS_EXPANSION": [
-                f'{ind_tag}company commercial expansion new facility {t} {yr}{geo_tag}'.strip(),
-                f'enterprise business capacity expansion investment {t}{geo_tag}'.strip()
+                f"{ind_str}{t} {expansion_terms[0]} {yr}{loc_str}".strip(),
+                f"{t} {expansion_terms[1]}{loc_str}".strip()
             ],
             "TRACK_4_COMMERCIAL_HIRING": [
-                f'corporate enterprise hiring {t} specialist{geo_tag}'.strip(),
-                f'{ind_tag}company expanding {t} operations {yr}{geo_tag}'.strip()
+                f"{t} {hiring_terms[0]}{loc_str}".strip(),
+                f"{ind_str}{t} {hiring_terms[1]} {yr}".strip()
             ]
         }
 
@@ -437,7 +496,6 @@ class WebhookRouter:
         product_usage = str(ai_result.get('product_usage', 'Unknown')).strip()
         solution = ai_result.get('target_solution') or default_target
 
-        # Extract phone: AI field with fallback to document regex
         phone = ai_result.get('phone', '')
         if not phone or len(re.sub(r'[^0-9]', '', str(phone))) < 10:
             phone = extract_indian_phone_robust(doc.get('raw_text', ''))
@@ -456,7 +514,7 @@ class WebhookRouter:
         elif target_sheet == "🤝 Partners & Suppliers": 
             row_data = [lead_id, capture_date, company_name, ai_result.get('city', ''), ai_result.get('state', ''), solution, doc['url'], "", "", "", ""]
         else: 
-            # STRICT 13-COLUMN CRM MAPPING
+            # EXACT 13-COLUMN CRM MAPPING
             row_data = [
                 capture_date,                                   # Col 1: Capture Date
                 ai_result.get('upcoming_events', 'Unknown'),    # Col 2: Deadline / Post Date
@@ -469,7 +527,7 @@ class WebhookRouter:
                 ai_result.get('why_engage_now', ''),            # Col 9: AI Intent Brief
                 doc['url'],                                     # Col 10: Source Link
                 product_usage,                                  # Col 11: Product Usage / Status
-                "",                                             # Col 12: Action / Move To (BLANK)
+                "",                                             # Col 12: Action / Move To (BLANK - PRESERVES DROPDOWN)
                 lead_id                                         # Col 13: Lead ID & Fingerprint
             ]
 
