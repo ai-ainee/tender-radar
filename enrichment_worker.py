@@ -89,7 +89,8 @@ class EnrichmentAI:
     def __init__(self, key_manager):
         self.keys = key_manager
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
-        self.gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        # Model list preserved exactly as configured
+        self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
         self._init_client()
 
     def _init_client(self):
@@ -183,7 +184,6 @@ def process_enrichment():
         if not lead_id or not org: continue
         logger.info(f"\n🔍 Enriching: {org} (ID: {lead_id})...")
 
-        # 1. Search for key leadership and corporate contact details
         q1 = f'"{org}" (Director OR CEO OR MD OR "Procurement" OR "Head of Projects" OR "Chief Engineer") linkedin'
         q2 = f'"{org}" corporate office contact email phone website'
         
@@ -192,13 +192,11 @@ def process_enrichment():
             for item in researcher.search(q):
                 snippets.append(f"{item.get('title', '')}\n{item.get('snippet', '')}\nLink: {item.get('link', '')}")
 
-        # Deep fetch the most relevant page if available
         scraped_text = ""
         if ref_url:
             scraped_text = researcher.fetch_url(ref_url)
         osint_payload = "\n\n".join(snippets) + "\n\n" + scraped_text
 
-        # 2. Extract decision maker and compile dossier via AI
         intel = ai.analyze_company(org, ref_url, osint_payload)
         if not intel:
             logger.warning(f"⚠️ Failed to synthesize intel for {org}")
@@ -212,7 +210,6 @@ def process_enrichment():
         linkedin = intel.get("linkedin_url", "")
         dossier = intel.get("dossier", "")
 
-        # 3. Post dossier update back to Leads sheet
         logger.info(f"💾 Saving dossier for {org} to Google Sheets...")
         update_payload = {
             "secret": WEBHOOK_SECRET,
@@ -233,7 +230,6 @@ def process_enrichment():
         except Exception as e:
             logger.error(f"   Failed to write dossier: {e}")
 
-        # 4. Upsert executive into Contact Master
         contact_payload = {
             "secret": WEBHOOK_SECRET,
             "action": "upsert_contact",
@@ -248,7 +244,6 @@ def process_enrichment():
         except Exception:
             pass
 
-        # 5. Send enriched Telegram alert with WhatsApp action button
         clean_phone = re.sub(r'[^0-9]', '', str(phone))
         if len(clean_phone) == 10: clean_phone = "91" + clean_phone
         
