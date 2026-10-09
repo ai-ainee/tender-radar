@@ -88,14 +88,18 @@ class QueryGenerator:
     def build_tracks(self):
         logger.info(f"🧠 Asking AI to invent custom search algorithms for: {self.target}...")
         prompt = f"""
-        You are an elite OSINT and B2B Data Analyst. Generate exactly 2 lethal Google Search queries per track to find B2B buyers for '{self.target}' in {self.country}:
-        TRACK 1 (TENDERS): Government portals, RFPs. Use negative keywords (-awarded -cancelled -archive).
-        TRACK 2 (CAPEX_AND_PARTNERS): Target factory expansions or tech upgrades. Use keywords like ("case study" OR "implementation" OR "expansion").
-        TRACK 3 (MCA): Corporate registrations for new companies.
+        You are an elite OSINT and B2B Data Analyst. Generate exactly 2 Google Search queries per track to find B2B buyers for '{self.target}' in {self.country}:
+        
+        TRACK 1 (TENDERS): Government portals, RFPs. Do NOT use minus signs or site: operators. Just use plain words (e.g., "eprocure {self.target} tender").
+        TRACK 2 (CAPEX_AND_PARTNERS): Target factory expansions or tech upgrades. Use plain words (e.g., "{self.target} case study" OR "{self.target} implementation").
+        TRACK 3 (MCA): Corporate registrations for new companies. Use plain words (e.g., "zaubacorp {self.ind} incorporation").
         TRACK 4 (COMMERCIAL): 
-           - Query 1: Job aggregators hiring '{self.target}' skills (-consulting -agency).
-           - Query 2: Direct corporate websites (-naukri -linkedin).
-        CRITICAL RULES: Max 15 words. Max 2 'OR' conditions per query. Include "{self.country}" or "{self.loc}" exactly in every query.
+           - Query 1: Job aggregators hiring '{self.target}' skills. Use plain words (e.g., "naukri {self.target} hiring").
+           - Query 2: Direct corporate websites hiring. Use plain words (e.g., "{self.target} careers apply now").
+        
+        CRITICAL RULES: Max 15 words. Max 2 'OR' conditions per query. Include "{self.country}" exactly in every query.
+        NEVER use advanced operators like site:, intitle:, inurl:, or minus signs (-). Use plain text ONLY.
+        
         Respond STRICTLY with a JSON object containing the 4 keys: TRACK_1_TENDERS, TRACK_2_CAPEX_AND_PARTNERS, TRACK_3_MCA, TRACK_4_COMMERCIAL.
         """
         for model_name in self.models:
@@ -108,10 +112,10 @@ class QueryGenerator:
     def _fallback_tracks(self):
         yr = self.year
         return {
-            "TRACK_1_TENDERS": [f'"{self.target}" tender "{yr}" "{self.country}" -awarded -cancelled', f'"{self.target}" RFP "{self.country}" -archive'],
-            "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" ("case study" OR "implementation") "{self.country}"', f'"{self.target}" ("infrastructure" OR "capacity expansion") "{self.country}"'],
-            "TRACK_3_MCA": [f'"{self.ind}" "Incorporation" "{yr}" "{self.loc}"'],
-            "TRACK_4_COMMERCIAL": [f'hiring "{self.target}" "{yr}" site:naukri.com -consulting -agency', f'"careers" "{self.target}" "{self.country}" -naukri -linkedin']
+            "TRACK_1_TENDERS": [f'eprocure "{self.target}" tender "{yr}" "{self.country}"', f'gem "{self.target}" RFP "{self.country}"'],
+            "TRACK_2_CAPEX_AND_PARTNERS": [f'"{self.target}" "case study" "{self.country}"', f'"{self.target}" "capacity expansion" "{self.country}"'],
+            "TRACK_3_MCA": [f'zaubacorp "{self.ind}" "Incorporation" "{yr}" "{self.loc}"'],
+            "TRACK_4_COMMERCIAL": [f'naukri hiring "{self.target}" "{yr}" "{self.country}"', f'careers "{self.target}" "{self.country}" apply now']
         }
 
 class DataEngine:
@@ -150,7 +154,9 @@ class DataEngine:
                 
         try:
             with DDGS() as ddgs:
-                for item in ddgs.text(f"{query} {country_name}", region='wt-wt', max_results=15): results.append({"link": item.get("href"), "snippet": item.get("body", "")})
+                # Switched from ddgs.text to ddgs.html to bypass the DNS crash
+                for item in ddgs.html(f"{query} {country_name}", region='in-en', max_results=15): 
+                    results.append({"link": item.get("href"), "snippet": item.get("body", "")})
             if results: logger.info("✅ Recovered using free DDGS Search.")
         except Exception as ddg_err: logger.error(f"🚨 DDGS Fallback failed: {ddg_err}")
         return results
