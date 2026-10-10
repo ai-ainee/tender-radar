@@ -202,11 +202,24 @@ class DynamicB2BEvaluator:
             time.sleep(20)
 
         return None
+        
+    def _smart_slice(self, text, max_chars=3000):
+        if not text:
+            return ""
+        text = text.strip()
+        if len(text) <= max_chars:
+            return text
+        # 2,200 chars from top (Scope, Project, Company) + 800 chars from bottom (Deadlines, DM, Contacts)
+        return f"{text[:2200]}\n\n[...middle content truncated...]\n\n{text[-800:]}"
 
     def evaluate_batch(self, batch, target, industry, country, states, geo_rule, ban_rule):
         if not batch: return []
-        # Trimmed to 3000 chars to stay safely below Token-Per-Minute thresholds
-        items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:3000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
+        
+        # Smart Head-Tail Trim: captures top scope & bottom contacts while staying under token limits
+        items_block = "\n".join([
+            f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{self._smart_slice(x.get('raw_text', ''))}\n</scraped_data>\n"
+            for i, x in enumerate(batch)
+        ])
 
         ind_line = f"INDUSTRY / VERTICAL: {industry}" if industry and industry != "ALL_SECTORS" else "INDUSTRY / VERTICAL: All Commercial & Industrial Sectors (Extract dynamically)"
         geo_line = f"TARGET GEOGRAPHY: {country}" if country else ""
