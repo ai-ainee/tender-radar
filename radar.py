@@ -16,7 +16,10 @@ from urllib.parse import urlparse
 from google import genai
 from openai import OpenAI, OpenAIError
 from tenacity import retry, wait_exponential, stop_after_attempt
-from ddgs import DDGS
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    from ddgs import DDGS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -229,15 +232,17 @@ class DynamicB2BEvaluator:
 
             # 2. Free Fallback: DDGS Free AI (Zero API Keys Needed)
             try:
-                logger.info("🦆 Gemini exhausted & No OpenAI key. Routing batch to Free DDGS AI (gpt-4o-mini)...")
                 with DDGS() as ddgs:
-                    # Uses free gpt-4o-mini or llama-3.3-70b via DuckDuckGo
-                    raw_reply = ddgs.chat(prompt, model="gpt-4o-mini")
-                    time.sleep(2)
-                    parsed = clean_llm_json(raw_reply)
-                    if parsed: 
-                        logger.info("✅ Batch successfully evaluated by Free DDGS AI!")
-                        return parsed
+                    if hasattr(ddgs, 'chat'):
+                        logger.info("🦆 Gemini exhausted & No OpenAI key. Routing batch to Free DDGS AI (gpt-4o-mini)...")
+                        raw_reply = ddgs.chat(prompt, model="gpt-4o-mini")
+                        time.sleep(2)
+                        parsed = clean_llm_json(raw_reply)
+                        if parsed: 
+                            logger.info("✅ Batch successfully evaluated by Free DDGS AI!")
+                            return parsed
+                    else:
+                        logger.warning("⚠️ Installed duckduckgo-search lacks .chat(). Add duckduckgo-search>=6.3.0 to requirements.txt.")
             except Exception as ddg_ai_err:
                 logger.warning(f"⚠️ DDGS Free AI attempt failed: {ddg_ai_err}")
 
