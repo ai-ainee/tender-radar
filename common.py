@@ -310,7 +310,7 @@ class SearchEngine:
         q = re.sub(r"(site:|intitle:|inurl:)\S+", " ", str(query or ""), flags=re.I)
         q = re.sub(r'[-"()]', " ", q)
         q = re.sub(r"\bOR\b", " ", q)
-        return "join(q.split())[:300]
+        return " ".join(q.split())[:300]
 
     @staticmethod
     def gl_code(country):
