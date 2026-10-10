@@ -555,17 +555,18 @@ class WebhookRouter:
         return cleaned if cleaned else "Unknown"
 
     @retry(wait=wait_exponential(multiplier=2, min=4, max=10), stop=stop_after_attempt(3))
-    def route_and_push(self, doc, ai_result, default_target, default_industry):
+    def route_and_push(self, doc, ai_result, default_target, default_industry, skip_preflight=False):
         company_name = self.normalize_company(ai_result.get('organization', 'Unknown'))
         if company_name.lower() in ["unknown", "unknown firm", ""]:
             return "SKIPPED_UNKNOWN"
 
-        try:
-            check = requests.post(self.url, json={"secret": self.secret, "action": "pre_flight_check", "company_name": company_name}, timeout=(4, 10)).json()
-            if check.get("exists") is True:
-                logger.info(f"[-] Dropped Duplicate in CRM: {company_name}")
-                return "DUPLICATE"
-        except Exception: pass
+        if not skip_preflight and not company_name.lower().startswith("unparsed"):
+            try:
+                check = requests.post(self.url, json={"secret": self.secret, "action": "pre_flight_check", "company_name": company_name}, timeout=(4, 10)).json()
+                if check.get("exists") is True:
+                    logger.info(f"[-] Dropped Duplicate in CRM: {company_name}")
+                    return "DUPLICATE"
+            except Exception: pass
 
         capture_date = datetime.now().strftime("%Y-%m-%d %H:%M")
         is_valid = ai_result.get('is_valid', False)
@@ -701,18 +702,20 @@ if __name__ == "__main__":
                         if not raw_verdicts:
                             logger.warning("⚠️ High network saturation. Preserving batch to Review tab.")
                             for item in batch:
+                                domain_name = urlparse(item['url']).netloc.replace('www.', '')
                                 fallback_verdict = {
                                     "item_index": 0,
                                     "is_valid": True,
                                     "confidence": "LOW",
                                     "entity_role": "BUYER",
-                                    "organization": "Unparsed Prospect",
+                                    # Unique company label using the actual website domain
+                                    "organization": f"Unparsed Prospect ({domain_name})",
                                     "industry": ind if ind != "ALL_SECTORS" else "General Enterprise",
                                     "why_engage_now": "Direct capture from active procurement signal. AI evaluation timed out.",
                                     "product_usage": "Prospective Buyer - Captured from signal",
                                     "upcoming_events": "Unknown"
                                 }
-                                router.route_and_push(item, fallback_verdict, TARGET, ind)
+                                router.route_and_push(item, fallback_verdict, TARGET, ind, skip_preflight=True)
                             continue
                         
                         ai_verdicts = raw_verdicts if isinstance(raw_verdicts, list) else [raw_verdicts]
