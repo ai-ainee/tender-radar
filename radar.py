@@ -158,14 +158,9 @@ class DynamicB2BEvaluator:
         return []
 
     def generate_json(self, prompt, max_retries=2):
-        """
-        Fast failover: Retries max 2 times with a 20s cooldown.
-        If quota is exhausted, hands off immediately to OpenAI or zero-drop safeguard.
-        """
         for attempt in range(max_retries):
             active_models = [m for m in self.gemini_models if m not in self.dead_models]
 
-            # If all preset models are dead or quota-exhausted, auto-discover live models
             if not active_models:
                 discovered = self.auto_discover_best_model()
                 if discovered:
@@ -177,7 +172,6 @@ class DynamicB2BEvaluator:
                     logger.warning("❌ No active Gemini models available for these keys.")
 
             for model_name in list(active_models):
-                model_failed_all_keys = True
                 for key_attempt in range(len(self.keys.keys) or 1):
                     try:
                         response = self.client.models.generate_content(
@@ -211,12 +205,11 @@ class DynamicB2BEvaluator:
                             logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
                             time.sleep(2)
 
-                # If this model failed across all available keys on attempt 2, blacklist it for the run
                 if attempt >= 1:
                     logger.warning(f"⚠️ Model '{model_name}' exhausted quota across all keys. Blacklisting for session.")
                     self.dead_models.add(model_name)
 
-            # 1. First Fallback: Paid OpenAI (if you have an API key set)
+            # Fallback 1: Paid OpenAI (if configured)
             if self.openai_key:
                 try:
                     response = OpenAI(api_key=self.openai_key).chat.completions.create(
@@ -230,7 +223,7 @@ class DynamicB2BEvaluator:
                 except OpenAIError as e:
                     logger.error(f"OpenAI Error: {e}")
 
-            # 2. Free Fallback: DDGS Free AI (Zero API Keys Needed)
+            # Fallback 2: DDGS Free AI (Zero API Keys Required)
             try:
                 with DDGS() as ddgs:
                     if hasattr(ddgs, 'chat'):
@@ -258,12 +251,14 @@ class DynamicB2BEvaluator:
         if len(text) <= max_chars: return text
         return f"{text[:2200]}\n\n[...middle content truncated...]\n\n{text[-800:]}"
 
-    def evaluate_batch(self, batch, target, industry, country, states, geo_rule, ban_rule):
+    def evaluate_batch(self, batch, target, industry, country, states, geo_rule, ban_rule, special_directive=""):
         if not batch: return []
         items_block = "\n".join([
             f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{self._smart_slice(x.get('raw_text', ''))}\n</scraped_data>\n"
             for i, x in enumerate(batch)
         ])
+
+        directive_clause = f"MANDATORY SPECIAL FOCUS DIRECTIVE: {special_directive}\nStrictly qualify prospects that match this directive!\n" if special_directive else ""
 
         ind_line = f"INDUSTRY / VERTICAL: {industry}" if industry and industry != "ALL_SECTORS" else "INDUSTRY / VERTICAL: All Commercial & Industrial Sectors (Extract dynamically)"
         geo_line = f"TARGET GEOGRAPHY: {country}" if country else ""
@@ -271,6 +266,7 @@ class DynamicB2BEvaluator:
 
         prompt = f"""You are an elite B2B sales intelligence analyst evaluating genuine commercial buying intent and enterprise business opportunities.
 TARGET PRODUCT / SOLUTION: {target}
+{directive_clause}
 {ind_line}
 {geo_line}
 {states_line}
@@ -278,7 +274,7 @@ TARGET PRODUCT / SOLUTION: {target}
 {ban_rule}
 
 CORE EVALUATION OBJECTIVE:
-Analyze the raw scraped text to identify real, verifiable companies, organizations, or government bodies with active commercial requirements, capital projects, operational expansions, or procurement needs where '{target}' is relevant.
+Analyze the raw scraped text to identify real, verifiable companies, organizations, or government bodies with active commercial requirements, capital projects, operational expansions, or procurement needs matching: {special_directive if special_directive else target}.
 
 QUALIFICATION RULES:
 1. VALID B2B PROSPECTS:
@@ -314,6 +310,7 @@ BATCH:
         if isinstance(data, dict):
             return data.get("leads", data)
         return data if isinstance(data, list) else []
+
 class DynamicQueryGenerator:
     def __init__(self, target, industry, country, states, evaluator):
         self.target = target.strip()
@@ -344,6 +341,36 @@ class DynamicQueryGenerator:
                     norm["TRACK_4_COMMERCIAL_HIRING"] = [str(x) for x in v[:2]]
         
         return norm if len(norm) == 4 else None
+
+    def build_special_tracks(self, special_prompt):
+        logger.info(f"⚡ Generating Special Vector Searches for Directive: '{special_prompt}'...")
+        prompt = f"""You are an elite B2B Sales Intelligence Strategist.
+The user has set a MANDATORY SPECIAL CAMPAIGN DIRECTIVE:
+"{special_prompt}"
+
+GENERATE 4 DYNAMIC COMMERCIAL TRACKS (2 search queries each) tailored strictly and exclusively to this directive:
+TRACK 1: Active public tenders, bids, or municipal RFPs matching this directive.
+TRACK 2: Private corporate RFQs, vendor empanelment notices, and corporate contracts.
+TRACK 3: Capital expenditure, new plant construction, and business expansion signals.
+TRACK 4: Commercial hiring, team scaling, or key executive roles for this directive.
+
+SEARCH RULES:
+- Plain text queries ONLY (maximum 10 words per query).
+- DO NOT use Google search operators like site:, inurl:, or quotes.
+- Respond strictly with JSON with keys:
+  "TRACK_1_PUBLIC_TENDERS", "TRACK_2_CORPORATE_PROCUREMENT", "TRACK_3_BUSINESS_EXPANSION", "TRACK_4_COMMERCIAL_HIRING".
+  Each key must map to an array of 2 strings.
+"""
+        raw_data = self.evaluator.generate_json(prompt)
+        normalized = self._normalize_ai_tracks(raw_data)
+        if normalized:
+            return normalized
+        return {
+            "TRACK_1_PUBLIC_TENDERS": [f"{special_prompt} tender RFP {self.year}", f"{special_prompt} procurement bid"],
+            "TRACK_2_CORPORATE_PROCUREMENT": [f"{special_prompt} corporate vendor empanelment", f"{special_prompt} commercial supplier contract"],
+            "TRACK_3_BUSINESS_EXPANSION": [f"{special_prompt} project expansion capex", f"{special_prompt} facility investment"],
+            "TRACK_4_COMMERCIAL_HIRING": [f"{special_prompt} company hiring team", f"{special_prompt} careers lead specialist"]
+        }
 
     def build_tracks(self):
         state = random.choice(self.states) if self.states else ""
@@ -668,9 +695,11 @@ if __name__ == "__main__":
     try:
         settings_req = requests.get(f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_settings&cb={int(time.time())}", timeout=(5, 20)).json()
         
+        SPECIAL_PROMPT = settings_req.get("special_prompt", "").strip()
+
         TARGETS = [t.strip() for t in settings_req.get("target_products", []) if t.strip()]
-        if not TARGETS:
-            logger.error("❌ No Search Targets found in Settings (Column A). Execution stopped.")
+        if not TARGETS and not SPECIAL_PROMPT:
+            logger.error("❌ No Search Targets found in Settings. Execution stopped.")
             exit(1)
             
         INDUSTRIES = [i.strip() for i in settings_req.get("industry_keywords", []) if i.strip()]
@@ -695,80 +724,79 @@ if __name__ == "__main__":
     evaluator = DynamicB2BEvaluator(gemini_keys)
     router = WebhookRouter(WEBHOOK_URL, WEBHOOK_SECRET)
     
-    for TARGET in TARGETS:
-        for ind in industries_to_run:
-            generator = DynamicQueryGenerator(TARGET, ind, COUNTRY, STATES, evaluator)
-            tracks = generator.build_tracks()
+    if SPECIAL_PROMPT:
+        logger.info(f"⚡ OVERRIDE ACTIVE: Special Directive detected -> '{SPECIAL_PROMPT}'")
+        logger.info("   -> All normal product/industry loops are bypassed for this run.")
+        generator = DynamicQueryGenerator(SPECIAL_PROMPT, "Special Campaign", COUNTRY, STATES, evaluator)
+        tracks = generator.build_special_tracks(SPECIAL_PROMPT)
+        campaign_targets = [(SPECIAL_PROMPT, "Special Campaign", tracks)]
+    else:
+        logger.info("📋 Standard Mode: Running across all configured products and industries...")
+        campaign_targets = []
+        for TARGET in TARGETS:
+            for ind in industries_to_run:
+                gen = DynamicQueryGenerator(TARGET, ind, COUNTRY, STATES, evaluator)
+                campaign_targets.append((TARGET, ind, gen.build_tracks()))
 
-            for track_name, queries in tracks.items():
-                docs_to_evaluate = []
-                for query in queries:
-                    search_results = engine.search_until_leads_found(
-                        query, seen_links_cache=seen_links, country_name=COUNTRY, target_new_urls=3
-                    )
+    for target_val, ind_val, tracks in campaign_targets:
+        for track_name, queries in tracks.items():
+            docs_to_evaluate = []
+            for query in queries:
+                search_results = engine.search_until_leads_found(
+                    query, seen_links_cache=seen_links, country_name=COUNTRY, target_new_urls=3
+                )
+                for res in search_results:
+                    raw_link = res.get("link", "").strip()
+                    if not raw_link: continue
+                    c_link = clean_url(raw_link)
+                    if c_link in seen_links: continue
+                    scanned_links += 1
                     
-                    for res in search_results:
-                        raw_link = res.get("link", "").strip()
-                        snippet = res.get("snippet", "").strip()
-                        if not raw_link: continue
-                        
-                        c_link = clean_url(raw_link)
-                        if c_link in seen_links: continue
-                        scanned_links += 1
-                        
-                        if not any(pd in raw_link.lower() for pd in PROTECTED_DOMAINS if pd):
-                            if any(bd in raw_link.lower() for bd in BANNED_SITES if bd) or any(bx in snippet.lower() for bx in BANNED_KW if bx):
-                                save_to_cache(c_link); seen_links.add(c_link); continue
-                                
-                        save_to_cache(c_link); seen_links.add(c_link)
-                        content = engine.fetch(raw_link, protected_domains=PROTECTED_DOMAINS)
-                        if content: 
-                            docs_to_evaluate.append({"track": track_name, "url": raw_link, "raw_text": content})
+                    if not any(pd in raw_link.lower() for pd in PROTECTED_DOMAINS if pd):
+                        if any(bd in raw_link.lower() for bd in BANNED_SITES if bd) or any(bx in res.get("snippet", "").lower() for bx in BANNED_KW if bx):
+                            save_to_cache(c_link); seen_links.add(c_link); continue
                             
-                if docs_to_evaluate:
-                    for i in range(0, len(docs_to_evaluate), 4):
-                        batch = docs_to_evaluate[i:i+4]
-                        raw_verdicts = evaluator.evaluate_batch(batch, TARGET, ind, COUNTRY, STATES, geo_rule, ban_rule)
-                        time.sleep(3)
-                        
-                        # ZERO DROP SAFEGUARD
-                        if not raw_verdicts:
-                            logger.warning("⚠️ High network saturation. Preserving batch to Review tab.")
-                            for item in batch:
-                                domain_name = urlparse(item['url']).netloc.replace('www.', '')
-                                fallback_verdict = {
-                                    "item_index": 0,
-                                    "is_valid": True,
-                                    "confidence": "LOW",
-                                    "entity_role": "BUYER",
-                                    # Unique company label using the actual website domain
-                                    "organization": f"Unparsed Prospect ({domain_name})",
-                                    "industry": ind if ind != "ALL_SECTORS" else "General Enterprise",
-                                    "why_engage_now": "Direct capture from active procurement signal. AI evaluation timed out.",
-                                    "product_usage": "Prospective Buyer - Captured from signal",
-                                    "upcoming_events": "Unknown"
-                                }
-                                router.route_and_push(item, fallback_verdict, TARGET, ind, skip_preflight=True)
-                            continue
-                        
-                        ai_verdicts = raw_verdicts if isinstance(raw_verdicts, list) else [raw_verdicts]
-                        
-                        for verdict in ai_verdicts:
-                            try:
-                                idx = int(verdict.get("item_index"))
-                            except (TypeError, ValueError):
-                                idx = None
+                    save_to_cache(c_link); seen_links.add(c_link)
+                    content = engine.fetch(raw_link, protected_domains=PROTECTED_DOMAINS)
+                    if content:
+                        docs_to_evaluate.append({"track": track_name, "url": raw_link, "raw_text": content})
 
-                            if idx is not None and 0 <= idx < len(batch):
-                                comp_name = router.normalize_company(verdict.get('organization', ''))
-                                if comp_name.lower() in ["unknown", "unknown firm", ""]:
-                                    continue
-                                if comp_name in session_companies:
-                                    logger.info(f"[-] Dropped In-Flight Duplicate: {comp_name}")
-                                    continue
-                                
-                                session_companies.add(comp_name)
-                                if router.route_and_push(batch[idx], verdict, TARGET, ind) in ["📥 Inbox", "⚠️ Needs Review"]: 
-                                    leads_pushed += 1
+            if docs_to_evaluate:
+                for i in range(0, len(docs_to_evaluate), 4):
+                    batch = docs_to_evaluate[i:i+4]
+                    raw_verdicts = evaluator.evaluate_batch(
+                        batch, target_val, ind_val, COUNTRY, STATES, geo_rule, ban_rule,
+                        special_directive=SPECIAL_PROMPT
+                    )
+                    time.sleep(3)
+
+                    # ZERO DROP SAFEGUARD
+                    if not raw_verdicts:
+                        logger.warning("⚠️ High network saturation. Preserving batch to Review tab.")
+                        for item in batch:
+                            domain_name = urlparse(item['url']).netloc.replace('www.', '')
+                            fallback_verdict = {
+                                "item_index": 0, "is_valid": True, "confidence": "LOW", "entity_role": "BUYER",
+                                "organization": f"Unparsed Prospect ({domain_name})",
+                                "industry": ind_val if ind_val != "ALL_SECTORS" else "General Enterprise",
+                                "why_engage_now": "Direct capture from active procurement signal. AI evaluation timed out.",
+                                "product_usage": "Prospective Buyer - Captured from signal",
+                                "upcoming_events": "Unknown"
+                            }
+                            router.route_and_push(item, fallback_verdict, target_val, ind_val, skip_preflight=True)
+                        continue
+
+                    ai_verdicts = raw_verdicts if isinstance(raw_verdicts, list) else [raw_verdicts]
+                    for verdict in ai_verdicts:
+                        try: idx = int(verdict.get("item_index"))
+                        except (TypeError, ValueError): idx = None
+
+                        if idx is not None and 0 <= idx < len(batch):
+                            comp_name = router.normalize_company(verdict.get('organization', ''))
+                            if comp_name.lower() in ["unknown", "unknown firm", ""]: continue
+                            if comp_name in session_companies: continue
+                            session_companies.add(comp_name)
+                            if router.route_and_push(batch[idx], verdict, target_val, ind_val) in ["📥 Inbox", "⚠️ Needs Review"]:
+                                leads_pushed += 1
 
     system_monitor.send(f"🏁 *Radar Scout Complete*\n• Links Scanned: `{scanned_links}`\n• Sent to CRM: `{leads_pushed}`\n• Duration: `{str(datetime.now() - start_time).split('.')[0]}`")
