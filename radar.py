@@ -127,9 +127,14 @@ class DynamicB2BEvaluator:
                 except Exception as e:
                     error_str = str(e).lower()
                     if "429" in error_str or "quota" in error_str:
-                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating key with backoff...")
+                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating key with cool-off...")
                         self.rotate_key()
-                        time.sleep(4)
+                        # If we have cycled back to Key #1, both keys are exhausted; wait for the minute window to reset
+                        if self.keys.index == 0:
+                            logger.info("⏳ All keys exhausted. Cooling down for 15s to reset RPM window...")
+                            time.sleep(15)
+                        else:
+                            time.sleep(4)
                         continue
                     elif "503" in error_str or "unavailable" in error_str:
                         logger.warning(f"⚠️ Gemini 503 ({model_name}). Skipping model...")
