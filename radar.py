@@ -59,10 +59,6 @@ CACHE_FILE = "seen_links.txt"
 if not os.path.exists(CACHE_FILE): open(CACHE_FILE, 'w').close()
 
 def clean_url(url):
-    """
-    Normalizes URLs while preserving essential query parameters to avoid
-    collapsing multiple distinct tenders on the same endpoint into a single false duplicate.
-    """
     try:
         p = urlparse(url.strip())
         netloc = p.netloc.lower().replace('www.', '')
@@ -106,7 +102,6 @@ class DynamicB2BEvaluator:
     def __init__(self, key_manager):
         self.keys = key_manager
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
-        # Model list preserved exactly as configured
         self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
         self._init_client()
 
@@ -132,9 +127,9 @@ class DynamicB2BEvaluator:
                 except Exception as e:
                     error_str = str(e).lower()
                     if "429" in error_str or "quota" in error_str:
-                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating to next key...")
+                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating key with backoff...")
                         self.rotate_key()
-                        time.sleep(1)
+                        time.sleep(4)
                         continue
                     elif "503" in error_str or "unavailable" in error_str:
                         logger.warning(f"⚠️ Gemini 503 ({model_name}). Skipping model...")
@@ -161,7 +156,7 @@ class DynamicB2BEvaluator:
 
     def evaluate_batch(self, batch, target, industry, country, states, geo_rule, ban_rule):
         if not batch: return []
-        items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:6000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
+        items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:5000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
 
         ind_line = f"INDUSTRY / VERTICAL: {industry}" if industry and industry != "ALL_SECTORS" else "INDUSTRY / VERTICAL: All Commercial & Industrial Sectors (Extract dynamically)"
         geo_line = f"TARGET GEOGRAPHY: {country}" if country else ""
@@ -224,11 +219,9 @@ class DynamicQueryGenerator:
         self.evaluator = evaluator
 
     def _normalize_ai_tracks(self, data):
-        """Extracts tracks case-insensitively and unwraps nested dictionaries."""
         if not isinstance(data, dict):
             return None
         
-        # Unwrap nested parent keys if Gemini returned {"tracks": {...}} or {"queries": {...}}
         for parent in ["tracks", "queries", "data", "result"]:
             if parent in data and isinstance(data[parent], dict):
                 data = data[parent]
@@ -297,7 +290,6 @@ class DynamicQueryGenerator:
         return self._dynamic_fallback_tracks(t, ind, state, country, yr)
 
     def _dynamic_fallback_tracks(self, t, ind, state, country, yr):
-        """100% dynamic fallback without hardcoded portal keywords."""
         location = state if state else country
         loc_str = f" {location}" if location else ""
         ind_str = f"{ind} " if ind else ""
@@ -350,7 +342,7 @@ class DataEngine:
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
         ]
 
-    def search_until_leads_found(self, query, seen_links_cache, country_name="", target_new_urls=5):
+    def search_until_leads_found(self, query, seen_links_cache, country_name="", target_new_urls=4):
         clean_q = re.sub(r'(site:|intitle:|inurl:)\S+', '', str(query), flags=re.IGNORECASE)
         clean_q = re.sub(r'[-"()]', ' ', clean_q)
         clean_q = re.sub(r'\bOR\b', ' ', clean_q)
@@ -372,7 +364,7 @@ class DataEngine:
         page_num = 1
         new_urls_found = 0
 
-        while page_num <= 10:
+        while page_num <= 5:  # Optimized to 5 pages to maintain clean execution times
             payload_dict = {
                 "q": clean_q,
                 "num": 10,
@@ -433,7 +425,7 @@ class DataEngine:
             try:
                 with DDGS() as ddgs:
                     ddg_q = f"{clean_q} {country_name}".strip() if country_name else clean_q
-                    for item in ddgs.text(ddg_q, region='wt-wt', max_results=15): 
+                    for item in ddgs.text(ddg_q, region='wt-wt', max_results=10): 
                         results.append({"link": item.get("href"), "snippet": item.get("body", "")})
             except Exception as ddg_err:
                 logger.error(f"🚨 DDGS Fallback failed: {ddg_err}")
@@ -441,7 +433,7 @@ class DataEngine:
         return results
 
     def fetch(self, url, protected_domains=None):
-        time.sleep(random.uniform(1.2, 2.5))
+        time.sleep(random.uniform(0.8, 1.5))
         protected_domains = protected_domains or []
         is_protected = any(pd in url.lower() for pd in protected_domains if pd)
         target_url = f"https://r.jina.ai/{url}" if is_protected else url
@@ -449,20 +441,20 @@ class DataEngine:
         try:
             headers = {"User-Agent": random.choice(self.user_agents)}
             try:
-                res = requests.get(target_url, headers=headers, timeout=18, verify=True)
+                res = requests.get(target_url, headers=headers, timeout=12, verify=True)
             except requests.exceptions.SSLError:
-                res = requests.get(target_url, headers=headers, timeout=18, verify=False)
+                res = requests.get(target_url, headers=headers, timeout=12, verify=False)
 
             if res.status_code != 200 and not is_protected:
-                res = requests.get(f"https://r.jina.ai/{url}", headers=headers, timeout=18)
+                res = requests.get(f"https://r.jina.ai/{url}", headers=headers, timeout=12)
             res.raise_for_status()
 
             if 'application/pdf' in res.headers.get('Content-Type', '') or url.lower().endswith('.pdf'):
-                return "".join(page.extract_text() + "\n" for page in PdfReader(BytesIO(res.content)).pages[:10]).strip()
+                return "".join(page.extract_text() + "\n" for page in PdfReader(BytesIO(res.content)).pages[:8]).strip()
                 
             soup = BeautifulSoup(res.text, 'html.parser')
             for el in soup(["script", "style", "nav", "footer", "header", "aside"]): el.decompose()
-            return "\n".join([line.strip() for line in soup.get_text(separator="\n", strip=True).splitlines() if line.strip()])[:8000]
+            return "\n".join([line.strip() for line in soup.get_text(separator="\n", strip=True).splitlines() if line.strip()])[:6000]
         except Exception: return None
 
 class WebhookRouter:
@@ -514,21 +506,20 @@ class WebhookRouter:
         elif target_sheet == "🤝 Partners & Suppliers": 
             row_data = [lead_id, capture_date, company_name, ai_result.get('city', ''), ai_result.get('state', ''), solution, doc['url'], "", "", "", ""]
         else: 
-            # EXACT 13-COLUMN CRM MAPPING
             row_data = [
-                capture_date,                                   # Col 1: Capture Date
-                ai_result.get('upcoming_events', 'Unknown'),    # Col 2: Deadline / Post Date
-                role,                                           # Col 3: Signal Category
-                industry_val,                                   # Col 4: Sector / Industry
-                ai_result.get('state', 'N/A'),                  # Col 5: State
-                ai_result.get('city', 'N/A'),                   # Col 6: City
-                company_name,                                   # Col 7: Organization
-                solution,                                       # Col 8: Target Product / Solution
-                ai_result.get('why_engage_now', ''),            # Col 9: AI Intent Brief
-                doc['url'],                                     # Col 10: Source Link
-                product_usage,                                  # Col 11: Product Usage / Status
-                "",                                             # Col 12: Action / Move To (BLANK - PRESERVES DROPDOWN)
-                lead_id                                         # Col 13: Lead ID & Fingerprint
+                capture_date,
+                ai_result.get('upcoming_events', 'Unknown'),
+                role,
+                industry_val,
+                ai_result.get('state', 'N/A'),
+                ai_result.get('city', 'N/A'),
+                company_name,
+                solution,
+                ai_result.get('why_engage_now', ''),
+                doc['url'],
+                product_usage,
+                "",
+                lead_id
             ]
 
         logger.info(f"[*] Routing {company_name} [{role}] -> {target_sheet}")
@@ -593,7 +584,7 @@ if __name__ == "__main__":
                 docs_to_evaluate = []
                 for query in queries:
                     search_results = engine.search_until_leads_found(
-                        query, seen_links_cache=seen_links, country_name=COUNTRY, target_new_urls=5
+                        query, seen_links_cache=seen_links, country_name=COUNTRY, target_new_urls=3
                     )
                     
                     for res in search_results:
@@ -615,10 +606,11 @@ if __name__ == "__main__":
                             docs_to_evaluate.append({"track": track_name, "url": raw_link, "raw_text": content})
                             
                 if docs_to_evaluate:
-                    for i in range(0, len(docs_to_evaluate), 2):
-                        batch = docs_to_evaluate[i:i+2]
+                    # Optimized Batch Size of 4 to cut API calls by 50%
+                    for i in range(0, len(docs_to_evaluate), 4):
+                        batch = docs_to_evaluate[i:i+4]
                         raw_verdicts = evaluator.evaluate_batch(batch, TARGET, ind, COUNTRY, STATES, geo_rule, ban_rule)
-                        time.sleep(3) 
+                        time.sleep(4)  # Safe cooldown preventing Free Tier 15 RPM overruns
                         
                         if not raw_verdicts:
                             logger.warning("⚠️ Batch skipped due to temporary AI rate limit.")
