@@ -2,44 +2,53 @@ name: Radar Scout Automation Engine
 
 on:
   schedule:
-    # 1. Daily Radar Scout at 7:00 AM IST (01:30 UTC)
-    - cron: '30 1 * * *'
-    
-    # 2. Enrichment Worker every 2 hours from 8:00 AM to 8:00 PM IST (02:30 to 14:30 UTC)
-    - cron: '30 2,4,6,8,10,12,14 * * *'
-  
+    - cron: '30 2 * * *'   # 8:00 AM IST  -> harvester
+    - cron: '30 5 * * *'   # 11:00 AM IST -> enrichment
   workflow_dispatch:
     inputs:
-      target_job:
-        description: 'Select process to trigger manually'
-        required: true
-        default: 'both'
+      job:
+        description: 'What to run'
         type: choice
+        default: both
         options:
           - both
-          - scout
-          - enrichment
+          - harvest
+          - enrich
+
+permissions:
+  contents: write          # lets the bot commit seen_links.txt
+
+concurrency:
+  group: radar-scout
+  cancel-in-progress: false
 
 env:
   TZ: 'Asia/Kolkata'
-
-# CONCURRENCY GUARD: Ensures simultaneous triggers don't corrupt the cache
-concurrency:
-  group: radar-scout-engine
-  cancel-in-progress: false
+  PYTHONUNBUFFERED: '1'
 
 jobs:
   run-radar-scout:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
+    timeout-minutes: 90
+    env:
+      WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+      WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+      GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+      OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
+      SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
+      BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+      JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      EXTRA_LLM_BASE_URL: ${{ secrets.EXTRA_LLM_BASE_URL }}
+      EXTRA_LLM_API_KEYS: ${{ secrets.EXTRA_LLM_API_KEYS }}
+      EXTRA_LLM_MODELS: ${{ secrets.EXTRA_LLM_MODELS }}
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -47,46 +56,32 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install ddgs
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      - name: Run Harvester
-        if: >
-          github.event.schedule == '45 1 * * *' ||
-          (github.event_name == 'workflow_dispatch' && (inputs.target_job == 'both' || inputs.target_job == 'scout'))
-        env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - name: Run harvester
+        if: >-
+          (github.event_name == 'schedule' && github.event.schedule == '30 2 * * *') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'harvest'))
         run: python radar.py
 
-      - name: Run Enrichment Worker
-        if: >
-          github.event.schedule == '30 2,4,6,8,10,12,14 * * *' ||
-          (github.event_name == 'workflow_dispatch' && (inputs.target_job == 'both' || inputs.target_job == 'enrichment'))
-        env:
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - name: Run enrichment worker
+        if: >-
+          (github.event_name == 'schedule' && github.event.schedule == '30 5 * * *') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'enrich'))
         run: python enrichment_worker.py
 
-      - name: Commit and Push Updated Cache
+      # Persist the de-duplication cache even if a step above failed
+      - name: Save seen-links cache
         if: always()
         run: |
-          git config --global user.name "Radar Scout Bot"
-          git config --global user.email "bot@radar.local"
-          git add seen_links.txt
-          git commit -m "Auto-update seen links cache [skip ci]" || echo "No changes to commit"
-          git pull --rebase origin main
-          git push origin main
+          git config user.name "Radar Scout Bot"
+          git config user.email "bot@radarscout.local"
+          git add seen_links.txt 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No cache changes."
+          else
+            git commit -m "chore: update seen links cache [skip ci]"
+            git pull --rebase origin "${{ github.ref_name }}" || true
+            git push || echo "Push failed (will retry on next run)"
+          fi
