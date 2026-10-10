@@ -102,7 +102,9 @@ class DynamicB2BEvaluator:
     def __init__(self, key_manager):
         self.keys = key_manager
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
+        # Your preferred seed models
         self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
+        self.dead_models = set()  # Permanently blacklists models that return 404
         self._init_client()
 
     def _init_client(self):
@@ -113,55 +115,98 @@ class DynamicB2BEvaluator:
         self.client = genai.Client(api_key=new_key)
         return new_key
 
-    def generate_json(self, prompt):
-        for model_name in self.gemini_models:
-            for key_attempt in range(len(self.keys.keys) or 1):
-                try:
-                    response = self.client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config={'response_mime_type': 'application/json'}
-                    )
-                    if response.text:
-                        return json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if "429" in error_str or "quota" in error_str:
-                        logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating key with cool-off...")
-                        self.rotate_key()
-                        # If we have cycled back to Key #1, both keys are exhausted; wait for the minute window to reset
-                        if self.keys.index == 0:
-                            logger.info("⏳ All keys exhausted. Cooling down for 15s to reset RPM window...")
-                            time.sleep(15)
-                        else:
-                            time.sleep(4)
-                        continue
-                    elif "503" in error_str or "unavailable" in error_str:
-                        logger.warning(f"⚠️ Gemini 503 ({model_name}). Skipping model...")
-                        break
-                    elif "404" in error_str or "not_found" in error_str:
-                        logger.warning(f"⚠️ Gemini 404 ({model_name}). Skipping model...")
-                        break
-                    else:
-                        logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
-                        time.sleep(2)
+    def auto_discover_best_model(self):
+        """
+        Queries Google's API directly to find all active models authorized
+        for this API key and selects the best available Flash model.
+        """
+        logger.info("🔍 Querying Google API to auto-discover active models...")
+        try:
+            available_flash_models = []
+            for m in self.client.models.list():
+                clean_name = m.name.replace("models/", "")
+                # Filter for text-generation flash models that aren't blacklisted
+                if "flash" in clean_name.lower() and clean_name not in self.dead_models:
+                    available_flash_models.append(clean_name)
 
-        if self.openai_key:
-            try:
-                response = OpenAI(api_key=self.openai_key).chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
-                )
-                time.sleep(2) 
-                return json.loads(response.choices[0].message.content.strip())
-            except OpenAIError as e:
-                logger.error(f"OpenAI Error: {e}")
+            if available_flash_models:
+                logger.info(f"✅ Auto-discovered active models: {available_flash_models}")
+                return available_flash_models
+        except Exception as e:
+            logger.warning(f"⚠️ Live model discovery failed: {e}")
+        return []
+
+    def generate_json(self, prompt, max_retries=3):
+        for attempt in range(max_retries):
+            # Filter out blacklisted 404 models
+            active_models = [m for m in self.gemini_models if m not in self.dead_models]
+
+            # If all configured models failed or are blacklisted, auto-discover live models
+            if not active_models:
+                discovered = self.auto_discover_best_model()
+                if discovered:
+                    for d in discovered:
+                        if d not in self.gemini_models:
+                            self.gemini_models.append(d)
+                    active_models = [m for m in self.gemini_models if m not in self.dead_models]
+                else:
+                    logger.error("❌ No active Gemini models available for this API key.")
+
+            for model_name in active_models:
+                for key_attempt in range(len(self.keys.keys) or 1):
+                    try:
+                        response = self.client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config={'response_mime_type': 'application/json'}
+                        )
+                        if response.text:
+                            return json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        if "429" in error_str or "quota" in error_str:
+                            logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating key with cool-off...")
+                            self.rotate_key()
+                            if self.keys.index == 0:
+                                logger.info("⏳ All keys cooling down. Waiting 20s for RPM window to clear...")
+                                time.sleep(20)
+                            else:
+                                time.sleep(3)
+                            continue
+                        elif "503" in error_str or "unavailable" in error_str:
+                            logger.warning(f"⚠️ Gemini 503 ({model_name}). Skipping model...")
+                            break
+                        elif "404" in error_str or "not_found" in error_str:
+                            # Blacklist this model so it is never called again
+                            logger.warning(f"⚠️ Gemini 404: '{model_name}' is not supported/enabled. Blacklisting permanently.")
+                            self.dead_models.add(model_name)
+                            break
+                        else:
+                            logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
+                            time.sleep(2)
+
+            # Fallback to OpenAI if Gemini pool is exhausted
+            if self.openai_key:
+                try:
+                    response = OpenAI(api_key=self.openai_key).chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"}
+                    )
+                    time.sleep(1)
+                    return json.loads(response.choices[0].message.content.strip())
+                except OpenAIError as e:
+                    logger.error(f"OpenAI Error: {e}")
+
+            logger.warning(f"⏳ Cycle {attempt + 1}/{max_retries} rate-limited. Pausing 20s before retrying...")
+            time.sleep(20)
+
         return None
 
     def evaluate_batch(self, batch, target, industry, country, states, geo_rule, ban_rule):
         if not batch: return []
-        items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:5000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
+        # Trimmed to 3000 chars to stay safely below Token-Per-Minute thresholds
+        items_block = "\n".join([f"--- ITEM {i} ---\nTRACK: {x['track']}\n<scraped_data>\n{x['raw_text'][:3000]}\n</scraped_data>\n" for i, x in enumerate(batch)])
 
         ind_line = f"INDUSTRY / VERTICAL: {industry}" if industry and industry != "ALL_SECTORS" else "INDUSTRY / VERTICAL: All Commercial & Industrial Sectors (Extract dynamically)"
         geo_line = f"TARGET GEOGRAPHY: {country}" if country else ""
@@ -617,8 +662,22 @@ if __name__ == "__main__":
                         raw_verdicts = evaluator.evaluate_batch(batch, TARGET, ind, COUNTRY, STATES, geo_rule, ban_rule)
                         time.sleep(4)  # Safe cooldown preventing Free Tier 15 RPM overruns
                         
+                        # ZERO DROP SAFEGUARD:
                         if not raw_verdicts:
-                            logger.warning("⚠️ Batch skipped due to temporary AI rate limit.")
+                            logger.warning("⚠️ High network saturation. Preserving batch to Review tab.")
+                            for item in batch:
+                                fallback_verdict = {
+                                    "item_index": 0,
+                                    "is_valid": True,
+                                    "confidence": "LOW",
+                                    "entity_role": "BUYER",
+                                    "organization": "Unparsed Prospect",
+                                    "industry": ind if ind != "ALL_SECTORS" else "General Enterprise",
+                                    "why_engage_now": "Direct capture from active procurement signal. AI evaluation timed out.",
+                                    "product_usage": "Prospective Buyer - Captured from signal",
+                                    "upcoming_events": "Unknown"
+                                }
+                                router.route_and_push(item, fallback_verdict, TARGET, ind)
                             continue
                         
                         ai_verdicts = raw_verdicts if isinstance(raw_verdicts, list) else [raw_verdicts]
