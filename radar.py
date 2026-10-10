@@ -213,7 +213,7 @@ class DynamicB2BEvaluator:
                     logger.warning(f"⚠️ Model '{model_name}' exhausted quota across all keys. Blacklisting for session.")
                     self.dead_models.add(model_name)
 
-            # Fallback to OpenAI if Gemini pool is exhausted
+            # 1. First Fallback: Paid OpenAI (if you have an API key set)
             if self.openai_key:
                 try:
                     response = OpenAI(api_key=self.openai_key).chat.completions.create(
@@ -226,6 +226,20 @@ class DynamicB2BEvaluator:
                     if parsed: return parsed
                 except OpenAIError as e:
                     logger.error(f"OpenAI Error: {e}")
+
+            # 2. Free Fallback: DDGS Free AI (Zero API Keys Needed)
+            try:
+                logger.info("🦆 Gemini exhausted & No OpenAI key. Routing batch to Free DDGS AI (gpt-4o-mini)...")
+                with DDGS() as ddgs:
+                    # Uses free gpt-4o-mini or llama-3.3-70b via DuckDuckGo
+                    raw_reply = ddgs.chat(prompt, model="gpt-4o-mini")
+                    time.sleep(2)
+                    parsed = clean_llm_json(raw_reply)
+                    if parsed: 
+                        logger.info("✅ Batch successfully evaluated by Free DDGS AI!")
+                        return parsed
+            except Exception as ddg_ai_err:
+                logger.warning(f"⚠️ DDGS Free AI attempt failed: {ddg_ai_err}")
 
             if attempt < max_retries - 1:
                 logger.warning(f"⏳ Cycle {attempt + 1}/{max_retries} exhausted. Pausing 15s before final attempt...")
