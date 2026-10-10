@@ -1,268 +1,208 @@
-import os
-import json
+#!/usr/bin/env python3
+"""
+enrichment_worker.py - finds the decision maker + contact details for new leads, writes a dossier
+back to the Google Sheet and notifies you on Telegram (with action buttons).
+Contact details are only accepted when they actually appear in the research text (no hallucinated emails/phones).
+"""
 import re
+import sys
 import time
-import random
-import logging
-import requests
-import urllib3
-from bs4 import BeautifulSoup
-from google import genai
-from openai import OpenAI, OpenAIError
-from tenacity import retry, wait_exponential, stop_after_attempt
+from datetime import datetime
+from urllib.parse import quote
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("EnrichmentWorker")
+from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram, env_int, extract_emails, extract_phones,
+                    fetch_page, log, tg_escape)
 
-class APIKeyManager:
-    def __init__(self, env_string):
-        clean_str = env_string.replace('"', '').replace("'", "").replace("\n", "").replace("\r", "").replace(" ", "")
-        self.keys = [k for k in clean_str.split(',') if k]
-        self.index = 0
-        if not self.keys: raise ValueError("No API keys found. Check environment secrets.")
-    def get_current(self): return self.keys[self.index]
-    def rotate(self, service_name):
-        self.index = (self.index + 1) % len(self.keys)
-        logger.warning(f"{service_name} Failover. Rotating to Key #{self.index + 1} of {len(self.keys)}...")
-        return self.get_current()
 
-class TelegramNotifier:
-    def __init__(self):
-        self.token, self.chat_id = os.getenv("TELEGRAM_BOT_TOKEN", ""), os.getenv("TELEGRAM_CHAT_ID", "")
-    def send(self, message, reply_markup=None):
-        if not self.token or not self.chat_id: return
-        payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
-        if reply_markup: payload["reply_markup"] = reply_markup
-        try: requests.post(f"https://api.telegram.org/bot{self.token}/sendMessage", json=payload, timeout=5)
-        except Exception: pass
+def digits(s):
+    return re.sub(r"\D", "", str(s or ""))
 
-serper_keys = APIKeyManager(os.getenv("SERPER_API_KEYS", ""))
-gemini_keys = APIKeyManager(os.getenv("GEMINI_API_KEYS", ""))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default_secret")
-telegram = TelegramNotifier()
 
-class OSINTResearcher:
-    def __init__(self, serper_km):
-        self.serper_km = serper_km
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
-        ]
+def sanitize_contacts(intel, osint_text):
+    """Keep only contact data that is grounded in the research text."""
+    low = osint_text.lower()
+    low_digits = digits(osint_text)
 
-    def search(self, query):
-        clean_q = re.sub(r'[-"()]', ' ', query)
-        clean_q = " ".join(clean_q.split())
-        for attempt in range(len(self.serper_km.keys) or 1):
-            key = self.serper_km.get_current()
-            try:
-                res = requests.post(
-                    "https://google.serper.dev/search",
-                    headers={'X-API-KEY': key, 'Content-Type': 'application/json'},
-                    json={"q": clean_q, "gl": "in", "num": 5},
-                    timeout=15
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    return data.get("organic", [])
-                else:
-                    self.serper_km.rotate("Serper")
-            except Exception:
-                self.serper_km.rotate("Serper")
-        return []
+    website = str(intel.get("website") or "").strip()
+    if website and not website.lower().startswith("http"):
+        website = "https://" + website
+    if website and not re.match(r"^https?://[^\s]+\.[^\s]+$", website):
+        website = ""
 
-    def fetch_url(self, url):
-        time.sleep(random.uniform(1.0, 2.0))
-        target_url = f"https://r.jina.ai/{url}"
-        try:
-            headers = {"User-Agent": random.choice(self.user_agents)}
-            res = requests.get(target_url, headers=headers, timeout=15)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                return soup.get_text(separator="\n", strip=True)[:6000]
-        except Exception:
-            pass
-        return ""
+    email = str(intel.get("email") or "").strip().lower()
+    candidates = extract_emails(osint_text)
+    if email and email not in low:
+        email = ""
+    if not email and candidates:
+        host = re.sub(r"^https?://(www\.)?", "", website).split("/")[0].lower() if website else ""
+        pick = [c for c in candidates if host and c.endswith("@" + host)] or candidates
+        email = pick[0]
 
-class EnrichmentAI:
-    def __init__(self, key_manager):
-        self.keys = key_manager
-        self.openai_key = os.getenv("OPENAI_API_KEY", "")
-        # Model list preserved exactly as configured
-        self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
-        self._init_client()
+    phone = str(intel.get("phone") or "").strip()
+    pd = digits(phone)
+    if pd.startswith("91") and len(pd) == 12:
+        pd = pd[2:]
+    if not pd or pd not in low_digits:
+        phone = ""
+    else:
+        phone = pd if len(pd) == 10 else phone
+    if not phone:
+        mobiles = extract_phones(osint_text, 1)
+        phone = mobiles[0] if mobiles else ""
 
-    def _init_client(self):
-        self.client = genai.Client(api_key=self.keys.get_current())
+    linkedin = str(intel.get("linkedin_url") or "").strip()
+    if linkedin and ("linkedin.com" not in linkedin.lower() or linkedin.lower() not in low):
+        linkedin = ""
 
-    def rotate_key(self):
-        new_key = self.keys.rotate("Gemini")
-        self.client = genai.Client(api_key=new_key)
-        return new_key
+    return {"email": email, "phone": phone, "website": website, "linkedin_url": linkedin}
 
-    def analyze_company(self, company_name, reference_url, osint_text):
-        prompt = f"""
-        You are an elite Executive Headhunter and Senior Corporate B2B Account Strategist.
-        TARGET ORGANIZATION: {company_name}
-        REFERENCE URL: {reference_url}
-        OSINT RESEARCH DATA:
-        {osint_text[:10000]}
 
-        YOUR GOAL:
-        1. Identify the single highest-value Decision Maker (Director, CEO, Managing Director, VP Procurement, Chief Project Engineer, Head of Engineering, or BIM Lead).
-        2. Synthesize an executive-ready Deep Intel Dossier tailored to pitching high-value commercial solutions.
+def analyze(llm, company, ref_url, osint_text):
+    prompt = f"""You are an elite executive headhunter and senior B2B account strategist.
+TARGET ORGANIZATION: {company}
+REFERENCE URL: {ref_url}
+TODAY: {datetime.now().strftime('%Y-%m-%d')}
 
-        OUTPUT STRICT JSON WITH SCHEMA:
-        {{
-          "dm_name": (string) Decision Maker Full Name (or "Procurement Head" if specific name unverified),
-          "dm_title": (string) Official Designation / Title,
-          "email": (string) Official email or verified pattern (e.g. info@ / contact@ / name@),
-          "phone": (string) 10-digit mobile or corporate office landline,
-          "website": (string) Official company website,
-          "linkedin_url": (string) Personal LinkedIn profile or corporate page,
-          "dossier": (string) Markdown formatted brief with sections:
-             ### 🏢 Executive Profile & Operations
-             ### ⚙️ Current Capex, Project Signals & Expansion
-             ### 🎯 Key Buying Triggers & Operational Bottlenecks
-             ### 🚀 Ready-to-Send Cold Outreach Pitch
-        }}
-        """
-        for model_name in self.gemini_models:
-            for attempt in range(len(self.keys.keys) or 1):
-                try:
-                    response = self.client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config={'response_mime_type': 'application/json'}
-                    )
-                    if response.text:
-                        return json.loads(response.text.strip().replace("```json", "").replace("```", "").strip())
-                except Exception as e:
-                    err = str(e).lower()
-                    if "429" in err or "quota" in err:
-                        self.rotate_key()
-                        time.sleep(1)
-                    else:
-                        break
+OSINT RESEARCH DATA (the ONLY source of truth):
+{osint_text[:11000]}
 
-        if self.openai_key:
-            try:
-                res = OpenAI(api_key=self.openai_key).chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
-                )
-                return json.loads(res.choices[0].message.content.strip())
-            except Exception:
-                pass
-        return None
+TASKS
+1. Identify the single highest-value decision maker (Director, CEO, MD, VP Procurement, Chief Project Engineer,
+   Head of Engineering, BIM lead...). If no person is named in the data use "Procurement Head" as dm_name.
+2. Write an executive-ready dossier for pitching commercial solutions.
 
-def process_enrichment():
-    logger.info("=== Starting Enrichment Worker ===")
+STRICT RULES
+- NEVER invent names, emails, phone numbers or URLs. Use ONLY values that literally appear in the research data;
+  otherwise return an empty string.
+- Return ONLY JSON with this schema:
+{{
+  "dm_name": "string",
+  "dm_title": "string",
+  "email": "string (empty if not in data)",
+  "phone": "string (empty if not in data)",
+  "website": "official company website (empty if unknown)",
+  "linkedin_url": "profile/company page URL (empty if not in data)",
+  "dossier": "Markdown string with exactly these sections:\\n### 🏢 Executive Profile & Operations\\n### ⚙️ Current Capex, Project Signals & Expansion\\n### 🎯 Key Buying Triggers & Operational Bottlenecks\\n### 🚀 Ready-to-Send Cold Outreach Pitch"
+}}"""
+    return llm.generate_json(prompt, validator=lambda d: isinstance(d, dict) and ("dossier" in d or "dm_name" in d))
+
+
+def main():
+    started = time.time()
+    tg = Telegram()
+    log.info("=== Enrichment worker starting ===")
     try:
-        res = requests.get(f"{WEBHOOK_URL}?secret={WEBHOOK_SECRET}&action=get_pending_leads", timeout=20)
-        data = res.json()
-    except Exception as e:
-        logger.error(f"❌ Failed to fetch pending leads: {e}")
-        return
+        sheet = SheetAPI()
+        data = sheet.get("get_pending_leads", limit=env_int("MAX_ENRICH_PER_RUN", 15))
+    except SheetError as e:
+        log.error(f"Cannot fetch pending leads: {e}")
+        tg.send(f"🚨 <b>Enrichment halted</b>\n<code>{tg_escape(e)}</code>")
+        return 1
 
-    leads = data.get("leads", [])
+    leads = data.get("leads") or []
     if not leads:
-        logger.info("✅ No pending leads in Leads sheet requiring enrichment.")
-        return
+        log.info("No leads waiting for enrichment.")
+        return 0
 
-    logger.info(f"📋 Found {len(leads)} leads awaiting enrichment.")
-    researcher = OSINTResearcher(serper_keys)
-    ai = EnrichmentAI(gemini_keys)
+    llm = LLMRouter()
+    if not llm.available():
+        tg.send("🚨 <b>Enrichment halted</b>: no LLM API key configured.")
+        return 1
+    search = SearchEngine()
+    max_runtime = env_int("MAX_RUNTIME_MIN", 25) * 60
+    done = failed = 0
+    log.info(f"{len(leads)} leads awaiting enrichment")
 
     for lead in leads:
-        lead_id = lead.get("lead_id", "").strip()
-        org = lead.get("organization", "").strip()
-        ref_url = lead.get("url", "").strip()
+        if time.time() - started > max_runtime:
+            log.warning("Time budget reached - remaining leads will be picked up next run.")
+            break
+        lead_id = str(lead.get("lead_id") or "").strip()
+        org = str(lead.get("organization") or "").strip()
+        ref_url = str(lead.get("url") or "").strip()
+        if not lead_id or not org:
+            continue
+        log.info(f"Enriching {org} ({lead_id})")
 
-        if not lead_id or not org: continue
-        logger.info(f"\n🔍 Enriching: {org} (ID: {lead_id})...")
-
-        q1 = f'"{org}" (Director OR CEO OR MD OR "Procurement" OR "Head of Projects" OR "Chief Engineer") linkedin'
-        q2 = f'"{org}" corporate office contact email phone website'
-        
         snippets = []
-        for q in [q1, q2]:
-            for item in researcher.search(q):
+        for q in (f'{org} Director OR CEO OR "Managing Director" OR Procurement OR "Head of Projects" linkedin',
+                  f"{org} corporate office contact email phone website"):
+            for item in search.search(q, country="India", pages=1)[:6]:
                 snippets.append(f"{item.get('title', '')}\n{item.get('snippet', '')}\nLink: {item.get('link', '')}")
-
-        scraped_text = ""
-        if ref_url:
-            scraped_text = researcher.fetch_url(ref_url)
-        osint_payload = "\n\n".join(snippets) + "\n\n" + scraped_text
-
-        intel = ai.analyze_company(org, ref_url, osint_payload)
-        if not intel:
-            logger.warning(f"⚠️ Failed to synthesize intel for {org}")
+        scraped = fetch_page(ref_url) if ref_url else ""
+        osint = "\n\n".join(snippets) + ("\n\nREFERENCE PAGE TEXT:\n" + scraped if scraped else "")
+        if len(osint.strip()) < 40:
+            log.warning(f"No research data found for {org}; skipping this run.")
+            failed += 1
             continue
 
-        dm_name = intel.get("dm_name", "N/A")
-        dm_title = intel.get("dm_title", "N/A")
-        email = intel.get("email", "")
-        phone = intel.get("phone", "")
-        website = intel.get("website", "")
-        linkedin = intel.get("linkedin_url", "")
-        dossier = intel.get("dossier", "")
+        intel = analyze(llm, org, ref_url, osint)
+        if not intel:
+            log.warning(f"AI could not synthesise intel for {org} - will retry next run.")
+            failed += 1
+            continue
 
-        logger.info(f"💾 Saving dossier for {org} to Google Sheets...")
-        update_payload = {
-            "secret": WEBHOOK_SECRET,
-            "action": "update_lead_dossier",
-            "lead_id": lead_id,
-            "dossier": dossier,
-            "contacts": {
-                "dm_name": dm_name,
-                "email": email,
-                "phone": phone,
-                "website": website,
-                "linkedin_url": linkedin
-            }
-        }
+        c = sanitize_contacts(intel, osint)
+        dm_name = str(intel.get("dm_name") or "Procurement Head").strip() or "Procurement Head"
+        dm_title = str(intel.get("dm_title") or "").strip()
+        dossier = intel.get("dossier") or ""
+        if not isinstance(dossier, str):
+            dossier = str(dossier)
+        if not dossier.strip():
+            dossier = f"### 🏢 Executive Profile & Operations\n{org}\n\n_No further intelligence could be verified._"
+
         try:
-            r = requests.post(WEBHOOK_URL, json=update_payload, timeout=20).json()
-            logger.info(f"   Update result: {r.get('message', 'Done')}")
-        except Exception as e:
-            logger.error(f"   Failed to write dossier: {e}")
-
-        contact_payload = {
-            "secret": WEBHOOK_SECRET,
-            "action": "upsert_contact",
-            "contact_data": {
-                "company_name": org,
-                "linkedin_url": linkedin,
-                "row_array": [lead_id, dm_name, org, dm_title, phone, email, linkedin, ""]
-            }
-        }
+            res = sheet.post("update_lead_dossier", lead_id=lead_id, dossier=dossier,
+                             contacts={"dm_name": dm_name, "dm_title": dm_title, "email": c["email"],
+                                       "phone": c["phone"], "website": c["website"], "linkedin_url": c["linkedin_url"]})
+            log.info(f"   saved: {res.get('message', 'ok')}")
+        except SheetError as e:
+            log.error(f"   could not save dossier for {org}: {e}")
+            failed += 1
+            continue
         try:
-            requests.post(WEBHOOK_URL, json=contact_payload, timeout=15)
-        except Exception:
-            pass
+            sheet.post("upsert_contact", contact_data={
+                "company_name": org, "linkedin_url": c["linkedin_url"],
+                "row_array": [lead_id, dm_name, org, dm_title, c["phone"], c["email"], c["linkedin_url"], ""]})
+        except SheetError as e:
+            log.warning(f"   contact upsert failed: {e}")
+        done += 1
 
-        clean_phone = re.sub(r'[^0-9]', '', str(phone))
-        if len(clean_phone) == 10: clean_phone = "91" + clean_phone
-        
-        keyboard = None
-        if len(clean_phone) >= 10:
-            wa_text = requests.utils.quote(f"Hi {dm_name if dm_name != 'N/A' else 'Team'}, I saw your active project update regarding {org}. Would love to share details.")
-            keyboard = json.dumps({"inline_keyboard": [[{"text": "💬 WhatsApp DM", "url": f"https://wa.me/{clean_phone}?text={wa_text}"}]]})
+        buttons = []
+        mobile = extract_phones(c["phone"], 1)
+        if mobile:
+            wa = quote(f"Hi {dm_name if dm_name != 'Procurement Head' else 'Team'}, I came across your recent "
+                       f"project activity at {org}. Would love to share how we can help.")
+            buttons.append([{"text": "💬 WhatsApp", "url": f"https://wa.me/91{mobile[0]}?text={wa}"}])
+        buttons.append([{"text": "✅ Contacted", "callback_data": f"contacted|{lead_id}"},
+                        {"text": "🔁 Re-enrich", "callback_data": f"reenrich|{lead_id}"},
+                        {"text": "🗑 Discard", "callback_data": f"discard|{lead_id}"}])
+        msg = [f"🎯 <b>LEAD ENRICHED: {tg_escape(org)}</b>", "",
+               f"👤 <b>Contact:</b> {tg_escape(dm_name)}" + (f" (<i>{tg_escape(dm_title)}</i>)" if dm_title else "")]
+        if c["phone"]:
+            msg.append(f"📞 <b>Phone:</b> {tg_escape(c['phone'])}")
+        if c["email"]:
+            msg.append(f"✉️ <b>Email:</b> {tg_escape(c['email'])}")
+        if c["website"]:
+            msg.append(f"🌐 <b>Website:</b> {tg_escape(c['website'])}")
+        if c["linkedin_url"]:
+            msg.append(f"🔗 <b>LinkedIn:</b> {tg_escape(c['linkedin_url'])}")
+        msg.append("")
+        msg.append(f"📋 Dossier saved to CRM. Send <code>/lead {tg_escape(org)}</code> to read it here.")
+        tg.send("\n".join(msg), reply_markup={"inline_keyboard": buttons})
+        time.sleep(1.5)
 
-        tg_msg = f"🎯 <b>LEAD ENRICHED: {org}</b>\n\n"
-        tg_msg += f"👤 <b>Contact:</b> {dm_name} (<i>{dm_title}</i>)\n"
-        if phone: tg_msg += f"📞 <b>Phone:</b> {phone}\n"
-        if email: tg_msg += f"✉️ <b>Email:</b> {email}\n"
-        if website: tg_msg += f"🌐 <b>Website:</b> <a href='{website}'>{website}</a>\n"
-        tg_msg += f"\n📋 <i>Deep Intel Dossier compiled and saved to CRM.</i>"
-        
-        telegram.send(tg_msg, reply_markup=keyboard)
-        time.sleep(2)
+    duration = f"{int(time.time() - started)}s"
+    try:
+        sheet.post("report_run", job="enrich", stats={"enriched": done, "failed": failed, "duration": duration,
+                                                      "llm_calls": llm.calls, "search_calls": search.calls})
+    except SheetError:
+        pass
+    tg.send(f"🏁 <b>Enrichment complete</b>\n• Enriched: <code>{done}</code>\n• Failed / retry next run: <code>{failed}</code>"
+            f"\n• Duration: <code>{duration}</code>")
+    log.info(f"Enrichment done: {done} ok, {failed} failed")
+    return 0
 
-    logger.info("🏁 Enrichment batch completed successfully.")
 
 if __name__ == "__main__":
-    process_enrichment()
+    sys.exit(main())
