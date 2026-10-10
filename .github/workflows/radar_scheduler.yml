@@ -78,11 +78,12 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python enrichment_worker.py
 
-      # REBASE FIX: Guarantees successful cache saves even when triggers overlap
-      - name: Save Cache to Repository
+      - name: Commit and Push Updated Cache
         if: always()
         run: |
           git config --global user.name "Radar Scout Bot"
-          git config --global user.email "bot@radarscout.local"
+          git config --global user.email "bot@radar.local"
           git add seen_links.txt
-          git diff --quiet && git diff --staged --quiet || (git pull --rebase origin main && git commit -m "Auto-update scraped links cache [skip ci]" && git push)
+          git commit -m "Auto-update seen links cache [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin main
+          git push origin main
