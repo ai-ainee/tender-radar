@@ -126,7 +126,7 @@ class DynamicB2BEvaluator:
         self.keys = key_manager
         self.openai_key = os.getenv("OPENAI_API_KEY", "")
         self.gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-1.5-flash"]
-        self.dead_models = set()
+        self.dead_models = set()  # Permanently blacklists models that return 404 or persistent quota 429
         self._init_client()
 
     def _init_client(self):
@@ -138,11 +138,12 @@ class DynamicB2BEvaluator:
         return new_key
 
     def auto_discover_best_model(self):
-        logger.info("🔍 Querying Google API to auto-discover active models...")
+        logger.info("🔍 Querying Google API to auto-discover active models with available quota...")
         try:
             available_flash_models = []
             for m in self.client.models.list():
                 clean_name = m.name.replace("models/", "")
+                # Find text-generation flash models not yet blacklisted
                 if "flash" in clean_name.lower() and clean_name not in self.dead_models:
                     available_flash_models.append(clean_name)
 
@@ -153,10 +154,15 @@ class DynamicB2BEvaluator:
             logger.warning(f"⚠️ Live model discovery failed: {e}")
         return []
 
-    def generate_json(self, prompt, max_retries=10):
+    def generate_json(self, prompt, max_retries=2):
+        """
+        Fast failover: Retries max 2 times with a 20s cooldown.
+        If quota is exhausted, hands off immediately to OpenAI or zero-drop safeguard.
+        """
         for attempt in range(max_retries):
             active_models = [m for m in self.gemini_models if m not in self.dead_models]
 
+            # If all preset models are dead or quota-exhausted, auto-discover live models
             if not active_models:
                 discovered = self.auto_discover_best_model()
                 if discovered:
@@ -165,9 +171,10 @@ class DynamicB2BEvaluator:
                             self.gemini_models.append(d)
                     active_models = [m for m in self.gemini_models if m not in self.dead_models]
                 else:
-                    logger.error("❌ No active Gemini models available for this API key.")
+                    logger.warning("❌ No active Gemini models available for these keys.")
 
-            for model_name in active_models:
+            for model_name in list(active_models):
+                model_failed_all_keys = True
                 for key_attempt in range(len(self.keys.keys) or 1):
                     try:
                         response = self.client.models.generate_content(
@@ -177,29 +184,36 @@ class DynamicB2BEvaluator:
                         )
                         if response.text:
                             parsed = clean_llm_json(response.text)
-                            if parsed: return parsed
+                            if parsed: 
+                                return parsed
                     except Exception as e:
                         error_str = str(e).lower()
                         if "429" in error_str or "quota" in error_str:
-                            logger.warning(f"⏳ Gemini Rate Limit on ({model_name}). Rotating key with cool-off...")
+                            logger.warning(f"⏳ Gemini Quota/Rate Limit on ({model_name}). Rotating key...")
                             self.rotate_key()
                             if self.keys.index == 0:
-                                logger.info("⏳ All keys exhausted. Cooling down for 25s to reset RPM window...")
-                                time.sleep(25)
+                                logger.info("⏳ All keys exhausted. Cooling down for 20s to reset window...")
+                                time.sleep(20)
                             else:
-                                time.sleep(4)
+                                time.sleep(3)
                             continue
                         elif "503" in error_str or "unavailable" in error_str:
                             logger.warning(f"⚠️ Gemini 503 ({model_name}). Skipping model...")
                             break
                         elif "404" in error_str or "not_found" in error_str:
-                            logger.warning(f"⚠️ Gemini 404: '{model_name}' disabled/not found. Blacklisting permanently.")
+                            logger.warning(f"⚠️ Gemini 404: '{model_name}' disabled. Blacklisting permanently.")
                             self.dead_models.add(model_name)
                             break
                         else:
                             logger.warning(f"⚠️ Gemini Error ({model_name}): {e}")
                             time.sleep(2)
 
+                # If this model failed across all available keys on attempt 2, blacklist it for the run
+                if attempt >= 1:
+                    logger.warning(f"⚠️ Model '{model_name}' exhausted quota across all keys. Blacklisting for session.")
+                    self.dead_models.add(model_name)
+
+            # Fallback to OpenAI if Gemini pool is exhausted
             if self.openai_key:
                 try:
                     response = OpenAI(api_key=self.openai_key).chat.completions.create(
@@ -213,8 +227,9 @@ class DynamicB2BEvaluator:
                 except OpenAIError as e:
                     logger.error(f"OpenAI Error: {e}")
 
-            logger.warning(f"⏳ Cycle {attempt + 1}/{max_retries} rate-limited. Pausing 25s before retrying...")
-            time.sleep(25)
+            if attempt < max_retries - 1:
+                logger.warning(f"⏳ Cycle {attempt + 1}/{max_retries} exhausted. Pausing 15s before final attempt...")
+                time.sleep(15)
 
         return None
 
@@ -280,7 +295,6 @@ BATCH:
         if isinstance(data, dict):
             return data.get("leads", data)
         return data if isinstance(data, list) else []
-
 class DynamicQueryGenerator:
     def __init__(self, target, industry, country, states, evaluator):
         self.target = target.strip()
