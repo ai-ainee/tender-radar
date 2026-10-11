@@ -178,13 +178,20 @@ class QueryGenerator:
             "TRACK_3_BUSINESS_EXPANSION": [f"{sp} project expansion capex", f"{sp} new facility investment"],
             "TRACK_4_COMMERCIAL_HIRING": [f"{sp} company hiring team", f"{sp} careers specialist lead"],
         }
-        prompt = f"""You are a B2B sales intelligence strategist.
-MANDATORY CAMPAIGN DIRECTIVE: "{special_prompt}"
-Generate web-search queries (2 per track, max 10 words each, plain text, no quotes/operators):
-TRACK_1_PUBLIC_TENDERS: active public tenders / bids / RFPs matching the directive.
-TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, supply contracts.
-TRACK_3_BUSINESS_EXPANSION: capex, new plants, expansion signals.
-TRACK_4_COMMERCIAL_HIRING: hiring/team-scaling signals.
+        prompt = f"""You are an expert SEO and B2B search strategist.
+Generate natural, high-yield Google search queries to find buyers, tenders, or expansions related to '{t}'.
+{industry_line}
+{f"Geography: {self.country}" if self.country else ""}
+{f"Region: {state}" if state else ""}
+
+CRITICAL RULES FOR SEARCH ENGINES:
+- Keep queries SHORT and BROAD (maximum 4 to 7 words).
+- Do NOT keyword-stuff. Do not force the product, location, and industry into the exact same query if it makes it too long.
+- ABSTRACT THE PRODUCT: If '{t}' is a highly specific tool, brand, or software, generate queries for the *broader projects or services* that require it (e.g., instead of searching for the tool itself, search for "major [industry] project tenders {state}").
+TRACK_1_PUBLIC_TENDERS: government tenders, bids, or public infrastructure projects.
+TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, or supply contracts.
+TRACK_3_BUSINESS_EXPANSION: capex, new facilities, or major commercial project launches.
+TRACK_4_COMMERCIAL_HIRING: companies hiring specialists/heads/teams.
 Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         return self._merge(self._ai_tracks(prompt), fb)
 
@@ -260,13 +267,14 @@ expansion matching: {special if special else target}.
 
 EVALUATION RULES (CRITICAL):
 1. VALID B2B PROSPECTS (is_valid=true): Active tenders, expanding companies, RFQs, corporate hiring matching the target/synonyms. 
-   -> AWARDED TENDERS / CONTRACTS: These are HIGHLY VALID. If a tender has been awarded recently, the *winning contractor* is now an active buyer. You MUST extract the winning contractor as the "organization" and set entity_role="PROJECT_BUYER".
-2. ROUTE TO REVIEW (confidence="LOW"): If a lead is a genuine B2B buyer but matches ANY of these conditions, you MUST set is_valid=true and confidence="LOW":
-   - It requires a related service/category but misses the exact product keyword.
+   -> AWARDED TENDERS / CONTRACTS: These are HIGHLY VALID. Extract the *winning contractor* as the organization and set entity_role="PROJECT_BUYER".
+   -> ENGINEERING & SERVICE PROVIDERS: Companies advertising drafting, BIM, or engineering services are HIGHLY VALID because they must purchase software licenses to do their work! Set their entity_role="SERVICE_USER" and is_valid=true.
+2. ROUTE TO REVIEW (confidence="LOW"): If a lead is a genuine B2B buyer/user but misses the exact product keyword, set is_valid=true and confidence="LOW".
 3. EXCLUDE (is_valid=false): 
-   - Schools/students, freelancers, blogs, generic global articles, or vendors merely advertising themselves (use entity_role SELLER for those).
+   - Schools/students, freelancers, blogs, generic global articles.
+   - IT RESELLERS: Only use entity_role="SELLER" for IT distributors/resellers who are selling the actual software licenses (e.g., "Authorized Autodesk Reseller"). 
    - Closed/expired tenders where NO winning contractor is announced.
-   - STALE LEADS (STRICT 1-MONTH LIMIT): Any awarded contract, closed tender, or project milestone that occurred MORE THAN 30 DAYS before TODAY'S DATE. You must absolutely reject old closed tenders.
+   - STALE LEADS (STRICT 1-MONTH LIMIT): Any awarded contract or milestone that occurred MORE THAN 30 DAYS before TODAY'S DATE.
 
 Return ONLY JSON: {{"leads": [ one object per ITEM ]}} where each object has:
 "item_index": integer matching the ITEM number,
@@ -363,20 +371,23 @@ class Router:
 
         if doubtful:
             is_valid, confidence = True, "LOW"
-        if not is_valid:
-            sheet_name, outcome = SHEET_TRASH, "TRASH"
-            row = [capture, company, doc["url"], why, ""]
-        elif role == "SELLER":
+            
+        # 1. FIRST, check if it's a Partner/Seller
+        if role == "SELLER":
             sheet_name, outcome = SHEET_PARTNERS, "PARTNER"
             row = [lead_id, capture, company, str(ai.get("city") or ""), str(ai.get("state") or ""), solution,
                    doc["url"], "", "", "", ""]
+        # 2. THEN, if it's invalid (and not a seller), throw it in the trash
+        elif not is_valid:
+            sheet_name, outcome = SHEET_TRASH, "TRASH"
+            row = [capture, company, doc["url"], why, ""]
+        # 3. OTHERWISE, it's a buyer -> Inbox or Review
         else:
             sheet_name = SHEET_REVIEW if confidence == "LOW" else SHEET_INBOX
             outcome = "REVIEW" if confidence == "LOW" else "INBOX"
             row = [capture, str(ai.get("upcoming_events") or "Unknown"), role, industry,
                    str(ai.get("state") or "N/A"), str(ai.get("city") or "N/A"), company, solution, why,
                    doc["url"], str(ai.get("product_usage") or "Unknown"), "", lead_id]
-
         log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name}")
         try:
             res = self.sheet.post("insert_lead", target_sheet=sheet_name, company_name=company, signal_brief=why,
@@ -516,7 +527,11 @@ def main():
                 for i in range(0, len(docs), 4):
                     batch = docs[i:i + 4]
                     check_budget()
-                    verdicts = evaluator.evaluate(batch, target, industry, country, states, geo_rule, ban_rule, special)
+                    
+                    # THE FIX: Tell the AI about your entire product portfolio simultaneously
+                    portfolio = " OR ".join(cfg["targets"]) if cfg["targets"] else target
+                    
+                    verdicts = evaluator.evaluate(batch, portfolio, industry, country, states, geo_rule, ban_rule, special)
                     if verdicts is None:
                         ai_failures += 1
                         log.warning("AI evaluation failed for a batch - links left un-cached so they are retried next run.")
