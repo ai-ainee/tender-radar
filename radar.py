@@ -134,19 +134,57 @@ class QueryGenerator:
     def build_special_tracks(self, special_prompt):
         log.info(f"Generating search queries for special directive: '{special_prompt}'")
         sp = special_prompt
+        # Forcibly inject the country into the special fallback tracks
+        loc_s = f" {self.country}" if self.country else ""
+        
         fb = {
-            "TRACK_1_PUBLIC_TENDERS": [f"{sp} tender RFP {self.year}", f"{sp} procurement bid notice"],
-            "TRACK_2_CORPORATE_PROCUREMENT": [f"{sp} vendor empanelment RFQ", f"{sp} supplier contract requirement"],
-            "TRACK_3_BUSINESS_EXPANSION": [f"{sp} project expansion capex", f"{sp} new facility investment"],
-            "TRACK_4_COMMERCIAL_HIRING": [f"{sp} company hiring team", f"{sp} careers specialist lead"],
+            "TRACK_1_PUBLIC_TENDERS": [f"{sp} tender RFP {self.year}{loc_s}", f"{sp} procurement bid notice{loc_s}"],
+            "TRACK_2_CORPORATE_PROCUREMENT": [f"{sp} vendor empanelment RFQ{loc_s}", f"{sp} supplier contract requirement{loc_s}"],
+            "TRACK_3_BUSINESS_EXPANSION": [f"{sp} project expansion capex{loc_s}", f"{sp} new facility investment{loc_s}"],
+            "TRACK_4_COMMERCIAL_HIRING": [f"{sp} company hiring team{loc_s}", f"{sp} careers specialist lead{loc_s}"],
         }
         prompt = f"""You are a B2B sales intelligence strategist.
 MANDATORY CAMPAIGN DIRECTIVE: "{special_prompt}"
+MANDATORY LOCATION: "{self.country}" (You MUST include this location in every query generated)
+
 Generate web-search queries (2 per track, max 10 words each, plain text, no quotes/operators):
-TRACK_1_PUBLIC_TENDERS: active public tenders / bids / RFPs matching the directive.
-TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, supply contracts.
-TRACK_3_BUSINESS_EXPANSION: capex, new plants, expansion signals.
-TRACK_4_COMMERCIAL_HIRING: hiring/team-scaling signals.
+TRACK_1_PUBLIC_TENDERS: active public tenders / bids / RFPs matching the directive in {self.country}.
+TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, supply contracts in {self.country}.
+TRACK_3_BUSINESS_EXPANSION: capex, new plants, expansion signals in {self.country}.
+TRACK_4_COMMERCIAL_HIRING: hiring/team-scaling signals in {self.country}.
+Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
+        return self._merge(self._ai_tracks(prompt), fb)
+
+    def build_tracks(self):
+        state = random.choice(self.states) if self.states else ""
+        t, ind, yr = self.target, self.industry, self.year
+        
+        # FORCIBLY COMBINE STATE AND COUNTRY
+        loc_parts = [p for p in (state, self.country) if p]
+        loc = " ".join(loc_parts)
+        loc_s = f" {loc}" if loc else ""
+        ind_s = f"{ind} " if ind else ""
+        
+        fb = {
+            "TRACK_1_PUBLIC_TENDERS": [f"{t} tender RFP {yr}{loc_s}", f"{t} procurement bid notice{loc_s}"],
+            "TRACK_2_CORPORATE_PROCUREMENT": [f"{ind_s}{t} vendor empanelment supplier{loc_s}",
+                                              f"{t} corporate RFQ requirement {yr}{loc_s}"],
+            "TRACK_3_BUSINESS_EXPANSION": [f"{ind_s}{t} project expansion capex {yr}{loc_s}",
+                                           f"{t} new plant facility construction{loc_s}"],
+            "TRACK_4_COMMERCIAL_HIRING": [f"{t} hiring lead specialist{loc_s}", f"{ind_s}{t} team expansion careers {yr}{loc_s}"],
+        }
+        industry_line = f"INDUSTRY FOCUS: {ind}" if ind else "INDUSTRY: all commercial/industrial sectors"
+        
+        prompt = f"""You are a B2B sales intelligence strategist.
+Generate diverse web-search queries to find enterprise buyers, tenders and organisations purchasing or expanding in '{t}'.
+{industry_line}
+MANDATORY LOCATION: "{loc}" (You MUST explicitly write this exact location inside every single search query).
+
+Rules: 2 queries per track, max 12 words each, plain text only (no site:, quotes, minus).
+TRACK_1_PUBLIC_TENDERS: government tenders, bids, RFPs for '{t}' in {loc}.
+TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, supply contracts for '{t}' in {loc}.
+TRACK_3_BUSINESS_EXPANSION: capex, new plants, major project launches needing '{t}' in {loc}.
+TRACK_4_COMMERCIAL_HIRING: companies hiring specialists/heads/teams for '{t}' in {loc}.
 Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         return self._merge(self._ai_tracks(prompt), fb)
 
@@ -208,6 +246,7 @@ class Evaluator:
                      if special else "")
         ind_line = (f"INDUSTRY: {industry}" if industry and industry != "ALL_SECTORS"
                     else "INDUSTRY: any commercial / industrial sector (infer it)")
+                    
         prompt = f"""You are an elite B2B sales intelligence analyst judging genuine commercial buying intent.
 TODAY'S DATE: {datetime.now().strftime('%Y-%m-%d')}
 TARGET PRODUCT / SOLUTION: {target}
@@ -217,23 +256,27 @@ TARGET PRODUCT / SOLUTION: {target}
 {geo_rule}
 {ban_rule}
 
-OBJECTIVE: find real, identifiable companies / public bodies with an ACTIVE requirement, project, tender or
-expansion matching: {special if special else target}.
+OBJECTIVE: Find real companies or public bodies with an ACTIVE requirement, project, tender, or expansion matching '{special if special else target}' OR closely related services/parent categories.
 
-VALID: government/PSU/municipal tenders, bids, RFPs; companies launching projects, expanding, procuring,
-issuing RFQs / vendor empanelment, or hiring dedicated specialists for this function.
-EXCLUDE (is_valid=false): schools/training/tutorials, tenders whose deadline is before today's date,
-freelancers, blogs, generic articles without an identifiable buyer, and vendors merely advertising themselves
-(use entity_role SELLER for those).
+EVALUATION RULES (CRITICAL):
+1. VALID B2B PROSPECTS (is_valid=true): Active tenders, expanding companies, RFQs, corporate hiring matching the target/synonyms. 
+   -> AWARDED TENDERS / CONTRACTS: These are HIGHLY VALID. If a tender has been awarded recently, the *winning contractor* is now an active buyer. You MUST extract the winning contractor as the "organization" and set entity_role="PROJECT_BUYER".
+2. ROUTE TO REVIEW (confidence="LOW"): If a lead is a genuine B2B buyer but matches ANY of these conditions, you MUST set is_valid=true and confidence="LOW":
+   - It is located in {country} but outside the specific REGIONAL FOCUS states.
+   - It requires a related service/category but misses the exact product keyword.
+3. EXCLUDE (is_valid=false): 
+   - Schools/students, freelancers, blogs, generic global articles, or vendors merely advertising themselves.
+   - Closed/expired tenders where NO winning contractor is announced.
+   - STALE LEADS: Any awarded contract or project that was explicitly awarded, completed, or commissioned more than 1 year before TODAY'S DATE. Only accept RECENT or ONGOING projects.
 
 Return ONLY JSON: {{"leads": [ one object per ITEM ]}} where each object has:
 "item_index": integer matching the ITEM number,
 "is_valid": boolean,
 "confidence": "HIGH" | "MEDIUM" | "LOW",
 "entity_role": "BUYER" | "PROJECT_BUYER" | "SERVICE_USER" | "SELLER" | "IRRELEVANT",
-"organization": official name of the company / procuring body,
+"organization": official name of the company / procuring body (or the WINNING CONTRACTOR if awarded),
 "industry": string, "city": string, "state": string,
-"target_solution": the specific requirement,
+"target_solution": the specific requirement (or related service found),
 "why_engage_now": 2-3 sentences (signal, urgency, opportunity),
 "product_usage": "Confirmed User" | "Prospective Buyer" | "Competitor" | "Unknown" plus short evidence,
 "upcoming_events": tender closing date / milestone, or "Unknown",
