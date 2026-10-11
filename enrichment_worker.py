@@ -139,8 +139,15 @@ def main():
 
         intel = analyze(llm, org, ref_url, osint)
         if not intel:
-            log.warning(f"AI could not synthesise intel for {org} - will retry next run.")
+            log.warning(f"AI could not synthesise intel for {org} - marking as incomplete to prevent infinite retry loop.")
             failed += 1
+            # FORCE a blank/failure dossier back to the sheet so it stops trying tomorrow
+            try:
+                sheet.post("update_lead_dossier", lead_id=lead_id, 
+                           dossier=f"### 🏢 Executive Profile & Operations\n{org}\n\n_AI Enrichment failed to synthesise data, or no public digital footprint was found for this organization._",
+                           contacts={"dm_name": "Decision Maker", "dm_title": "", "email": "", "phone": "", "website": "", "linkedin_url": ""})
+            except Exception:
+                pass
             continue
 
         c = sanitize_contacts(intel, osint)
