@@ -410,6 +410,13 @@ def main():
         if time.time() - started > max_runtime: raise StopRun(f"time budget of {max_runtime // 60} min reached")
         if stats["scanned"] >= max_links: raise StopRun(f"link budget of {max_links} reached")
 
+        # Build a "Pre-AI Bouncer" keyword pool to save API quotas
+    core_kw = set(["tender", "rfp", "bid", "procurement", "loa", "award", "contract", "project", "expansion", "hiring", "requirement"])
+    for group in (cfg["targets"], cfg["directives"], cfg["industries"], [special]):
+        for item in group:
+            for word in str(item).lower().replace("-", " ").split():
+                if len(word) >= 3: 
+                    core_kw.add(word)
     try:
         for target, industry, gen in campaigns:
             check_budget()
@@ -438,6 +445,17 @@ def main():
                             continue
                         content = fetch_page(raw, protected_domains=cfg["protected"])
                         if content and len(content) > 120:
+                            
+                            # --- NEW: PRE-AI BOUNCER ---
+                            # If the page doesn't contain ANY of our core keywords, drop it instantly without wasting AI quota.
+                            low_content = content.lower()
+                            if not any(kw in low_content for kw in core_kw):
+                                log.info(f"   Pre-AI Drop (No relevant keywords found): {raw}")
+                                mark_seen(seen, raw)
+                                stats["trash"] += 1
+                                continue
+                            # ---------------------------
+
                             fp = fingerprint(content)
                             if fp and (fp in fps or fp in pending_fp):
                                 log.info(f"   same content already processed, skipping: {raw}")
