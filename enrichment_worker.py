@@ -2,7 +2,7 @@
 """
 enrichment_worker.py - finds the decision maker + contact details for new leads, writes a dossier
 back to the Google Sheet and notifies you on Telegram (with action buttons).
-Contact details are only accepted when they actually appear in the research text (no hallucinated emails/phones).
+Contact details are only accepted when they actually appear in the research text.
 """
 import re
 import sys
@@ -13,10 +13,8 @@ from urllib.parse import quote
 from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram, env_int, extract_emails, extract_phones,
                     fetch_page, log, tg_escape)
 
-
 def digits(s):
     return re.sub(r"\D", "", str(s or ""))
-
 
 def sanitize_contacts(intel, osint_text):
     """Keep only contact data that is grounded in the research text."""
@@ -56,7 +54,6 @@ def sanitize_contacts(intel, osint_text):
 
     return {"email": email, "phone": phone, "website": website, "linkedin_url": linkedin}
 
-
 def analyze(llm, company, ref_url, osint_text):
     prompt = f"""You are an elite executive headhunter and senior B2B account strategist.
 TARGET ORGANIZATION: {company}
@@ -67,8 +64,7 @@ OSINT RESEARCH DATA (the ONLY source of truth):
 {osint_text[:11000]}
 
 TASKS
-1. Identify the single highest-value decision maker (Director, CEO, MD, VP Procurement, Chief Project Engineer,
-   Head of Engineering, BIM lead...). If no person is named in the data use "Procurement Head" as dm_name.
+1. Identify the single highest-value decision maker relevant to commercial purchasing or executive leadership (e.g., CEO, Director, Head of Department, Procurement Lead). If no person is named, use "Decision Maker" as dm_name.
 2. Write an executive-ready dossier for pitching commercial solutions.
 
 STRICT RULES
@@ -86,7 +82,6 @@ STRICT RULES
 }}"""
     return llm.generate_json(prompt, validator=lambda d: isinstance(d, dict) and ("dossier" in d or "dm_name" in d))
 
-
 def main():
     started = time.time()
     tg = Telegram()
@@ -103,8 +98,7 @@ def main():
     leads = [l for l in all_leads if str(l.get("lead_id") or "").strip() and str(l.get("organization") or "").strip()]
     skipped = len(all_leads) - len(leads)
     if skipped:
-        log.warning(f"{skipped} row(s) in the Leads tab have no Lead ID or Organization and cannot be enriched "
-                    f"(the Apps Script finds rows by Lead ID).")
+        log.warning(f"{skipped} row(s) in the Leads tab have no Lead ID or Organization and cannot be enriched.")
     leads = leads[:env_int("MAX_ENRICH_PER_RUN", 15)]
     if not leads:
         log.info("No leads waiting for enrichment.")
@@ -131,9 +125,10 @@ def main():
         log.info(f"Enriching {org} ({lead_id})")
 
         snippets = []
-        for q in (f'{org} Director OR CEO OR "Managing Director" OR Procurement OR "Head of Projects" linkedin',
+        # UPDATED: Removed hardcoded specific job titles, made it generic for any B2B search
+        for q in (f'{org} Director OR CEO OR "Managing Director" OR Procurement linkedin',
                   f"{org} corporate office contact email phone website"):
-            for item in search.search(q, country="India", pages=1)[:6]:
+            for item in search.search(q, country="", pages=1)[:6]:
                 snippets.append(f"{item.get('title', '')}\n{item.get('snippet', '')}\nLink: {item.get('link', '')}")
         scraped = fetch_page(ref_url) if ref_url else ""
         osint = "\n\n".join(snippets) + ("\n\nREFERENCE PAGE TEXT:\n" + scraped if scraped else "")
@@ -149,7 +144,8 @@ def main():
             continue
 
         c = sanitize_contacts(intel, osint)
-        dm_name = str(intel.get("dm_name") or "Procurement Head").strip() or "Procurement Head"
+        # UPDATED: Fallback is now generic "Decision Maker"
+        dm_name = str(intel.get("dm_name") or "Decision Maker").strip() or "Decision Maker"
         dm_title = str(intel.get("dm_title") or "").strip()
         dossier = intel.get("dossier") or ""
         if not isinstance(dossier, str):
@@ -177,10 +173,11 @@ def main():
         buttons = []
         mobile = extract_phones(c["phone"], 1)
         if mobile:
-            wa = quote(f"Hi {dm_name if dm_name != 'Procurement Head' else 'Team'}, I came across your recent "
-                       f"project activity at {org}. Would love to share how we can help.")
-            buttons.append([{"text": "💬 WhatsApp", "url": f"https://wa.me/91{mobile[0]}?text={wa}"}])
-        token = re.sub(r"[^a-zA-Z0-9\s]", "", org[:30]).strip()   # same rule as safeToken in the Apps Script
+            wa = quote(f"Hi {dm_name if dm_name != 'Decision Maker' else 'Team'}, I came across your recent "
+                       f"activity at {org}. Would love to share how we can help.")
+            # UPDATED: Removed the hardcoded '91' for India
+            buttons.append([{"text": "💬 WhatsApp", "url": f"https://wa.me/{mobile[0]}?text={wa}"}])
+        token = re.sub(r"[^a-zA-Z0-9\s]", "", org[:30]).strip()   
         buttons.append([{"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
                         {"text": "📦 Archive", "callback_data": f"archive::{token}"}])
         msg = [f"🎯 <b>LEAD ENRICHED: {tg_escape(org)}</b>", "",
@@ -203,7 +200,6 @@ def main():
             f"\n• Duration: <code>{duration}</code>")
     log.info(f"Enrichment done: {done} ok, {failed} failed")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
