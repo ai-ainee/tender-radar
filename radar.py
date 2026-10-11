@@ -28,36 +28,27 @@ SHEET_TRASH = "🗑 AI_Trash"
 TRACK_KEYS = ["TRACK_1_PUBLIC_TENDERS", "TRACK_2_CORPORATE_PROCUREMENT",
               "TRACK_3_BUSINESS_EXPANSION", "TRACK_4_COMMERCIAL_HIRING"]
 
-
 class StopRun(Exception):
-    """Raised to leave the campaign loops early (time budget, link budget, AI outage)."""
+    """Raised to leave the campaign loops early."""
 
-
-# --------------------------------------------------------------------------- cache
 def load_cache(sheet):
     seen = set()
-    if not os.path.exists(CACHE_FILE):
-        open(CACHE_FILE, "a", encoding="utf-8").close()
+    if not os.path.exists(CACHE_FILE): open(CACHE_FILE, "a", encoding="utf-8").close()
     try:
         with open(CACHE_FILE, "r", encoding="utf-8", errors="ignore") as f:
             seen.update(clean_url(line) for line in f if line.strip())
-    except Exception as e:
-        log.warning(f"Local cache unreadable: {e}")
+    except Exception as e: log.warning(f"Local cache unreadable: {e}")
     try:
-        data = sheet.post("get_all_urls")   # your script serves this action on POST only
+        data = sheet.post("get_all_urls")
         seen.update(clean_url(u) for u in data.get("urls", []) if isinstance(u, str) and u.strip())
         log.info(f"Cache synchronised: {len(seen)} known links")
-    except SheetError as e:
-        log.warning(f"Cloud cache unavailable, continuing with local cache only: {e}")
+    except SheetError as e: log.warning(f"Cloud cache unavailable, continuing with local cache only: {e}")
     seen.discard("")
     return seen
 
-
 def fingerprint(text):
-    """Content hash so the same tender / article mirrored on another URL is only processed once."""
     norm = re.sub(r"[^a-z0-9]", "", (text or "").lower())[:3000]
     return hashlib.sha1(norm.encode()).hexdigest()[:16] if len(norm) >= 200 else ""
-
 
 def load_fingerprints():
     fps = []
@@ -65,54 +56,40 @@ def load_fingerprints():
         if os.path.exists(FINGERPRINT_FILE):
             with open(FINGERPRINT_FILE, "r", encoding="utf-8", errors="ignore") as f:
                 fps = [x.strip() for x in f if x.strip()]
-        else:
-            open(FINGERPRINT_FILE, "a", encoding="utf-8").close()
-        if len(fps) > MAX_FINGERPRINTS:  # keep the file from growing forever
+        else: open(FINGERPRINT_FILE, "a", encoding="utf-8").close()
+        if len(fps) > MAX_FINGERPRINTS:
             fps = fps[-MAX_FINGERPRINTS:]
             with open(FINGERPRINT_FILE, "w", encoding="utf-8") as f:
                 f.write("\n".join(fps) + "\n")
-    except Exception as e:
-        log.warning(f"Fingerprint file unreadable: {e}")
+    except Exception as e: log.warning(f"Fingerprint file unreadable: {e}")
     return set(fps)
 
-
 def mark_fp(fps, fp):
-    if not fp or fp in fps:
-        return
+    if not fp or fp in fps: return
     fps.add(fp)
     try:
-        with open(FINGERPRINT_FILE, "a", encoding="utf-8") as f:
-            f.write(fp + "\n")
-    except Exception as e:
-        log.warning(f"Could not write fingerprint: {e}")
-
+        with open(FINGERPRINT_FILE, "a", encoding="utf-8") as f: f.write(fp + "\n")
+    except Exception as e: log.warning(f"Could not write fingerprint: {e}")
 
 def mark_seen(seen, url):
     c = clean_url(url)
-    if not c or c in seen:
-        return
+    if not c or c in seen: return
     seen.add(c)
     try:
-        with open(CACHE_FILE, "a", encoding="utf-8") as f:
-            f.write(c + "\n")
-    except Exception as e:
-        log.warning(f"Could not write cache: {e}")
+        with open(CACHE_FILE, "a", encoding="utf-8") as f: f.write(c + "\n")
+    except Exception as e: log.warning(f"Could not write cache: {e}")
 
-
-# --------------------------------------------------------------------------- settings
 def _as_list(value):
-    if value is None:
-        return []
-    if isinstance(value, str):
-        value = [x for x in value.replace("\n", ",").split(",")]
+    if value is None: return []
+    if isinstance(value, str): value = [x for x in value.replace("\n", ",").split(",")]
     return [str(x).strip() for x in value if str(x).strip()]
-
 
 def load_settings(sheet):
     s = sheet.get("get_settings")
     return {
         "special_prompt": str(s.get("special_prompt") or "").strip(),
         "targets": _as_list(s.get("target_products")),
+        "directives": _as_list(s.get("directives")),
         "industries": _as_list(s.get("industry_keywords")),
         "countries": _as_list(s.get("target_countries")),
         "states": _as_list(s.get("target_states")),
@@ -121,8 +98,6 @@ def load_settings(sheet):
         "protected": [k.lower() for k in _as_list(s.get("protected_domains"))],
     }
 
-
-# --------------------------------------------------------------------------- query generation
 class QueryGenerator:
     def __init__(self, target, industry, country, states, llm, use_ai=True):
         self.target = target.strip()
@@ -135,22 +110,18 @@ class QueryGenerator:
 
     @staticmethod
     def _normalize(data):
-        if not isinstance(data, dict):
-            return {}
+        if not isinstance(data, dict): return {}
         for parent in ("tracks", "queries", "data", "result"):
             if isinstance(data.get(parent), dict):
                 data = data[parent]
                 break
         out = {}
         for k, v in data.items():
-            if isinstance(v, str):
-                v = [v]
-            if not isinstance(v, list) or not v:
-                continue
+            if isinstance(v, str): v = [v]
+            if not isinstance(v, list) or not v: continue
             ck = "".join(ch for ch in str(k).upper() if ch.isalnum())
             queries = [str(x).strip() for x in v if str(x).strip()][:2]
-            if not queries:
-                continue
+            if not queries: continue
             for n, name in enumerate(TRACK_KEYS, start=1):
                 label = name.split("_", 2)[2].replace("_", "")
                 if f"TRACK{n}" in ck or label in ck:
@@ -159,8 +130,7 @@ class QueryGenerator:
         return out
 
     def _ai_tracks(self, prompt):
-        if not self.use_ai or not self.llm.available():
-            return {}
+        if not self.use_ai or not self.llm.available(): return {}
         data = self.llm.generate_json(prompt, validator=lambda d: isinstance(d, dict))
         return self._normalize(data)
 
@@ -200,7 +170,6 @@ Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         loc_s = f" {loc}" if loc else ""
         ind_s = f"{ind} " if ind else ""
         
-        # Super-short, 3-5 word fallback queries
         fb = {
             "TRACK_1_PUBLIC_TENDERS": [f"public tenders{loc_s}", f"infrastructure bids{loc_s}"],
             "TRACK_2_CORPORATE_PROCUREMENT": [f"vendor empanelment{loc_s}", f"corporate RFQ {yr}{loc_s}"],
@@ -227,15 +196,10 @@ TRACK_4_COMMERCIAL_HIRING: companies hiring specialists.
 Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         return self._merge(self._ai_tracks(prompt), fb)
 
-# --------------------------------------------------------------------------- AI evaluation
-
 def _valid_verdicts(d):
-    if isinstance(d, list):
-        return all(isinstance(x, dict) for x in d)
-    if isinstance(d, dict):
-        return isinstance(d.get("leads"), list) or "item_index" in d
+    if isinstance(d, list): return all(isinstance(x, dict) for x in d)
+    if isinstance(d, dict): return isinstance(d.get("leads"), list) or "item_index" in d
     return False
-
 
 class Evaluator:
     def __init__(self, llm):
@@ -244,40 +208,44 @@ class Evaluator:
     @staticmethod
     def _slice(text, max_chars=3000):
         text = (text or "").strip()
-        if len(text) <= max_chars:
-            return text
+        if len(text) <= max_chars: return text
         return f"{text[:2200]}\n\n[...truncated...]\n\n{text[-800:]}"
 
-    def evaluate(self, batch, target, industry, country, states, geo_rule, ban_rule, special=""):
-        """Returns list of verdict dicts, or None if every AI route failed."""
+    def evaluate(self, batch, targets_str, directives_str, industries_str, country, states, geo_rule, ban_rule, special=""):
         items = "\n".join(
             f"--- ITEM {i} ---\nTRACK: {x['track']}\nURL: {x['url']}\n<scraped_data>\n{self._slice(x.get('raw_text'))}\n</scraped_data>\n"
             for i, x in enumerate(batch))
-        directive = (f"MANDATORY SPECIAL FOCUS DIRECTIVE: {special}\nOnly qualify prospects matching this directive.\n"
-                     if special else "")
-        ind_line = (f"INDUSTRY: {industry}" if industry and industry != "ALL_SECTORS"
-                    else "INDUSTRY: any commercial / industrial sector (infer it)")
+        
+        special_block = (f"\n🔥 MASTER CAMPAIGN OVERRIDE (SPECIAL DIRECTIVE): {special}\n"
+                         "CRITICAL: Because a special directive is provided, it BYPASSES all standard product/industry rules. "
+                         "You MUST evaluate the prospect solely on whether it matches this specific directive.\n") if special else ""
+
         prompt = f"""You are an elite B2B sales intelligence analyst judging genuine commercial buying intent.
 TODAY'S DATE: {datetime.now().strftime('%Y-%m-%d')}
-TARGET PRODUCT / SOLUTION: {target}
-{directive}{ind_line}
+TARGET PORTFOLIO (Products/Solutions): {targets_str}
+TARGET DIRECTIVES (e.g. LOA/Award): {directives_str if directives_str else "None specified"}
+TARGET INDUSTRIES: {industries_str if industries_str else "All commercial/industrial sectors"}
 {f"TARGET GEOGRAPHY: {country}" if country else ""}
 {f"REGIONAL FOCUS: {', '.join(states)}" if states else ""}
 {geo_rule}
-{ban_rule}
+{ban_rule}{special_block}
 
-OBJECTIVE: find real, identifiable companies / public bodies with an ACTIVE requirement, project, tender or
-expansion matching: {special if special else target}.
+OBJECTIVE: Find real, identifiable companies / public bodies with an ACTIVE requirement, project, tender, or expansion.
 
-EVALUATION RULES (CRITICAL):
-1. VALID B2B PROSPECTS (is_valid=true): Active tenders, expanding companies, RFQs, corporate hiring matching the target/synonyms. 
-   -> AWARDED TENDERS / CONTRACTS: These are HIGHLY VALID. Extract the *winning contractor* as the organization and set entity_role="PROJECT_BUYER".
-   -> ENGINEERING & SERVICE PROVIDERS: Companies advertising drafting, BIM, or engineering services are HIGHLY VALID because they must purchase software licenses to do their work! Set their entity_role="SERVICE_USER" and is_valid=true.
-2. ROUTE TO REVIEW (confidence="LOW"): If a lead is a genuine B2B buyer/user but misses the exact product keyword, set is_valid=true and confidence="LOW".
-3. EXCLUDE (is_valid=false): 
+EVALUATION RULES (CRITICAL MATRIX):
+0. SPECIAL OVERRIDE: If a "MASTER CAMPAIGN OVERRIDE" is active above, ignore Rules 1 & 2. Judge the lead ENTIRELY on whether it matches that exact directive. (If exact match -> INBOX. If indirectly related -> REVIEW).
+1. INBOX (is_valid=true, confidence="HIGH"):
+   - The text explicitly mentions ANY product in the TARGET PORTFOLIO.
+   - AND it aligns with the Directives OR Industries (if provided).
+   - *Fallback:* If only a Product was provided, use your intelligence to qualify if they are an active commercial buyer.
+2. REVIEW (is_valid=true, confidence="LOW"):
+   - The text strongly matches a TARGET DIRECTIVE (e.g., an LOA/Award) and/or TARGET INDUSTRY...
+   - BUT it does NOT explicitly name a Target Portfolio product.
+   - INSTEAD, it names a Competitor Product, the same OEM, or RELATED SERVICES (e.g., an awarded contract for "BIM Modeling", "Architectural Design", or "Drafting services" which inherently require the software).
+3. EXCLUDE / TRASH (is_valid=false): 
+   - Matches a Directive (e.g., an LOA) but the context is completely irrelevant (e.g., catering, janitorial, standard road paving without design).
    - Schools/students, freelancers, blogs, generic global articles.
-   - IT RESELLERS: Only use entity_role="SELLER" for IT distributors/resellers who are selling the actual software licenses (e.g., "Authorized Autodesk Reseller"). 
-   - Closed/expired tenders where NO winning contractor is announced.
+   - IT RESELLERS: Only use entity_role="SELLER" for IT distributors selling software licenses. (Engineering firms providing drafting/BIM services are SERVICE_USER).
    - STALE LEADS (STRICT 1-MONTH LIMIT): Any awarded contract or milestone that occurred MORE THAN 30 DAYS before TODAY'S DATE.
 
 Return ONLY JSON: {{"leads": [ one object per ITEM ]}} where each object has:
@@ -287,7 +255,7 @@ Return ONLY JSON: {{"leads": [ one object per ITEM ]}} where each object has:
 "entity_role": "BUYER" | "PROJECT_BUYER" | "SERVICE_USER" | "SELLER" | "IRRELEVANT",
 "organization": official name of the company / procuring body,
 "industry": string, "city": string, "state": string,
-"target_solution": the specific requirement,
+"target_solution": the specific product, service, or competitor found,
 "why_engage_now": 2-3 sentences (signal, urgency, opportunity),
 "product_usage": "Confirmed User" | "Prospective Buyer" | "Competitor" | "Unknown" plus short evidence,
 "upcoming_events": tender closing date / milestone, or "Unknown",
@@ -298,105 +266,74 @@ Never invent facts that are not in the scraped text.
 BATCH:
 {items}"""
         data = self.llm.generate_json(prompt, validator=_valid_verdicts)
-        if data is None:
-            return None
-        if isinstance(data, dict):
-            data = data.get("leads") if isinstance(data.get("leads"), list) else [data]
+        if data is None: return None
+        if isinstance(data, dict): data = data.get("leads") if isinstance(data.get("leads"), list) else [data]
         return data
-
 
 def map_verdicts(verdicts, n):
     out = {}
     for pos, v in enumerate(verdicts or []):
-        if not isinstance(v, dict):
-            continue
-        try:
-            idx = int(v.get("item_index"))
-        except (TypeError, ValueError):
-            idx = pos if len(verdicts) == n else None
-        if idx is None or not 0 <= idx < n or idx in out:
-            continue
+        if not isinstance(v, dict): continue
+        try: idx = int(v.get("item_index"))
+        except (TypeError, ValueError): idx = pos if len(verdicts) == n else None
+        if idx is None or not 0 <= idx < n or idx in out: continue
         out[idx] = v
     return out
 
-
 def safe_cell(v):
-    """Google Sheets turns text starting with = + - @ into formulas; neutralise that."""
     v = "" if v is None else str(v)
     return " " + v if v[:1] in ("=", "+", "-", "@") else v
 
-
-# --------------------------------------------------------------------------- routing into the sheet
 class Router:
     def __init__(self, sheet):
         self.sheet = sheet
 
     def push(self, doc, ai, default_target, default_industry):
-        """Returns (outcome, company). outcome in INBOX/REVIEW/PARTNER/TRASH/DUPLICATE/SKIPPED/FAILED."""
         company = normalize_company(str(ai.get("organization") or ""))
         is_valid = ai.get("is_valid") in (True, "true", "True", "yes")
         confidence = str(ai.get("confidence") or "LOW").upper()
         role = str(ai.get("entity_role") or "IRRELEVANT").upper()
-        if role == "IRRELEVANT":
-            is_valid = False
+        if role == "IRRELEVANT": is_valid = False
         buyer_roles = ("BUYER", "PROJECT_BUYER", "SERVICE_USER")
-        # AI recognised a buyer but doubted validity (expired? unclear?) -> a human decides, it is not trashed
         doubtful = (not is_valid) and role in buyer_roles and confidence == "MEDIUM"
-        if doubtful:
-            ai = dict(ai, why_engage_now="(AI doubted validity) " + str(ai.get("why_engage_now") or ""))
+        if doubtful: ai = dict(ai, why_engage_now="(AI doubted validity) " + str(ai.get("why_engage_now") or ""))
 
         if company.lower() in ("unknown", "unknown firm", ""):
             if (is_valid or doubtful) and role != "SELLER":
                 host = re.sub(r"[^a-z0-9]", "", urlparse(doc["url"]).netloc.lower().replace("www.", ""))[:18]
                 company = f"Unidentified {hashlib.md5(doc['url'].encode()).hexdigest()[:4]} {host}"
-                confidence = "LOW"  # forces the Needs Review tab
-            else:
-                return "SKIPPED", company
+                confidence = "LOW"
+            else: return "SKIPPED", company
         if doc.get("snippet_only") and is_valid:
-            confidence = "LOW"  # unverified: only the search snippet was readable
+            confidence = "LOW"
             ai = dict(ai, why_engage_now="(page unreadable - judged from search snippet) " + str(ai.get("why_engage_now") or ""))
-
-        # Duplicate handling happens inside the Apps Script insert_lead (it appends the NEW signal to the existing row).
 
         capture = datetime.now().strftime("%Y-%m-%d %H:%M")
         why = str(ai.get("why_engage_now") or "")
         solution = str(ai.get("target_solution") or default_target)
         phone = str(ai.get("phone") or "")
-        if len(extract_phone(phone)) != 10:
-            phone = extract_phone(doc.get("raw_text", ""))
-        else:
-            phone = extract_phone(phone)
+        if len(extract_phone(phone)) < 10: phone = extract_phone(doc.get("raw_text", ""))
+        else: phone = extract_phone(phone)
         dm = str(ai.get("dm_name") or "")
-        if default_industry and default_industry != "ALL_SECTORS":
-            industry = default_industry
-        else:
-            industry = str(ai.get("industry") or "Commercial Enterprise")
+        industry = default_industry if default_industry and default_industry != "ALL_SECTORS" else str(ai.get("industry") or "Commercial Enterprise")
         lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"
 
-        if doubtful:
-            is_valid, confidence = True, "LOW"
-            
-        # 1. FIRST, check if it's a Partner/Seller
+        if doubtful: is_valid, confidence = True, "LOW"
+        
         if role == "SELLER":
             sheet_name, outcome = SHEET_PARTNERS, "PARTNER"
-            row = [lead_id, capture, company, str(ai.get("city") or ""), str(ai.get("state") or ""), solution,
-                   doc["url"], "", "", "", ""]
-        # 2. THEN, if it's invalid (and not a seller), throw it in the trash
+            row = [lead_id, capture, company, str(ai.get("city") or ""), str(ai.get("state") or ""), solution, doc["url"], "", "", "", ""]
         elif not is_valid:
             sheet_name, outcome = SHEET_TRASH, "TRASH"
             row = [capture, company, doc["url"], why, ""]
-        # 3. OTHERWISE, it's a buyer -> Inbox or Review
         else:
             sheet_name = SHEET_REVIEW if confidence == "LOW" else SHEET_INBOX
             outcome = "REVIEW" if confidence == "LOW" else "INBOX"
-            row = [capture, str(ai.get("upcoming_events") or "Unknown"), role, industry,
-                   str(ai.get("state") or "N/A"), str(ai.get("city") or "N/A"), company, solution, why,
-                   doc["url"], str(ai.get("product_usage") or "Unknown"), "", lead_id]
+            row = [capture, str(ai.get("upcoming_events") or "Unknown"), role, industry, str(ai.get("state") or "N/A"), str(ai.get("city") or "N/A"), company, solution, why, doc["url"], str(ai.get("product_usage") or "Unknown"), "", lead_id]
+
         log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name}")
         try:
-            res = self.sheet.post("insert_lead", target_sheet=sheet_name, company_name=company, signal_brief=why,
-                                  row_data=[safe_cell(x) for x in row], contact_phone=phone, dm_name=dm,
-                                  source_url=doc["url"])
+            res = self.sheet.post("insert_lead", target_sheet=sheet_name, company_name=company, signal_brief=why, row_data=[safe_cell(x) for x in row], contact_phone=phone, dm_name=dm, source_url=doc["url"])
         except SheetError as e:
             log.error(f"insert_lead failed for {company}: {e}")
             return "FAILED", company
@@ -405,8 +342,6 @@ class Router:
             return "DUPLICATE", company
         return outcome, company
 
-
-# --------------------------------------------------------------------------- main
 def main():
     started = time.time()
     t0 = datetime.now()
@@ -430,7 +365,7 @@ def main():
 
     llm = LLMRouter()
     if not llm.available():
-        tg.send("🚨 <b>Radar Scout halted</b>: no LLM API key configured (add GEMINI_API_KEYS in GitHub secrets).")
+        tg.send("🚨 <b>Radar Scout halted</b>: no LLM API key configured.")
         return 1
     search = SearchEngine()
     evaluator = Evaluator(llm)
@@ -440,8 +375,7 @@ def main():
 
     country = cfg["countries"][0] if cfg["countries"] else ""
     states = cfg["states"]
-    geo_rule = (f"GEOGRAPHY RULE: must have verifiable commercial operations or active requirements in {country}."
-                if country else "")
+    geo_rule = (f"GEOGRAPHY RULE: must have verifiable commercial operations or active requirements in {country}." if country else "")
     ban_rule = f"Ignore these domains: {', '.join(cfg['banned_sites'])}" if cfg["banned_sites"] else ""
 
     max_runtime = env_int("MAX_RUNTIME_MIN", 40) * 60
@@ -450,7 +384,6 @@ def main():
     pages = env_int("SEARCH_PAGES", 2)
     use_ai_queries = os.getenv("AI_QUERIES", "1").strip() != "0"
 
-    # build campaigns
     campaigns = []
     if special:
         log.info(f"SPECIAL DIRECTIVE ACTIVE: {special}")
@@ -468,16 +401,14 @@ def main():
 
     stats = {"snippet_only": 0, "scanned": 0, "inbox": 0, "review": 0, "partners": 0, "trash": 0, "dupes": 0, "failed": 0}
     session_companies = set()
-    pending = set()  # links already queued this run
-    pending_fp = set()  # content fingerprints already queued this run
+    pending = set()
+    pending_fp = set()
     ai_failures = 0
     stop_reason = ""
 
     def check_budget():
-        if time.time() - started > max_runtime:
-            raise StopRun(f"time budget of {max_runtime // 60} min reached")
-        if stats["scanned"] >= max_links:
-            raise StopRun(f"link budget of {max_links} reached")
+        if time.time() - started > max_runtime: raise StopRun(f"time budget of {max_runtime // 60} min reached")
+        if stats["scanned"] >= max_links: raise StopRun(f"link budget of {max_links} reached")
 
     try:
         for target, industry, gen in campaigns:
@@ -487,15 +418,14 @@ def main():
                 docs = []
                 for query in queries:
                     check_budget()
-                    recent = any(w in query.lower() for w in ("tender", "rfp", "bid", "procurement"))
+                    recent = any(w in query.lower() for w in ("tender", "rfp", "bid", "procurement", "loa", "award", "contract", "order", "empanelment"))
                     log.info(f"Searching: {query}")
                     results = search.search(query, country, pages=pages, recent=recent)
                     fresh = 0
                     for res in results:
                         raw = (res.get("link") or "").strip()
                         c = clean_url(raw)
-                        if not raw or not c or c in seen or c in pending:
-                            continue
+                        if not raw or not c or c in seen or c in pending: continue
                         pending.add(c)
                         check_budget()
                         stats["scanned"] += 1
@@ -503,8 +433,7 @@ def main():
                         low = raw.lower()
                         protected = any(p in low for p in cfg["protected"] if p)
                         snippet = (res.get("snippet") or "").lower()
-                        if not protected and (any(b in low for b in cfg["banned_sites"] if b) or
-                                              any(k in snippet for k in cfg["banned_kw"] if k)):
+                        if not protected and (any(b in low for b in cfg["banned_sites"] if b) or any(k in snippet for k in cfg["banned_kw"] if k)):
                             mark_seen(seen, raw)
                             continue
                         content = fetch_page(raw, protected_domains=cfg["protected"])
@@ -515,32 +444,30 @@ def main():
                                 mark_seen(seen, raw)
                                 stats["dupes"] += 1
                                 continue
-                            if fp:
-                                pending_fp.add(fp)
+                            if fp: pending_fp.add(fp)
                             docs.append({"track": track_name, "url": raw, "raw_text": content, "fp": fp})
                         else:
                             snip = f"{res.get('title', '')}\n{res.get('snippet', '')}".strip()
-                            if len(snip) >= 60:  # JS/captcha/blocked page: still let the AI judge the search snippet
-                                docs.append({"track": track_name, "url": raw, "fp": "", "snippet_only": True,
-                                             "raw_text": "[PAGE COULD NOT BE READ - SEARCH SNIPPET ONLY]\n" + snip})
+                            if len(snip) >= 60:
+                                docs.append({"track": track_name, "url": raw, "fp": "", "snippet_only": True, "raw_text": "[PAGE COULD NOT BE READ - SEARCH SNIPPET ONLY]\n" + snip})
                                 stats["snippet_only"] += 1
-                            else:
-                                mark_seen(seen, raw)  # nothing at all to evaluate
+                            else: mark_seen(seen, raw)
                     log.info(f"   {len(results)} results, {fresh} new")
 
                 for i in range(0, len(docs), 4):
                     batch = docs[i:i + 4]
                     check_budget()
                     
-                    # THE FIX: Tell the AI about your entire product portfolio simultaneously
-                    portfolio = " OR ".join(cfg["targets"]) if cfg["targets"] else target
+                    all_targets = " OR ".join(cfg["targets"]) if cfg["targets"] else "Any Commercial Software"
+                    all_directives = " OR ".join(cfg["directives"]) if cfg["directives"] else ""
+                    all_industries = " OR ".join(cfg["industries"]) if cfg["industries"] else ""
                     
-                    verdicts = evaluator.evaluate(batch, portfolio, industry, country, states, geo_rule, ban_rule, special)
+                    verdicts = evaluator.evaluate(batch, all_targets, all_directives, all_industries, country, states, geo_rule, ban_rule, special)
+                    
                     if verdicts is None:
                         ai_failures += 1
                         log.warning("AI evaluation failed for a batch - links left un-cached so they are retried next run.")
-                        if ai_failures >= 2:
-                            raise StopRun("all AI providers are exhausted / unreachable")
+                        if ai_failures >= 2: raise StopRun("all AI providers are exhausted / unreachable")
                         continue
                     ai_failures = 0
                     vmap = map_verdicts(verdicts, len(batch))
@@ -558,19 +485,16 @@ def main():
                         outcome, company = router.push(doc, v, target, industry)
                         if outcome == "FAILED":
                             stats["failed"] += 1
-                            continue  # not cached -> retried next run
+                            continue
                         mark_seen(seen, doc["url"])
                         mark_fp(fps, doc.get("fp"))
-                        if outcome in ("INBOX", "REVIEW", "PARTNER"):
-                            session_companies.add(company)
-                        key = {"INBOX": "inbox", "REVIEW": "review", "PARTNER": "partners", "TRASH": "trash",
-                               "DUPLICATE": "dupes"}.get(outcome)
-                        if key:
-                            stats[key] += 1
+                        if outcome in ("INBOX", "REVIEW", "PARTNER"): session_companies.add(company)
+                        key = {"INBOX": "inbox", "REVIEW": "review", "PARTNER": "partners", "TRASH": "trash", "DUPLICATE": "dupes"}.get(outcome)
+                        if key: stats[key] += 1
     except StopRun as e:
         stop_reason = str(e)
         log.warning(f"Stopping early: {e}")
-    except Exception as e:  # never die silently
+    except Exception as e:
         stop_reason = f"unexpected error: {e}"
         log.exception("Unexpected error")
 
@@ -583,15 +507,11 @@ def main():
              f"• Partners/suppliers: <code>{stats['partners']}</code> • Discarded: <code>{stats['trash']}</code>"
              f" • Duplicates: <code>{stats['dupes']}</code>",
              f"• Duration: <code>{duration}</code>"]
-    if stats["snippet_only"]:
-        lines.append(f"• 🔎 Judged from snippet only (page unreadable → verify in Review): <code>{stats['snippet_only']}</code>")
-    if stats["failed"]:
-        lines.append(f"• ⚠️ Sheet write failures: <code>{stats['failed']}</code> (will retry next run)")
-    if stop_reason:
-        lines.append(f"• ⛔ Stopped early: {tg_escape(stop_reason)}")
+    if stats["snippet_only"]: lines.append(f"• 🔎 Judged from snippet only: <code>{stats['snippet_only']}</code>")
+    if stats["failed"]: lines.append(f"• ⚠️ Sheet write failures: <code>{stats['failed']}</code>")
+    if stop_reason: lines.append(f"• ⛔ Stopped early: {tg_escape(stop_reason)}")
     tg.send("\n".join(lines))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
