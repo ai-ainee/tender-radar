@@ -2,8 +2,11 @@ name: Radar Scout Automation Engine
 
 on:
   schedule:
-    - cron: '30 2 * * *'   # 8:00 AM IST  -> harvester
-    - cron: '30 5 * * *'   # 11:00 AM IST -> enrichment
+    # HARVESTER (7:00 AM and 8:00 PM IST)
+    - cron: '30 1 * * *'   
+    - cron: '30 14 * * *'  
+    # ENRICHMENT (9:00 AM, 1:00 PM, 5:00 PM, 9:00 PM IST)
+    - cron: '30 3,7,11,15 * * *' 
   workflow_dispatch:
     inputs:
       job:
@@ -61,13 +64,13 @@ jobs:
 
       - name: Run harvester
         if: >-
-          (github.event_name == 'schedule' && github.event.schedule == '30 2 * * *') ||
+          (github.event_name == 'schedule' && (github.event.schedule == '30 1 * * *' || github.event.schedule == '30 14 * * *')) ||
           (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'harvest'))
         run: python radar.py
 
       - name: Run enrichment worker
         if: >-
-          (github.event_name == 'schedule' && github.event.schedule == '30 5 * * *') ||
+          (github.event_name == 'schedule' && github.event.schedule == '30 3,7,11,15 * * *') ||
           (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'enrich'))
         run: python enrichment_worker.py
 
