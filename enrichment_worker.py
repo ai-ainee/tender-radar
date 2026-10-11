@@ -93,13 +93,19 @@ def main():
     log.info("=== Enrichment worker starting ===")
     try:
         sheet = SheetAPI()
-        data = sheet.get("get_pending_leads", limit=env_int("MAX_ENRICH_PER_RUN", 15))
+        data = sheet.get("get_pending_leads")
     except SheetError as e:
         log.error(f"Cannot fetch pending leads: {e}")
         tg.send(f"🚨 <b>Enrichment halted</b>\n<code>{tg_escape(e)}</code>")
         return 1
 
-    leads = data.get("leads") or []
+    all_leads = data.get("leads") or []
+    leads = [l for l in all_leads if str(l.get("lead_id") or "").strip() and str(l.get("organization") or "").strip()]
+    skipped = len(all_leads) - len(leads)
+    if skipped:
+        log.warning(f"{skipped} row(s) in the Leads tab have no Lead ID or Organization and cannot be enriched "
+                    f"(the Apps Script finds rows by Lead ID).")
+    leads = leads[:env_int("MAX_ENRICH_PER_RUN", 15)]
     if not leads:
         log.info("No leads waiting for enrichment.")
         return 0
@@ -174,9 +180,9 @@ def main():
             wa = quote(f"Hi {dm_name if dm_name != 'Procurement Head' else 'Team'}, I came across your recent "
                        f"project activity at {org}. Would love to share how we can help.")
             buttons.append([{"text": "💬 WhatsApp", "url": f"https://wa.me/91{mobile[0]}?text={wa}"}])
-        buttons.append([{"text": "✅ Contacted", "callback_data": f"contacted|{lead_id}"},
-                        {"text": "🔁 Re-enrich", "callback_data": f"reenrich|{lead_id}"},
-                        {"text": "🗑 Discard", "callback_data": f"discard|{lead_id}"}])
+        token = re.sub(r"[^a-zA-Z0-9\s]", "", org[:30]).strip()   # same rule as safeToken in the Apps Script
+        buttons.append([{"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
+                        {"text": "📦 Archive", "callback_data": f"archive::{token}"}])
         msg = [f"🎯 <b>LEAD ENRICHED: {tg_escape(org)}</b>", "",
                f"👤 <b>Contact:</b> {tg_escape(dm_name)}" + (f" (<i>{tg_escape(dm_title)}</i>)" if dm_title else "")]
         if c["phone"]:
@@ -188,16 +194,11 @@ def main():
         if c["linkedin_url"]:
             msg.append(f"🔗 <b>LinkedIn:</b> {tg_escape(c['linkedin_url'])}")
         msg.append("")
-        msg.append(f"📋 Dossier saved to CRM. Send <code>/lead {tg_escape(org)}</code> to read it here.")
+        msg.append("📋 Deep Intel dossier saved in the 🎯 Leads tab.")
         tg.send("\n".join(msg), reply_markup={"inline_keyboard": buttons})
         time.sleep(1.5)
 
     duration = f"{int(time.time() - started)}s"
-    try:
-        sheet.post("report_run", job="enrich", stats={"enriched": done, "failed": failed, "duration": duration,
-                                                      "llm_calls": llm.calls, "search_calls": search.calls})
-    except SheetError:
-        pass
     tg.send(f"🏁 <b>Enrichment complete</b>\n• Enriched: <code>{done}</code>\n• Failed / retry next run: <code>{failed}</code>"
             f"\n• Duration: <code>{duration}</code>")
     log.info(f"Enrichment done: {done} ok, {failed} failed")
