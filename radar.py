@@ -173,25 +173,23 @@ class QueryGenerator:
         log.info(f"Generating search queries for special directive: '{special_prompt}'")
         sp = special_prompt
         fb = {
-            "TRACK_1_PUBLIC_TENDERS": [f"{sp} tender RFP {self.year}", f"{sp} procurement bid notice"],
-            "TRACK_2_CORPORATE_PROCUREMENT": [f"{sp} vendor empanelment RFQ", f"{sp} supplier contract requirement"],
-            "TRACK_3_BUSINESS_EXPANSION": [f"{sp} project expansion capex", f"{sp} new facility investment"],
-            "TRACK_4_COMMERCIAL_HIRING": [f"{sp} company hiring team", f"{sp} careers specialist lead"],
+            "TRACK_1_PUBLIC_TENDERS": [f"{sp} public tenders", f"{sp} bids"],
+            "TRACK_2_CORPORATE_PROCUREMENT": [f"{sp} vendor empanelment", f"{sp} corporate RFQ"],
+            "TRACK_3_BUSINESS_EXPANSION": [f"{sp} expansion capex", f"{sp} new facility"],
+            "TRACK_4_COMMERCIAL_HIRING": [f"{sp} hiring specialists", f"{sp} team expansion"],
         }
         prompt = f"""You are an expert SEO and B2B search strategist.
-Generate natural, high-yield Google search queries to find buyers, tenders, or expansions related to '{t}'.
-{industry_line}
-{f"Geography: {self.country}" if self.country else ""}
-{f"Region: {state}" if state else ""}
+MANDATORY CAMPAIGN DIRECTIVE: "{special_prompt}"
+Generate Google search queries to find buyers, tenders, or expansions matching this directive.
 
-CRITICAL RULES FOR SEARCH ENGINES:
-- Keep queries SHORT and BROAD (maximum 4 to 7 words).
-- Do NOT keyword-stuff. Do not force the product, location, and industry into the exact same query if it makes it too long.
-- ABSTRACT THE PRODUCT: If '{t}' is a highly specific tool, brand, or software, generate queries for the *broader projects or services* that require it (e.g., instead of searching for the tool itself, search for "major [industry] project tenders {state}").
-TRACK_1_PUBLIC_TENDERS: government tenders, bids, or public infrastructure projects.
-TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, or supply contracts.
-TRACK_3_BUSINESS_EXPANSION: capex, new facilities, or major commercial project launches.
-TRACK_4_COMMERCIAL_HIRING: companies hiring specialists/heads/teams.
+CRITICAL RULES:
+1. EXACTLY 3 TO 5 WORDS MAXIMUM per query.
+2. No quotes, no operators, plain text only.
+
+TRACK_1_PUBLIC_TENDERS: public tenders or infrastructure bids.
+TRACK_2_CORPORATE_PROCUREMENT: private RFQs or vendor empanelment.
+TRACK_3_BUSINESS_EXPANSION: new facilities or commercial project launches.
+TRACK_4_COMMERCIAL_HIRING: companies hiring specialists.
 Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         return self._merge(self._ai_tracks(prompt), fb)
 
@@ -201,30 +199,36 @@ Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         loc = state or self.country
         loc_s = f" {loc}" if loc else ""
         ind_s = f"{ind} " if ind else ""
+        
+        # Super-short, 3-5 word fallback queries
         fb = {
-            "TRACK_1_PUBLIC_TENDERS": [f"{t} tender RFP {yr}{loc_s}", f"{t} procurement bid notice{loc_s}"],
-            "TRACK_2_CORPORATE_PROCUREMENT": [f"{ind_s}{t} vendor empanelment supplier{loc_s}",
-                                              f"{t} corporate RFQ requirement {yr}"],
-            "TRACK_3_BUSINESS_EXPANSION": [f"{ind_s}{t} project expansion capex {yr}{loc_s}",
-                                           f"{t} new plant facility construction{loc_s}"],
-            "TRACK_4_COMMERCIAL_HIRING": [f"{t} hiring lead specialist{loc_s}", f"{ind_s}{t} team expansion careers {yr}"],
+            "TRACK_1_PUBLIC_TENDERS": [f"public tenders{loc_s}", f"infrastructure bids{loc_s}"],
+            "TRACK_2_CORPORATE_PROCUREMENT": [f"vendor empanelment{loc_s}", f"corporate RFQ {yr}{loc_s}"],
+            "TRACK_3_BUSINESS_EXPANSION": [f"{ind_s}expansion capex{loc_s}", f"new facility construction{loc_s}"],
+            "TRACK_4_COMMERCIAL_HIRING": [f"hiring specialists{loc_s}", f"team expansion{loc_s}"],
         }
+        
         industry_line = f"INDUSTRY FOCUS: {ind}" if ind else "INDUSTRY: all commercial/industrial sectors"
-        prompt = f"""You are a B2B sales intelligence strategist.
-Generate diverse web-search queries to find enterprise buyers, tenders and organisations purchasing or expanding in '{t}'.
+        prompt = f"""You are an expert SEO and B2B search strategist.
+Generate Google search queries to find buyers, tenders, or expansions related to '{t}'.
 {industry_line}
 {f"Geography: {self.country}" if self.country else ""}
 {f"Region: {state}" if state else ""}
-Rules: 2 queries per track, max 12 words each, plain text only (no site:, quotes, minus).
-TRACK_1_PUBLIC_TENDERS: government tenders, bids, RFPs for '{t}'.
-TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, supply contracts for '{t}'.
-TRACK_3_BUSINESS_EXPANSION: capex, new plants, major project launches needing '{t}'.
-TRACK_4_COMMERCIAL_HIRING: companies hiring specialists/heads/teams for '{t}'.
+
+CRITICAL RULES (FAILING THESE WILL BREAK THE SYSTEM):
+1. EXACTLY 3 TO 5 WORDS MAXIMUM per query.
+2. DO NOT include the exact product name if it makes the query longer than 5 words. Search for the broad project instead.
+3. No quotes, no operators, plain text only.
+
+TRACK_1_PUBLIC_TENDERS: broad government tenders or public infrastructure bids.
+TRACK_2_CORPORATE_PROCUREMENT: private RFQs or vendor empanelment.
+TRACK_3_BUSINESS_EXPANSION: new facilities or commercial project launches.
+TRACK_4_COMMERCIAL_HIRING: companies hiring specialists.
 Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         return self._merge(self._ai_tracks(prompt), fb)
 
-
 # --------------------------------------------------------------------------- AI evaluation
+
 def _valid_verdicts(d):
     if isinstance(d, list):
         return all(isinstance(x, dict) for x in d)
