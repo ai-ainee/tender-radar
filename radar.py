@@ -436,28 +436,51 @@ def main():
                         raw = (res.get("link") or "").strip()
                         c = clean_url(raw)
                         if not raw or not c or c in seen or c in pending: continue
+                        
+                        low_url = raw.lower()
+                        protected = any(p in low_url for p in cfg["protected"] if p)
+                        
+                        # --- STAGE 1: DYNAMIC DOMAIN BAN CHECK (Zero Latency, Zero Quota) ---
+                        # Uses the "Banned Websites" column from your Google Sheet
+                        if not protected and any(bad_domain in low_url for bad_domain in cfg["banned_sites"] if bad_domain):
+                            log.info(f"   [-] Auto-Drop (Banned Domain in URL): {raw}")
+                            mark_seen(seen, raw)
+                            stats["trash"] += 1
+                            continue
+
                         pending.add(c)
                         check_budget()
                         stats["scanned"] += 1
                         fresh += 1
-                        low = raw.lower()
-                        protected = any(p in low for p in cfg["protected"] if p)
+                        
                         snippet = (res.get("snippet") or "").lower()
-                        if not protected and (any(b in low for b in cfg["banned_sites"] if b) or any(k in snippet for k in cfg["banned_kw"] if k)):
+                        if not protected and any(k in snippet for k in cfg["banned_kw"] if k):
+                            log.info(f"   [-] Auto-Drop (Banned Keyword in Snippet): {raw}")
                             mark_seen(seen, raw)
+                            stats["trash"] += 1
                             continue
+                            
                         content = fetch_page(raw, protected_domains=cfg["protected"])
                         
                         if content and len(content) > 120:
-                            
-                            # --- PRE-AI BOUNCER CHECK ---
                             low_content = content.lower()
-                            if not any(kw in low_content for kw in core_kw):
-                                log.info(f"   [-] Pre-AI Drop (No keywords found): {raw}")
+                            
+                            # --- STAGE 2: DYNAMIC NEGATIVE WORD CHECK ---
+                            # Uses the "Banned Keywords" column from your Google Sheet
+                            bad_match = next((bad for bad in cfg["banned_kw"] if bad and bad in low_content), None)
+                            if bad_match and not protected:
+                                log.info(f"   [-] Pre-AI Drop (Negative word '{bad_match}'): {raw}")
                                 mark_seen(seen, raw)
                                 stats["trash"] += 1
                                 continue
-                            # ----------------------------
+                                
+                            # --- STAGE 3: POSITIVE WORD CHECK ---
+                            if not any(kw in low_content for kw in core_kw) and not protected:
+                                log.info(f"   [-] Pre-AI Drop (No target keywords found): {raw}")
+                                mark_seen(seen, raw)
+                                stats["trash"] += 1
+                                continue
+                            # ------------------------------------
 
                             fp = fingerprint(content)
                             if fp and (fp in fps or fp in pending_fp):
