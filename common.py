@@ -462,7 +462,30 @@ def _read_limited(resp, limit):
     return bytes(buf)
 
 
+def _ocr_pdf(data, pages):
+    """Optional OCR for scanned tender PDFs (needs tesseract + poppler on the machine; silently skipped otherwise)."""
+    if os.getenv("OCR_ENABLED", "1").strip() == "0":
+        return ""
+    try:
+        from pdf2image import convert_from_bytes
+        import pytesseract
+        images = convert_from_bytes(data, first_page=1, last_page=max(1, pages), dpi=150)
+        return "\n".join(pytesseract.image_to_string(im) for im in images).strip()
+    except Exception as e:
+        log.info(f"OCR skipped: {type(e).__name__}")
+        return ""
+
+
 def _pdf_text(data, pages):
+    text = _pdf_text_layer(data, pages)
+    if len(text) < 100:
+        ocr = _ocr_pdf(data, env_int("OCR_PAGES", 3))
+        if len(ocr) > len(text):
+            text = ocr
+    return text
+
+
+def _pdf_text_layer(data, pages):
     if PdfReader is None:
         return ""
     try:
