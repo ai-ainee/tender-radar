@@ -7,15 +7,19 @@ and pushes qualified leads back into the Sheet. Sends a Telegram summary at the 
 import hashlib
 import os
 import random
+import re
 import sys
 import time
 import uuid
 from datetime import datetime
+from urllib.parse import urlparse
 
 from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram, clean_url, env_int, extract_phone,
                     fetch_page, log, normalize_company, tg_escape)
 
 CACHE_FILE = "seen_links.txt"
+FINGERPRINT_FILE = "seen_fingerprints.txt"
+MAX_FINGERPRINTS = 30000
 SHEET_INBOX = "📥 Inbox"
 SHEET_REVIEW = "⚠️ Needs Review"
 SHEET_PARTNERS = "🤝 Partners & Suppliers"
@@ -40,13 +44,47 @@ def load_cache(sheet):
     except Exception as e:
         log.warning(f"Local cache unreadable: {e}")
     try:
-        data = sheet.get("get_all_urls")
+        data = sheet.post("get_all_urls")   # your script serves this action on POST only
         seen.update(clean_url(u) for u in data.get("urls", []) if isinstance(u, str) and u.strip())
         log.info(f"Cache synchronised: {len(seen)} known links")
     except SheetError as e:
         log.warning(f"Cloud cache unavailable, continuing with local cache only: {e}")
     seen.discard("")
     return seen
+
+
+def fingerprint(text):
+    """Content hash so the same tender / article mirrored on another URL is only processed once."""
+    norm = re.sub(r"[^a-z0-9]", "", (text or "").lower())[:3000]
+    return hashlib.sha1(norm.encode()).hexdigest()[:16] if len(norm) >= 200 else ""
+
+
+def load_fingerprints():
+    fps = []
+    try:
+        if os.path.exists(FINGERPRINT_FILE):
+            with open(FINGERPRINT_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                fps = [x.strip() for x in f if x.strip()]
+        else:
+            open(FINGERPRINT_FILE, "a", encoding="utf-8").close()
+        if len(fps) > MAX_FINGERPRINTS:  # keep the file from growing forever
+            fps = fps[-MAX_FINGERPRINTS:]
+            with open(FINGERPRINT_FILE, "w", encoding="utf-8") as f:
+                f.write("\n".join(fps) + "\n")
+    except Exception as e:
+        log.warning(f"Fingerprint file unreadable: {e}")
+    return set(fps)
+
+
+def mark_fp(fps, fp):
+    if not fp or fp in fps:
+        return
+    fps.add(fp)
+    try:
+        with open(FINGERPRINT_FILE, "a", encoding="utf-8") as f:
+            f.write(fp + "\n")
+    except Exception as e:
+        log.warning(f"Could not write fingerprint: {e}")
 
 
 def mark_seen(seen, url):
@@ -134,57 +172,19 @@ class QueryGenerator:
     def build_special_tracks(self, special_prompt):
         log.info(f"Generating search queries for special directive: '{special_prompt}'")
         sp = special_prompt
-        # Forcibly inject the country into the special fallback tracks
-        loc_s = f" {self.country}" if self.country else ""
-        
         fb = {
-            "TRACK_1_PUBLIC_TENDERS": [f"{sp} tender RFP {self.year}{loc_s}", f"{sp} procurement bid notice{loc_s}"],
-            "TRACK_2_CORPORATE_PROCUREMENT": [f"{sp} vendor empanelment RFQ{loc_s}", f"{sp} supplier contract requirement{loc_s}"],
-            "TRACK_3_BUSINESS_EXPANSION": [f"{sp} project expansion capex{loc_s}", f"{sp} new facility investment{loc_s}"],
-            "TRACK_4_COMMERCIAL_HIRING": [f"{sp} company hiring team{loc_s}", f"{sp} careers specialist lead{loc_s}"],
+            "TRACK_1_PUBLIC_TENDERS": [f"{sp} tender RFP {self.year}", f"{sp} procurement bid notice"],
+            "TRACK_2_CORPORATE_PROCUREMENT": [f"{sp} vendor empanelment RFQ", f"{sp} supplier contract requirement"],
+            "TRACK_3_BUSINESS_EXPANSION": [f"{sp} project expansion capex", f"{sp} new facility investment"],
+            "TRACK_4_COMMERCIAL_HIRING": [f"{sp} company hiring team", f"{sp} careers specialist lead"],
         }
         prompt = f"""You are a B2B sales intelligence strategist.
 MANDATORY CAMPAIGN DIRECTIVE: "{special_prompt}"
-MANDATORY LOCATION: "{self.country}" (You MUST include this location in every query generated)
-
 Generate web-search queries (2 per track, max 10 words each, plain text, no quotes/operators):
-TRACK_1_PUBLIC_TENDERS: active public tenders / bids / RFPs matching the directive in {self.country}.
-TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, supply contracts in {self.country}.
-TRACK_3_BUSINESS_EXPANSION: capex, new plants, expansion signals in {self.country}.
-TRACK_4_COMMERCIAL_HIRING: hiring/team-scaling signals in {self.country}.
-Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
-        return self._merge(self._ai_tracks(prompt), fb)
-
-    def build_tracks(self):
-        state = random.choice(self.states) if self.states else ""
-        t, ind, yr = self.target, self.industry, self.year
-        
-        # FORCIBLY COMBINE STATE AND COUNTRY
-        loc_parts = [p for p in (state, self.country) if p]
-        loc = " ".join(loc_parts)
-        loc_s = f" {loc}" if loc else ""
-        ind_s = f"{ind} " if ind else ""
-        
-        fb = {
-            "TRACK_1_PUBLIC_TENDERS": [f"{t} tender RFP {yr}{loc_s}", f"{t} procurement bid notice{loc_s}"],
-            "TRACK_2_CORPORATE_PROCUREMENT": [f"{ind_s}{t} vendor empanelment supplier{loc_s}",
-                                              f"{t} corporate RFQ requirement {yr}{loc_s}"],
-            "TRACK_3_BUSINESS_EXPANSION": [f"{ind_s}{t} project expansion capex {yr}{loc_s}",
-                                           f"{t} new plant facility construction{loc_s}"],
-            "TRACK_4_COMMERCIAL_HIRING": [f"{t} hiring lead specialist{loc_s}", f"{ind_s}{t} team expansion careers {yr}{loc_s}"],
-        }
-        industry_line = f"INDUSTRY FOCUS: {ind}" if ind else "INDUSTRY: all commercial/industrial sectors"
-        
-        prompt = f"""You are a B2B sales intelligence strategist.
-Generate diverse web-search queries to find enterprise buyers, tenders and organisations purchasing or expanding in '{t}'.
-{industry_line}
-MANDATORY LOCATION: "{loc}" (You MUST explicitly write this exact location inside every single search query).
-
-Rules: 2 queries per track, max 12 words each, plain text only (no site:, quotes, minus).
-TRACK_1_PUBLIC_TENDERS: government tenders, bids, RFPs for '{t}' in {loc}.
-TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, supply contracts for '{t}' in {loc}.
-TRACK_3_BUSINESS_EXPANSION: capex, new plants, major project launches needing '{t}' in {loc}.
-TRACK_4_COMMERCIAL_HIRING: companies hiring specialists/heads/teams for '{t}' in {loc}.
+TRACK_1_PUBLIC_TENDERS: active public tenders / bids / RFPs matching the directive.
+TRACK_2_CORPORATE_PROCUREMENT: private RFQs, vendor empanelment, supply contracts.
+TRACK_3_BUSINESS_EXPANSION: capex, new plants, expansion signals.
+TRACK_4_COMMERCIAL_HIRING: hiring/team-scaling signals.
 Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         return self._merge(self._ai_tracks(prompt), fb)
 
@@ -246,7 +246,6 @@ class Evaluator:
                      if special else "")
         ind_line = (f"INDUSTRY: {industry}" if industry and industry != "ALL_SECTORS"
                     else "INDUSTRY: any commercial / industrial sector (infer it)")
-                    
         prompt = f"""You are an elite B2B sales intelligence analyst judging genuine commercial buying intent.
 TODAY'S DATE: {datetime.now().strftime('%Y-%m-%d')}
 TARGET PRODUCT / SOLUTION: {target}
@@ -256,27 +255,27 @@ TARGET PRODUCT / SOLUTION: {target}
 {geo_rule}
 {ban_rule}
 
-OBJECTIVE: Find real companies or public bodies with an ACTIVE requirement, project, tender, or expansion matching '{special if special else target}' OR closely related services/parent categories.
+OBJECTIVE: find real, identifiable companies / public bodies with an ACTIVE requirement, project, tender or
+expansion matching: {special if special else target}.
 
 EVALUATION RULES (CRITICAL):
 1. VALID B2B PROSPECTS (is_valid=true): Active tenders, expanding companies, RFQs, corporate hiring matching the target/synonyms. 
    -> AWARDED TENDERS / CONTRACTS: These are HIGHLY VALID. If a tender has been awarded recently, the *winning contractor* is now an active buyer. You MUST extract the winning contractor as the "organization" and set entity_role="PROJECT_BUYER".
 2. ROUTE TO REVIEW (confidence="LOW"): If a lead is a genuine B2B buyer but matches ANY of these conditions, you MUST set is_valid=true and confidence="LOW":
-   - It is located in {country} but outside the specific REGIONAL FOCUS states.
    - It requires a related service/category but misses the exact product keyword.
 3. EXCLUDE (is_valid=false): 
-   - Schools/students, freelancers, blogs, generic global articles, or vendors merely advertising themselves.
+   - Schools/students, freelancers, blogs, generic global articles, or vendors merely advertising themselves (use entity_role SELLER for those).
    - Closed/expired tenders where NO winning contractor is announced.
-   - STALE LEADS: Any awarded contract or project that was explicitly awarded, completed, or commissioned more than 1 year before TODAY'S DATE. Only accept RECENT or ONGOING projects.
+   - STALE LEADS (STRICT 1-MONTH LIMIT): Any awarded contract, closed tender, or project milestone that occurred MORE THAN 30 DAYS before TODAY'S DATE. You must absolutely reject old closed tenders.
 
 Return ONLY JSON: {{"leads": [ one object per ITEM ]}} where each object has:
 "item_index": integer matching the ITEM number,
 "is_valid": boolean,
 "confidence": "HIGH" | "MEDIUM" | "LOW",
 "entity_role": "BUYER" | "PROJECT_BUYER" | "SERVICE_USER" | "SELLER" | "IRRELEVANT",
-"organization": official name of the company / procuring body (or the WINNING CONTRACTOR if awarded),
+"organization": official name of the company / procuring body,
 "industry": string, "city": string, "state": string,
-"target_solution": the specific requirement (or related service found),
+"target_solution": the specific requirement,
 "why_engage_now": 2-3 sentences (signal, urgency, opportunity),
 "product_usage": "Confirmed User" | "Prospective Buyer" | "Competitor" | "Unknown" plus short evidence,
 "upcoming_events": tender closing date / milestone, or "Unknown",
@@ -309,6 +308,12 @@ def map_verdicts(verdicts, n):
     return out
 
 
+def safe_cell(v):
+    """Google Sheets turns text starting with = + - @ into formulas; neutralise that."""
+    v = "" if v is None else str(v)
+    return " " + v if v[:1] in ("=", "+", "-", "@") else v
+
+
 # --------------------------------------------------------------------------- routing into the sheet
 class Router:
     def __init__(self, sheet):
@@ -317,23 +322,29 @@ class Router:
     def push(self, doc, ai, default_target, default_industry):
         """Returns (outcome, company). outcome in INBOX/REVIEW/PARTNER/TRASH/DUPLICATE/SKIPPED/FAILED."""
         company = normalize_company(str(ai.get("organization") or ""))
-        if company.lower() in ("unknown", "unknown firm", ""):
-            return "SKIPPED", company
-
         is_valid = ai.get("is_valid") in (True, "true", "True", "yes")
         confidence = str(ai.get("confidence") or "LOW").upper()
         role = str(ai.get("entity_role") or "IRRELEVANT").upper()
         if role == "IRRELEVANT":
             is_valid = False
+        buyer_roles = ("BUYER", "PROJECT_BUYER", "SERVICE_USER")
+        # AI recognised a buyer but doubted validity (expired? unclear?) -> a human decides, it is not trashed
+        doubtful = (not is_valid) and role in buyer_roles and confidence == "MEDIUM"
+        if doubtful:
+            ai = dict(ai, why_engage_now="(AI doubted validity) " + str(ai.get("why_engage_now") or ""))
 
-        if is_valid:
-            try:
-                chk = self.sheet.post("pre_flight_check", company_name=company)
-                if chk.get("exists") is True:
-                    log.info(f"[-] Duplicate in CRM: {company}")
-                    return "DUPLICATE", company
-            except SheetError as e:
-                log.warning(f"pre_flight_check failed (continuing): {e}")
+        if company.lower() in ("unknown", "unknown firm", ""):
+            if (is_valid or doubtful) and role != "SELLER":
+                host = re.sub(r"[^a-z0-9]", "", urlparse(doc["url"]).netloc.lower().replace("www.", ""))[:18]
+                company = f"Unidentified {hashlib.md5(doc['url'].encode()).hexdigest()[:4]} {host}"
+                confidence = "LOW"  # forces the Needs Review tab
+            else:
+                return "SKIPPED", company
+        if doc.get("snippet_only") and is_valid:
+            confidence = "LOW"  # unverified: only the search snippet was readable
+            ai = dict(ai, why_engage_now="(page unreadable - judged from search snippet) " + str(ai.get("why_engage_now") or ""))
+
+        # Duplicate handling happens inside the Apps Script insert_lead (it appends the NEW signal to the existing row).
 
         capture = datetime.now().strftime("%Y-%m-%d %H:%M")
         why = str(ai.get("why_engage_now") or "")
@@ -350,6 +361,8 @@ class Router:
             industry = str(ai.get("industry") or "Commercial Enterprise")
         lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(doc['url'].encode()).hexdigest()[:10]}"
 
+        if doubtful:
+            is_valid, confidence = True, "LOW"
         if not is_valid:
             sheet_name, outcome = SHEET_TRASH, "TRASH"
             row = [capture, company, doc["url"], why, ""]
@@ -367,11 +380,13 @@ class Router:
         log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name}")
         try:
             res = self.sheet.post("insert_lead", target_sheet=sheet_name, company_name=company, signal_brief=why,
-                                  row_data=row, contact_phone=phone, dm_name=dm)
+                                  row_data=[safe_cell(x) for x in row], contact_phone=phone, dm_name=dm,
+                                  source_url=doc["url"])
         except SheetError as e:
             log.error(f"insert_lead failed for {company}: {e}")
             return "FAILED", company
-        if res.get("duplicate"):
+        if res.get("status") == "duplicate" or res.get("duplicate") or "appended note" in str(res.get("message", "")).lower():
+            log.info(f"[-] Already in CRM: {company}")
             return "DUPLICATE", company
         return outcome, company
 
@@ -406,6 +421,7 @@ def main():
     evaluator = Evaluator(llm)
     router = Router(sheet)
     seen = load_cache(sheet)
+    fps = load_fingerprints()
 
     country = cfg["countries"][0] if cfg["countries"] else ""
     states = cfg["states"]
@@ -435,9 +451,10 @@ def main():
         for t, i in combos:
             campaigns.append((t, i, QueryGenerator(t, i, country, states, llm, use_ai_queries)))
 
-    stats = {"scanned": 0, "inbox": 0, "review": 0, "partners": 0, "trash": 0, "dupes": 0, "failed": 0}
+    stats = {"snippet_only": 0, "scanned": 0, "inbox": 0, "review": 0, "partners": 0, "trash": 0, "dupes": 0, "failed": 0}
     session_companies = set()
     pending = set()  # links already queued this run
+    pending_fp = set()  # content fingerprints already queued this run
     ai_failures = 0
     stop_reason = ""
 
@@ -477,9 +494,23 @@ def main():
                             continue
                         content = fetch_page(raw, protected_domains=cfg["protected"])
                         if content and len(content) > 120:
-                            docs.append({"track": track_name, "url": raw, "raw_text": content})
+                            fp = fingerprint(content)
+                            if fp and (fp in fps or fp in pending_fp):
+                                log.info(f"   same content already processed, skipping: {raw}")
+                                mark_seen(seen, raw)
+                                stats["dupes"] += 1
+                                continue
+                            if fp:
+                                pending_fp.add(fp)
+                            docs.append({"track": track_name, "url": raw, "raw_text": content, "fp": fp})
                         else:
-                            mark_seen(seen, raw)  # unreadable page: do not retry forever
+                            snip = f"{res.get('title', '')}\n{res.get('snippet', '')}".strip()
+                            if len(snip) >= 60:  # JS/captcha/blocked page: still let the AI judge the search snippet
+                                docs.append({"track": track_name, "url": raw, "fp": "", "snippet_only": True,
+                                             "raw_text": "[PAGE COULD NOT BE READ - SEARCH SNIPPET ONLY]\n" + snip})
+                                stats["snippet_only"] += 1
+                            else:
+                                mark_seen(seen, raw)  # nothing at all to evaluate
                     log.info(f"   {len(results)} results, {fresh} new")
 
                 for i in range(0, len(docs), 4):
@@ -498,16 +529,19 @@ def main():
                         v = vmap.get(idx)
                         if v is None:
                             mark_seen(seen, doc["url"])
+                            mark_fp(fps, doc.get("fp"))
                             continue
                         comp = normalize_company(str(v.get("organization") or ""))
                         if comp in session_companies:
                             mark_seen(seen, doc["url"])
+                            mark_fp(fps, doc.get("fp"))
                             continue
                         outcome, company = router.push(doc, v, target, industry)
                         if outcome == "FAILED":
                             stats["failed"] += 1
                             continue  # not cached -> retried next run
                         mark_seen(seen, doc["url"])
+                        mark_fp(fps, doc.get("fp"))
                         if outcome in ("INBOX", "REVIEW", "PARTNER"):
                             session_companies.add(company)
                         key = {"INBOX": "inbox", "REVIEW": "review", "PARTNER": "partners", "TRASH": "trash",
@@ -524,17 +558,14 @@ def main():
     duration = str(datetime.now() - t0).split(".")[0]
     pushed = stats["inbox"] + stats["review"]
     log.info(f"Done: {stats} in {duration}")
-    try:
-        sheet.post("report_run", job="harvest", stats=dict(stats, duration=duration, stop_reason=stop_reason,
-                                                           llm_calls=llm.calls, search_calls=search.calls))
-    except SheetError:
-        pass
     lines = ["🏁 <b>Radar Scout complete</b>",
              f"• Links scanned: <code>{stats['scanned']}</code>",
              f"• New leads → CRM: <code>{pushed}</code> (Inbox {stats['inbox']}, Review {stats['review']})",
              f"• Partners/suppliers: <code>{stats['partners']}</code> • Discarded: <code>{stats['trash']}</code>"
              f" • Duplicates: <code>{stats['dupes']}</code>",
              f"• Duration: <code>{duration}</code>"]
+    if stats["snippet_only"]:
+        lines.append(f"• 🔎 Judged from snippet only (page unreadable → verify in Review): <code>{stats['snippet_only']}</code>")
     if stats["failed"]:
         lines.append(f"• ⚠️ Sheet write failures: <code>{stats['failed']}</code> (will retry next run)")
     if stop_reason:
