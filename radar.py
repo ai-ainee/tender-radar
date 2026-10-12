@@ -333,7 +333,7 @@ class Router:
 
         log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name}")
         try:
-            res = self.sheet.post("insert_lead", target_sheet=sheet_name, company_name=company, signal_brief=why, row_data=[safe_cell(x) for x in row], contact_phone=phone, dm_name=dm, source_url=doc["url"])
+            res = self.sheet.post("insert_lead", target_sheet=sheet_name, company_name=safe_cell(company), signal_brief=safe_cell(why), row_data=[safe_cell(x) for x in row], contact_phone=safe_cell(phone), dm_name=safe_cell(dm), source_url=doc["url"])
         except SheetError as e:
             log.error(f"insert_lead failed for {company}: {e}")
             return "FAILED", company
