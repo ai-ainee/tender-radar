@@ -331,14 +331,16 @@ class Router:
             outcome = "REVIEW" if confidence == "LOW" else "INBOX"
             row = [capture, str(ai.get("upcoming_events") or "Unknown"), role, industry, str(ai.get("state") or "N/A"), str(ai.get("city") or "N/A"), company, solution, why, doc["url"], str(ai.get("product_usage") or "Unknown"), "", lead_id]
 
-        log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name}")
+        # NEW: Appends the source URL and the AI's reasoning directly to the routing log
+        log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name} | {doc['url']} | Reason: {why}")
         try:
             res = self.sheet.post("insert_lead", target_sheet=sheet_name, company_name=safe_cell(company), signal_brief=safe_cell(why), row_data=[safe_cell(x) for x in row], contact_phone=safe_cell(phone), dm_name=safe_cell(dm), source_url=doc["url"])
         except SheetError as e:
             log.error(f"insert_lead failed for {company}: {e}")
             return "FAILED", company
         if res.get("status") == "duplicate" or res.get("duplicate") or "appended note" in str(res.get("message", "")).lower():
-            log.info(f"[-] Already in CRM: {company}")
+            # NEW: Appends the URL and reasoning to the Duplicate log as well
+            log.info(f"[-] Already in CRM: {company} | {doc['url']} | Reason: {why}")
             return "DUPLICATE", company
         return outcome, company
 
