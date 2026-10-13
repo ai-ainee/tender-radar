@@ -411,7 +411,7 @@ def main():
         if stats["scanned"] >= max_links: raise StopRun(f"link budget of {max_links} reached")
 
     # --- PRE-AI BOUNCER ---
-    core_kw = set(["tender", "rfp", "bid", "procurement", "loa", "award", "contract", "project", "empanelment", "drafting", "design"])
+    core_kw = set() # Start completely empty!
     for group in (cfg["targets"], cfg["directives"], cfg["industries"], [special]):
         for item in group:
             for word in str(item).lower().replace("-", " ").split():
@@ -465,11 +465,19 @@ def main():
                         if content and len(content) > 120:
                             low_content = content.lower()
                             
-                            # --- STAGE 2: DYNAMIC NEGATIVE WORD CHECK ---
+                            # --- STAGE 2: DYNAMIC NEGATIVE WORD CHECK (Regex Word Boundaries) ---
                             # Uses the "Banned Keywords" column from your Google Sheet
-                            bad_match = next((bad for bad in cfg["banned_kw"] if bad and bad in low_content), None)
+                            bad_match = None
+                            for bad in cfg["banned_kw"]:
+                                if not bad: continue
+                                # \b ensures it only matches whole words. 'ips' will NOT match 'circlips'.
+                                pattern = r'\b' + re.escape(bad) + r'\b'
+                                if re.search(pattern, low_content):
+                                    bad_match = bad
+                                    break
+                            
                             if bad_match and not protected:
-                                log.info(f"   [-] Pre-AI Drop (Negative word '{bad_match}'): {raw}")
+                                log.info(f"    [-] Pre-AI Drop (Negative word '{bad_match}'): {raw}")
                                 mark_seen(seen, raw)
                                 stats["trash"] += 1
                                 continue
