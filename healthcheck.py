@@ -18,7 +18,8 @@ OK, WARN, BAD = "✅", "⚠️", "❌"
 def check_libs(add):
     for mod, why, critical in (("requests", "HTTP", True), ("bs4", "HTML parsing", True), ("pypdf", "PDF text", False),
                                ("dns", "e-mail MX checks", False), ("ddgs", "free search fallback", False),
-                               ("pytesseract", "OCR for scanned PDFs", False), ("pdf2image", "OCR for scanned PDFs", False)):
+                               ("pytesseract", "OCR for scanned PDFs", False), ("pdf2image", "OCR for scanned PDFs", False),
+                               ("playwright", "JS/gated portal crawling", False)):
         try:
             importlib.import_module(mod)
         except Exception:
