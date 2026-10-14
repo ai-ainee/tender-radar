@@ -19,6 +19,7 @@ Optional environment variables (all have defaults):
   SITE_CRAWL_PAGES (6)  OSINT_CHARS (12000)  SOURCE_MAX_FAILS (3)  CONTACT_LOOKUPS (3)
   DEFAULT_COUNTRY_CODE (91)  NEWS_HL (en-IN)  NEWS_GL (IN)  NEWS_CEID (IN:en)
   ENRICH_GUESS_EMAILS (0)  put a guessed email into the Email column when none was found (status = inferred)
+  MAX_ENRICH_ATTEMPTS (4)  a lead that fails this many runs is parked with a note (state in enrich_attempts.json)
   ENRICH_RETRY_ON_AI_FAIL (0)  1 = leave the lead pending when the AI fails instead of saving a basic dossier
 """
 import difflib
@@ -1006,6 +1007,43 @@ def save_unidentified(sheet, lead_id, sheet_org, ref_url):
             f"The source page does not clearly name the buyer. Please check it manually:\n{tg_escape(ref_url)}")
     return True, text, buttons, 0
 
+# --------------------------------------------------------------------------------------------------
+# retry counter: stops a lead that keeps failing from being retried forever (file is committed by the workflow)
+# --------------------------------------------------------------------------------------------------
+ATTEMPTS_FILE = "enrich_attempts.json"
+MAX_ATTEMPTS = env_int("MAX_ENRICH_ATTEMPTS", 4)
+
+def load_attempts():
+    try:
+        with open(ATTEMPTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log.warning(f"{ATTEMPTS_FILE} unreadable, starting fresh: {e}")
+        return {}
+
+def save_attempts(attempts):
+    try:
+        tmp = ATTEMPTS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(attempts, f, indent=0, sort_keys=True)
+        os.replace(tmp, ATTEMPTS_FILE)
+    except Exception as e:
+        log.warning(f"Could not write {ATTEMPTS_FILE}: {e}")
+
+def give_up(sheet, lead_id, org, ref_url, tries):
+    """Write a visible placeholder dossier so the lead leaves the pending queue. 'Re-enrich' in the sheet restarts it."""
+    dossier = (f"### ⚠️ Auto-enrichment failed\n{org}\n\n_Tried {tries} times (no research data or AI unavailable). "
+               f"Set Action = Re-enrich to try again, or enrich it manually._\n\nSource: {ref_url}")
+    try:
+        sheet.post("update_lead_dossier", lead_id=lead_id, dossier=safe_cell(dossier))
+        return True
+    except SheetError as e:
+        log.error(f"   could not save give-up note for {org}: {e}")
+        return False
+
 def process_lead(lead, search, llm, sheet, index, index_ok):
     """Returns (ok, telegram_text, buttons) or raises."""
     lead_id = str(lead.get("lead_id") or "").strip()
@@ -1216,6 +1254,20 @@ def main():
     skipped = len(all_leads) - len(leads)
     if skipped:
         log.warning(f"{skipped} row(s) in the Leads tab have no Lead ID or Organization and cannot be enriched.")
+    attempts = load_attempts()
+    pending_ids = {str(l.get("lead_id")).strip() for l in leads}
+    attempts = {k: v for k, v in attempts.items() if k in pending_ids}        # forget leads no longer pending
+    gave_up = []
+    for l in list(leads):
+        lid = str(l.get("lead_id")).strip()
+        if attempts.get(lid, 0) >= MAX_ATTEMPTS:
+            org_l = str(l.get("organization") or "").strip()
+            log.warning(f"{org_l} ({lid}) failed {attempts[lid]} times - parking it with a note.")
+            if give_up(sheet, lid, org_l, str(l.get("url") or ""), attempts[lid]):
+                gave_up.append(org_l)
+                attempts.pop(lid, None)
+            leads.remove(l)                                                      # never let it block the queue
+    save_attempts(attempts)
     leads = leads[:env_int("MAX_ENRICH_PER_RUN", 15)]
     if not leads:
         log.info("No leads waiting for enrichment.")
@@ -1238,16 +1290,20 @@ def main():
             log.warning("Time budget reached - remaining leads will be picked up next run.")
             break
         org = str(lead.get("organization") or "").strip()
-        log.info(f"Enriching {org} ({lead.get('lead_id')})")
+        lid = str(lead.get("lead_id")).strip()
+        log.info(f"Enriching {org} ({lid})")
         try:
             result = process_lead(lead, search, llm, sheet, index, index_ok)
         except Exception as e:          # one bad lead must never stop the batch
             log.error(f"   unexpected error for {org}: {e}")
-            failed += 1
-            continue
+            result = None
         if not result:
             failed += 1
+            attempts[lid] = attempts.get(lid, 0) + 1
+            save_attempts(attempts)
             continue
+        attempts.pop(lid, None)
+        save_attempts(attempts)
         done += 1
         _, text, buttons, score = result
         if score < 40:
@@ -1259,7 +1315,8 @@ def main():
     duration = f"{int(time.time() - started)}s"
     tg.send(f"🏁 <b>Enrichment complete</b>\n• Enriched: <code>{done}</code>\n• Failed / retry next run: <code>{failed}</code>"
             f"\n• Duration: <code>{duration}</code>" + (f"\n• Sources disabled this run: <code>{tg_escape(', '.join(off))}</code>" if off else "")
-            + (f"\n• Thin results, check manually: {tg_escape('; '.join(thin[:8]))}" if thin else ""))
+            + (f"\n• Thin results, check manually: {tg_escape('; '.join(thin[:8]))}" if thin else "")
+            + (f"\n• Parked after {MAX_ATTEMPTS} failed tries (use Re-enrich): {tg_escape('; '.join(gave_up[:8]))}" if gave_up else ""))
     log.info(f"Enrichment done: {done} ok, {failed} failed")
     return 0
 
