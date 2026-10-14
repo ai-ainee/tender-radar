@@ -156,6 +156,19 @@ class Telegram:
             except Exception: time.sleep(1)
         return False
 
+def run_job(name, fn, run_info=None):
+    """Run a job's main(); never let an exception escape silently. Returns the process exit code."""
+    try:
+        code = fn()
+        return 0 if code is None else int(code)
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        log.exception(f"[{name}] crashed")
+        try: Telegram().send(f"\U0001F6A8 <b>{tg_escape(name)} crashed</b>\n<code>{tg_escape(e)}</code>")
+        except Exception: pass
+        return 1
+
 class SheetError(Exception):
     def __init__(self, message, retry=True):
         super().__init__(message)
