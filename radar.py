@@ -277,6 +277,7 @@ Return ONLY JSON: {{"leads": [ one object per ITEM ]}} where each object has:
 "upcoming_events": tender closing date / milestone, or "Unknown",
 "dm_name": contact person if stated in the text else "",
 "phone": phone if stated in the text else "",
+"lead_score": "Rate the lead from 1 to 100 based on urgency, scale, and match to our products."
 "competitor_winner": "If this article announces a contract award, who won it? (else leave empty)",
 "winning_value": "The contract value/amount awarded (else leave empty)",
 "project_name": "The name of the project/tender (else leave empty)"
@@ -328,7 +329,8 @@ class Router:
             ai = dict(ai, why_engage_now="(page unreadable - judged from search snippet) " + str(ai.get("why_engage_now") or ""))
 
         capture = datetime.now().strftime("%Y-%m-%d %H:%M")
-        why = str(ai.get("why_engage_now") or "")
+        score = str(ai.get("lead_score") or "50")
+        why = f"🔥 [SCORE: {score}/100] " + str(ai.get("why_engage_now") or "")
         solution = str(ai.get("target_solution") or default_target)
         phone = str(ai.get("phone") or "")
         if len(extract_phone(phone)) < 10: phone = extract_phone(doc.get("raw_text", ""))
