@@ -11,6 +11,8 @@ import re
 import sys
 import time
 import uuid
+import requests
+import json
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -30,7 +32,21 @@ TRACK_KEYS = ["TRACK_1_PUBLIC_TENDERS", "TRACK_2_CORPORATE_PROCUREMENT",
 
 class StopRun(Exception):
     """Raised to leave the campaign loops early."""
-
+  
+def push_competitor_intel(webhook_url, webhook_secret, project_name, client_name, competitor_name, winning_value, our_price="N/A", outcome="Lost", remarks="Scraped via Python"):
+    payload = {
+        "secret": webhook_secret, "action": "insert_competitor_intel",
+        "project_name": project_name, "client_name": client_name,
+        "competitor_name": competitor_name, "winning_value": winning_value,
+        "our_price": our_price, "outcome": outcome, "remarks": remarks
+    }
+    try:
+        response = requests.post(webhook_url, json=payload, timeout=15)
+        if response.status_code == 200:
+            print(f"✅ Intel Logged: {competitor_name} won {project_name}")
+    except Exception as e:
+        print(f"❌ Webhook error: {str(e)}")
+      
 def load_cache(sheet):
     seen = set()
     if not os.path.exists(CACHE_FILE): open(CACHE_FILE, "a", encoding="utf-8").close()
@@ -260,7 +276,10 @@ Return ONLY JSON: {{"leads": [ one object per ITEM ]}} where each object has:
 "product_usage": "Confirmed User" | "Prospective Buyer" | "Competitor" | "Unknown" plus short evidence,
 "upcoming_events": tender closing date / milestone, or "Unknown",
 "dm_name": contact person if stated in the text else "",
-"phone": phone if stated in the text else ""
+"phone": phone if stated in the text else "",
+"competitor_winner": "If this article announces a contract award, who won it? (else leave empty)",
+"winning_value": "The contract value/amount awarded (else leave empty)",
+"project_name": "The name of the project/tender (else leave empty)"
 Never invent facts that are not in the scraped text.
 
 BATCH:
@@ -331,6 +350,21 @@ class Router:
             outcome = "REVIEW" if confidence == "LOW" else "INBOX"
             row = [capture, str(ai.get("upcoming_events") or "Unknown"), role, industry, str(ai.get("state") or "N/A"), str(ai.get("city") or "N/A"), company, solution, why, doc["url"], str(ai.get("product_usage") or "Unknown"), "", lead_id]
 
+        # --- NEW: COMPETITOR INTEL TRIGGER ---
+        comp_winner = str(ai.get("competitor_winner") or "").strip()
+        if comp_winner and comp_winner.lower() not in ("none", "", "null", "n/a", "unknown"):
+            push_competitor_intel(
+                webhook_url="https://script.google.com/macros/s/AKfycbz1Hfr-AM4Wcb4_hBPepAaZbdYaD3Rk_GjNyfBsON4hT-eLnmmVYNDuqH3OCCB3g-wbWg/exec", # <-- MUST REPLACE THIS WITH YOUR GOOGLE WEB APP URL
+                webhook_secret="radar_secure_2026", 
+                project_name=str(ai.get("project_name") or "Unknown Project"),
+                client_name=company,
+                competitor_name=comp_winner,
+                winning_value=str(ai.get("winning_value") or "0"),
+                our_price="N/A",
+                outcome="Lost",
+                remarks=f"AI detected award via {doc['url']}"
+            )
+        
         # NEW: Appends the source URL and the AI's reasoning directly to the routing log
         log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name} | {doc['url']} | Reason: {why}")
         try:
