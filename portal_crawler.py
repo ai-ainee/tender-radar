@@ -22,22 +22,31 @@ def crawl_all_pages(start_url, cookie_json_str="", max_pages=3):
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
         )
 
-        # 1. Inject cookies retrieved from Google Sheets Settings
+        # 1. Inject cookies retrieved from Google Sheets Settings (bad entries are skipped, not fatal)
         if cookie_json_str and cookie_json_str.strip():
             try:
                 raw_cookies = json.loads(cookie_json_str)
-                formatted_cookies = []
-                for c in raw_cookies:
-                    cookie_dict = {
-                        "name": c["name"],
-                        "value": c["value"],
-                        "domain": c.get("domain", ""),
-                        "path": c.get("path", "/")
-                    }
-                    formatted_cookies.append(cookie_dict)
-                context.add_cookies(formatted_cookies)
             except Exception as e:
-                logger.error(f"Error parsing session cookies in GitHub Action: {e}")
+                logger.error(f"Error parsing session cookies: {e}")
+                raw_cookies = []
+            added = 0
+            for c in raw_cookies if isinstance(raw_cookies, list) else []:
+                try:
+                    if not c.get("name") or not c.get("domain"):
+                        continue
+                    ck = {"name": c["name"], "value": str(c.get("value", "")),
+                          "domain": c["domain"], "path": c.get("path", "/")}
+                    exp = c.get("expires", c.get("expirationDate"))
+                    if isinstance(exp, (int, float)) and exp > 0: ck["expires"] = exp
+                    for k in ("secure", "httpOnly"):
+                        if isinstance(c.get(k), bool): ck[k] = c[k]
+                    ss = str(c.get("sameSite", "")).capitalize()
+                    if ss in ("Strict", "Lax", "None"): ck["sameSite"] = ss
+                    context.add_cookies([ck])
+                    added += 1
+                except Exception as e:
+                    logger.warning(f"Skipped bad cookie {c.get('name') if isinstance(c, dict) else '?'}: {e}")
+            logger.info(f"Injected {added} session cookie(s)")
 
         page = context.new_page()
 
