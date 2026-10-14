@@ -13,6 +13,7 @@ import time
 import uuid
 import requests
 import json
+from portal_crawler import crawl_all_pages
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -104,6 +105,7 @@ def load_settings(sheet):
     s = sheet.get("get_settings")
     return {
         "special_prompt": str(s.get("special_prompt") or "").strip(),
+        "session_cookies": str(s.get("session_cookies") or "").strip(),
         "targets": _as_list(s.get("target_products")),
         "directives": _as_list(s.get("directives")),
         "industries": _as_list(s.get("industry_keywords")),
@@ -498,7 +500,35 @@ def main():
                             stats["trash"] += 1
                             continue
                             
-                        content = fetch_page(raw, protected_domains=cfg["protected"])
+                        content = None
+                        cookie_str = cfg.get("session_cookies", "").strip()
+
+                        # Parse domains stored in the cookies
+                        cookie_domains = set()
+                        if cookie_str:
+                            try:
+                                for c in json.loads(cookie_str):
+                                    dom = c.get("domain", "").lstrip(".").lower()
+                                    if dom:
+                                        cookie_domains.add(dom)
+                            except Exception as e:
+                                log.warning(f"Could not parse cookie domains: {e}")
+
+                        explicit_portals = ["eprocure", "gem.gov", "tender", "etenders", "railone"]
+                        sheet_protected = [p.lower() for p in cfg.get("protected", []) if p]
+                        all_target_domains = set(explicit_portals + sheet_protected)
+
+                        matches_cookie_domain = any(cd in low_url for cd in cookie_domains if cd)
+                        matches_explicit_list = any(td in low_url for td in all_target_domains if td)
+
+                        if matches_cookie_domain or matches_explicit_list:
+                            log.info(f"[*] Gated/portal target detected. Launching Playwright on: {raw}")
+                            rendered_pages = crawl_all_pages(raw, cookie_str, max_pages=3)
+                            if rendered_pages:
+                                content = "\n\n--- NEXT PAGE ---\n\n".join(rendered_pages)
+
+                        if not content:
+                            content = fetch_page(raw, protected_domains=cfg["protected"])
                         
                         if content and len(content) > 120:
                             low_content = content.lower()
