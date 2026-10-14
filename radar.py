@@ -11,9 +11,7 @@ import re
 import sys
 import time
 import uuid
-import requests
 import json
-from portal_crawler import crawl_all_pages
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -34,20 +32,6 @@ TRACK_KEYS = ["TRACK_1_PUBLIC_TENDERS", "TRACK_2_CORPORATE_PROCUREMENT",
 class StopRun(Exception):
     """Raised to leave the campaign loops early."""
   
-def push_competitor_intel(webhook_url, webhook_secret, project_name, client_name, competitor_name, winning_value, our_price="N/A", outcome="Lost", remarks="Scraped via Python"):
-    payload = {
-        "secret": webhook_secret, "action": "insert_competitor_intel",
-        "project_name": project_name, "client_name": client_name,
-        "competitor_name": competitor_name, "winning_value": winning_value,
-        "our_price": our_price, "outcome": outcome, "remarks": remarks
-    }
-    try:
-        response = requests.post(webhook_url, json=payload, timeout=15)
-        if response.status_code == 200:
-            print(f"✅ Intel Logged: {competitor_name} won {project_name}")
-    except Exception as e:
-        print(f"❌ Webhook error: {str(e)}")
-      
 def load_cache(sheet):
     seen = set()
     if not os.path.exists(CACHE_FILE): open(CACHE_FILE, "a", encoding="utf-8").close()
@@ -357,18 +341,14 @@ class Router:
         # --- NEW: COMPETITOR INTEL TRIGGER ---
         comp_winner = str(ai.get("competitor_winner") or "").strip()
         if comp_winner and comp_winner.lower() not in ("none", "", "null", "n/a", "unknown"):
-            push_competitor_intel(
-                webhook_url="https://script.google.com/macros/s/AKfycbz1Hfr-AM4Wcb4_hBPepAaZbdYaD3Rk_GjNyfBsON4hT-eLnmmVYNDuqH3OCCB3g-wbWg/exec", # <-- MUST REPLACE THIS WITH YOUR GOOGLE WEB APP URL
-                webhook_secret="radar_secure_2026", 
-                project_name=str(ai.get("project_name") or "Unknown Project"),
-                client_name=company,
-                competitor_name=comp_winner,
-                winning_value=str(ai.get("winning_value") or "0"),
-                our_price="N/A",
-                outcome="Lost",
-                remarks=f"AI detected award via {doc['url']}"
-            )
-        
+            try:
+                self.sheet.post("insert_competitor_intel", project_name=safe_cell(ai.get("project_name") or "Unknown Project"),
+                                client_name=safe_cell(company), competitor_name=safe_cell(comp_winner),
+                                winning_value=str(ai.get("winning_value") or "0"), our_price="N/A", outcome="Lost",
+                                remarks=f"AI detected award via {doc['url']}")
+            except SheetError as e:
+                log.warning(f"competitor intel not logged: {e}")
+
         # NEW: Appends the source URL and the AI's reasoning directly to the routing log
         log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name} | {doc['url']} | Reason: {why}")
         try:
@@ -450,6 +430,20 @@ def main():
         if time.time() - started > max_runtime: raise StopRun(f"time budget of {max_runtime // 60} min reached")
         if stats["scanned"] >= max_links: raise StopRun(f"link budget of {max_links} reached")
 
+    # --- GATED PORTAL SETUP (parsed once) ---
+    cookie_str = cfg.get("session_cookies", "").strip()
+    cookie_domains = set()
+    if cookie_str:
+        try:
+            for ck in json.loads(cookie_str):
+                dom = str(ck.get("domain", "")).lstrip(".").lower()
+                if dom: cookie_domains.add(dom)
+        except Exception as e:
+            log.warning(f"Could not parse cookie domains: {e}")
+    portal_hosts = {"eprocure", "gem.gov", "etenders", "railone"} | {p for p in cfg.get("protected", []) if p}
+    max_playwright = env_int("MAX_PLAYWRIGHT_PER_RUN", 10)
+    playwright_used = 0
+    # ----------------------------------------
     # --- PRE-AI BOUNCER ---
     core_kw = set() # Start completely empty!
     for group in (cfg["targets"], cfg["directives"], cfg["industries"], [special]):
@@ -501,31 +495,16 @@ def main():
                             continue
                             
                         content = None
-                        cookie_str = cfg.get("session_cookies", "").strip()
-
-                        # Parse domains stored in the cookies
-                        cookie_domains = set()
-                        if cookie_str:
+                        if playwright_used < max_playwright and any(h in low_url for h in (cookie_domains | portal_hosts)):
+                            playwright_used += 1
+                            log.info(f"[*] Gated/portal target ({playwright_used}/{max_playwright}). Launching Playwright on: {raw}")
                             try:
-                                for c in json.loads(cookie_str):
-                                    dom = c.get("domain", "").lstrip(".").lower()
-                                    if dom:
-                                        cookie_domains.add(dom)
+                                from portal_crawler import crawl_all_pages
+                                rendered_pages = crawl_all_pages(raw, cookie_str, max_pages=3)
+                                if rendered_pages:
+                                    content = "\n\n--- NEXT PAGE ---\n\n".join(rendered_pages)
                             except Exception as e:
-                                log.warning(f"Could not parse cookie domains: {e}")
-
-                        explicit_portals = ["eprocure", "gem.gov", "tender", "etenders", "railone"]
-                        sheet_protected = [p.lower() for p in cfg.get("protected", []) if p]
-                        all_target_domains = set(explicit_portals + sheet_protected)
-
-                        matches_cookie_domain = any(cd in low_url for cd in cookie_domains if cd)
-                        matches_explicit_list = any(td in low_url for td in all_target_domains if td)
-
-                        if matches_cookie_domain or matches_explicit_list:
-                            log.info(f"[*] Gated/portal target detected. Launching Playwright on: {raw}")
-                            rendered_pages = crawl_all_pages(raw, cookie_str, max_pages=3)
-                            if rendered_pages:
-                                content = "\n\n--- NEXT PAGE ---\n\n".join(rendered_pages)
+                                log.warning(f"Playwright crawl failed ({e}); falling back to plain fetch")
 
                         if not content:
                             content = fetch_page(raw, protected_domains=cfg["protected"])
