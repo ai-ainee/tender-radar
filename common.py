@@ -9,6 +9,8 @@ import random
 import re
 import time
 from io import BytesIO
+import ipaddress
+import socket
 from urllib.parse import parse_qsl, urlencode, urlparse
 import requests
 import urllib3
@@ -57,6 +59,23 @@ def clean_url(url):
         query = "?" + urlencode(q) if q else ""
         return f"{host}{path}{query}".lower()
     except Exception: return (url or "").strip().lower()
+        
+def is_safe_url(url):
+    """Blocks non-HTTP schemes, localhost, private networks, and cloud metadata IPs (SSRF protection)."""
+    try:
+        p = urlparse((url or "").strip())
+        if p.scheme.lower() not in ("http", "https") or not p.hostname:
+            return False
+        host = p.hostname.lower()
+        if host in ("localhost", "0.0.0.0") or host.endswith(".local") or host.endswith(".internal"):
+            return False
+        for info in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+                return False
+        return True
+    except Exception:
+        return False
 
 # UPDATED: Fully international phone regex
 _PHONE_RE = re.compile(
@@ -200,7 +219,9 @@ class SheetAPI:
             except SheetError as e:
                 last = e
                 if not e.retry: break
-            except requests.RequestException as e: last = SheetError(f"network error: {e}")
+            except requests.RequestException as e:
+                safe_err = str(e).replace(self.secret, "***") if self.secret else str(e)
+                last = SheetError(f"network error: {safe_err}")
             if attempt < retries: time.sleep(2 * attempt)
         raise last or SheetError("unknown webhook failure")
     def get(self, action, **params): return self._request("GET", action, params)
@@ -363,19 +384,28 @@ def _html_text(raw_bytes, encoding, max_chars):
     except Exception: return ""
 
 def _fetch_direct(url, max_chars, pdf_pages):
-    try:
-        with requests.get(url, headers={"User-Agent": random.choice(USER_AGENTS)}, timeout=(5, 15), verify=False, stream=True, allow_redirects=True) as r:
-            if r.status_code != 200: return ""
-            clen = r.headers.get("Content-Length")
-            if clen and clen.isdigit() and int(clen) > 12 * 1024 * 1024: return ""
-            ctype = r.headers.get("Content-Type", "").lower()
-            is_pdf = "application/pdf" in ctype or url.lower().split("?")[0].endswith(".pdf")
-            data = _read_limited(r, 8 * 1024 * 1024 if is_pdf else 2 * 1024 * 1024)
-            if is_pdf or data[:5] == b"%PDF-": return _pdf_text(data, pdf_pages)[:max_chars]
-            return _html_text(data, r.encoding or r.apparent_encoding, max_chars)
-    except Exception: return ""
+    if not is_safe_url(url): return ""
+    headers = {"User-Agent": random.choice(USER_AGENTS)}
+    for verify_ssl in (True, False):
+        try:
+            with requests.get(url, headers=headers, timeout=(5, 15), verify=verify_ssl, stream=True, allow_redirects=True) as r:
+                if r.status_code != 200 or not is_safe_url(r.url): return ""
+                clen = r.headers.get("Content-Length")
+                if clen and clen.isdigit() and int(clen) > 12 * 1024 * 1024: return ""
+                ctype = r.headers.get("Content-Type", "").lower()
+                is_pdf = "application/pdf" in ctype or url.lower().split("?")[0].endswith(".pdf")
+                data = _read_limited(r, 8 * 1024 * 1024 if is_pdf else 2 * 1024 * 1024)
+                if is_pdf or data[:5] == b"%PDF-": return _pdf_text(data, pdf_pages)[:max_chars]
+                return _html_text(data, r.encoding or r.apparent_encoding, max_chars)
+        except requests.exceptions.SSLError:
+            if not verify_ssl: return ""
+            continue
+        except Exception:
+            return ""
+    return ""
 
 def fetch_page(url, protected_domains=(), max_chars=6000, pdf_pages=6):
+    if not is_safe_url(url): return ""
     time.sleep(random.uniform(0.4, 1.0))
     low = (url or "").lower()
     protected = any(d and d in low for d in protected_domains)
