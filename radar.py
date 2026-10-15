@@ -46,6 +46,23 @@ def load_cache(sheet):
     except SheetError as e: log.warning(f"Cloud cache unavailable, continuing with local cache only: {e}")
     seen.discard("")
     return seen
+  
+def ai_is_gated_portal(llm, url):
+    """
+    Asks the AI if a given URL is a gated portal, e-procurement site, 
+    or tender board requiring authentication/browser rendering.
+    """
+    prompt = f"""Analyze this URL: "{url}"
+Is this website likely to be a government tender portal, e-procurement platform, corporate vendor board, or a site that requires login/cookies to view content?
+Return ONLY a valid JSON object: {{"is_portal": true}} or {{"is_portal": false}}"""
+    
+    try:
+        res = llm.generate_json(prompt, validator=lambda d: isinstance(d, dict))
+        if res and isinstance(res, dict):
+            return bool(res.get("is_portal", False))
+    except Exception:
+        pass
+    return False
 
 def fingerprint(text):
     norm = re.sub(r"[^a-z0-9]", "", (text or "").lower())[:3000]
@@ -495,9 +512,15 @@ def main():
                             continue
                             
                         content = None
-                        if playwright_used < max_playwright and any(h in low_url for h in (cookie_domains | portal_hosts)):
+                        
+                        # Dynamically check via AI if this URL requires Playwright/session cookies
+                        needs_playwright = False
+                        if cookie_str and playwright_used < max_playwright:
+                            needs_playwright = ai_is_gated_portal(llm, raw)
+
+                        if needs_playwright:
                             playwright_used += 1
-                            log.info(f"[*] Gated/portal target ({playwright_used}/{max_playwright}). Launching Playwright on: {raw}")
+                            log.info(f"[*] AI identified gated portal ({playwright_used}/{max_playwright}). Launching Playwright on: {raw}")
                             try:
                                 from portal_crawler import crawl_all_pages
                                 rendered_pages = crawl_all_pages(raw, cookie_str, max_pages=3)
