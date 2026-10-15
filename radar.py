@@ -443,7 +443,7 @@ def main():
             campaigns.append((t, i, QueryGenerator(t, i, country, states, llm, use_ai_queries)))
 
     stats = {"snippet_only": 0, "scanned": 0, "inbox": 0, "review": 0, "partners": 0, "trash": 0, "dupes": 0, "failed": 0}
-    session_companies = set()
+    session_signals = set()
     pending = set()
     pending_fp = set()
     ai_failures = 0
@@ -602,17 +602,20 @@ def main():
                             mark_fp(fps, doc.get("fp"))
                             continue
                         comp = normalize_company(str(v.get("organization") or ""))
-                        if comp in session_companies:
+                        sol_key = re.sub(r"\s+", " ", str(v.get("target_solution") or target).strip().lower())
+                        sig_key = (comp.lower(), sol_key)
+                        if sig_key in session_signals:
                             mark_seen(seen, doc["url"])
                             mark_fp(fps, doc.get("fp"))
-                            continue
+                            continue                        
                         outcome, company = router.push(doc, v, target, industry)
                         if outcome == "FAILED":
                             stats["failed"] += 1
                             continue
                         mark_seen(seen, doc["url"])
                         mark_fp(fps, doc.get("fp"))
-                        if outcome in ("INBOX", "REVIEW", "PARTNER"): session_companies.add(company)
+                        if outcome in ("INBOX", "REVIEW", "PARTNER", "DUPLICATE"):
+                            session_signals.add((company.lower(), sol_key))
                         key = {"INBOX": "inbox", "REVIEW": "review", "PARTNER": "partners", "TRASH": "trash", "DUPLICATE": "dupes"}.get(outcome)
                         if key: stats[key] += 1
     except StopRun as e:
