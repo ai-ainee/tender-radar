@@ -1165,10 +1165,20 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
 
     dossier = build_dossier(org, company, contacts, primary, facts, pitch, research, ai_ok, comp_score)
     try:
-        res = sheet.post("update_lead_dossier", lead_id=lead_id, dossier=safe_cell(dossier),
-                         contacts={"dm_name": safe_cell(primary["name"]), "dm_title": safe_cell(primary["title"]),
-                                   "email": safe_cell(primary["email"]), "phone": safe_cell(primary["phone"]),
-                                   "website": safe_cell(company["website"]), "linkedin_url": safe_cell(primary["linkedin_url"])})
+        res = sheet.post(
+    "update_lead_dossier",
+    lead_id=lead_id,
+    organization=safe_cell(org),
+    dossier=safe_cell(dossier),
+    contacts={
+        "dm_name": safe_cell(primary["name"]),
+        "dm_title": safe_cell(primary["title"]),
+        "email": safe_cell(primary["email"]),
+        "phone": safe_cell(primary["phone"]),
+        "website": safe_cell(company["website"]),
+        "linkedin_url": safe_cell(primary["linkedin_url"]),
+    },
+)
         log.info(f"   saved: {res.get('message', 'ok') if isinstance(res, dict) else 'ok'}")
     except SheetError as e:
         log.error(f"   could not save dossier for {org}: {e}")
