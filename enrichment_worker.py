@@ -39,7 +39,7 @@ from urllib.parse import quote, quote_plus, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram, env_int, extract_emails, extract_phones,
-                    log, tg_escape)
+                    is_safe_url, log, tg_escape)
 
 try:  # fetch_page is kept for the reference URL exactly as before
     from common import fetch_page
@@ -104,6 +104,8 @@ def guarded(name, fn, *args, default=None, **kw):
 # HTTP (stdlib only, so no new dependency)
 # --------------------------------------------------------------------------------------------------
 def http_get(url, timeout=12, max_bytes=700_000, insecure=False):
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL: {url}")
     ctx = ssl._create_unverified_context() if insecure else None
     req = Request(url, headers={"User-Agent": UA, "Accept-Language": "en",
                                 "Accept": "text/html,application/xml,application/json;q=0.9,*/*;q=0.8"})
@@ -796,12 +798,12 @@ FACT_SCHEMA = """{
 }"""
 
 def seller_block():
+    extra = ""
+    if SELLER_PROOF: extra += f"\nPROOF / CASE STUDIES: {SELLER_PROOF}"
+    if SELLER_ELIGIBILITY: extra += f"\nELIGIBILITY / CERTIFICATIONS: {SELLER_ELIGIBILITY}"
     if SELLER_OFFER:
-        extra = ""
-        if SELLER_PROOF: extra += f"\nPROOF / CASE STUDIES: {SELLER_PROOF}"
-        if SELLER_ELIGIBILITY: extra += f"\nELIGIBILITY / CERTIFICATIONS: {SELLER_ELIGIBILITY}"
         return f"SELLER: {SELLER_COMPANY or 'our company'} (Rep: {SELLER_NAME}) sells: {SELLER_OFFER}{extra}"
-    return f"SELLER: offering not specified (Rep: {SELLER_NAME}) - keep the pitch generic and focus on discovery."
+    return f"SELLER: offering not specified (Rep: {SELLER_NAME}) - keep the pitch generic and focus on discovery.{extra}"
 
 def analyze_facts(llm, org, ref_url, text):
     prompt = (f"You are a senior B2B account researcher preparing a deal for a sales rep who has to close it.\n"
@@ -1165,11 +1167,7 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
 
     dossier = build_dossier(org, company, contacts, primary, facts, pitch, research, ai_ok, comp_score)
     try:
-        res = sheet.post(
-    "update_lead_dossier",
-    lead_id=lead_id,
-    organization=safe_cell(org),
-    dossier=safe_cell(dossier),
+        res = sheet.post("update_lead_dossier", lead_id=lead_id, organization=safe_cell(org), dossier=safe_cell(dossier),
     contacts={
         "dm_name": safe_cell(primary["name"]),
         "dm_title": safe_cell(primary["title"]),
