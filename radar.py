@@ -263,7 +263,7 @@ Return ONLY JSON: {{"leads": [ one object per ITEM ]}} where each object has:
 "upcoming_events": tender closing date / milestone, or "Unknown",
 "dm_name": contact person if stated in the text else "",
 "phone": phone if stated in the text else "",
-"lead_score": "Rate the lead from 1 to 100 based on urgency, scale, and match to our products."
+"lead_score": "Rate the lead from 1 to 100 based on urgency, scale, and match to our products.",
 "competitor_winner": "If this article announces a contract award, who won it? (else leave empty)",
 "winning_value": "The contract value/amount awarded (else leave empty)",
 "project_name": "The name of the project/tender (else leave empty)"
