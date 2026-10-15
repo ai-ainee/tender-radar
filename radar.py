@@ -162,7 +162,7 @@ class QueryGenerator:
         log.info(f"Generating search queries for special directive: '{special_prompt}'")
         sp = special_prompt
         fb = {
-            "TRACK_1_PUBLIC_TENDERS": [f"{sp} public tenders", f"{sp} bids"],
+            "TRACK_1_PUBLIC_TENDERS": [f"{sp} public tenders", f"{sp} GeM bids"],
             "TRACK_2_CORPORATE_PROCUREMENT": [f"{sp} vendor empanelment", f"{sp} corporate RFQ"],
             "TRACK_3_BUSINESS_EXPANSION": [f"{sp} expansion capex", f"{sp} new facility"],
             "TRACK_4_COMMERCIAL_HIRING": [f"{sp} hiring specialists", f"{sp} team expansion"],
@@ -172,10 +172,10 @@ MANDATORY CAMPAIGN DIRECTIVE: "{special_prompt}"
 Generate Google search queries to find buyers, tenders, or expansions matching this directive.
 
 CRITICAL RULES:
-1. EXACTLY 3 TO 5 WORDS MAXIMUM per query.
+1. Keep queries between 3 and 7 words.
 2. No quotes, no operators, plain text only.
 
-TRACK_1_PUBLIC_TENDERS: public tenders or infrastructure bids.
+TRACK_1_PUBLIC_TENDERS: public tenders, GeM bids, or infrastructure bids.
 TRACK_2_CORPORATE_PROCUREMENT: private RFQs or vendor empanelment.
 TRACK_3_BUSINESS_EXPANSION: new facilities or commercial project launches.
 TRACK_4_COMMERCIAL_HIRING: companies hiring specialists.
@@ -189,11 +189,17 @@ Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         loc_s = f" {loc}" if loc else ""
         ind_s = f"{ind} " if ind else ""
         
+        # Dynamically switch the state rule based on whether Target States is set in Google Sheets
+        if state:
+            state_rule = f"Restrict the queries to {state}."
+        else:
+            state_rule = "DO NOT restrict to a single state (search nationwide)."
+        
         fb = {
-            "TRACK_1_PUBLIC_TENDERS": [f"public tenders{loc_s}", f"infrastructure bids{loc_s}"],
-            "TRACK_2_CORPORATE_PROCUREMENT": [f"vendor empanelment{loc_s}", f"corporate RFQ {yr}{loc_s}"],
-            "TRACK_3_BUSINESS_EXPANSION": [f"{ind_s}expansion capex{loc_s}", f"new facility construction{loc_s}"],
-            "TRACK_4_COMMERCIAL_HIRING": [f"hiring specialists{loc_s}", f"team expansion{loc_s}"],
+            "TRACK_1_PUBLIC_TENDERS": [f"{t} tender{loc_s}", f"{ind_s}public tenders{loc_s}"],
+            "TRACK_2_CORPORATE_PROCUREMENT": [f"{t} RFQ{loc_s}", f"vendor empanelment {ind_s}{loc_s}"],
+            "TRACK_3_BUSINESS_EXPANSION": [f"{t} project expansion{loc_s}", f"{ind_s}new facility construction{loc_s}"],
+            "TRACK_4_COMMERCIAL_HIRING": [f"hiring {t} specialist{loc_s}", f"{ind_s}team expansion{loc_s}"],
         }
         
         industry_line = f"INDUSTRY FOCUS: {ind}" if ind else "INDUSTRY: all commercial/industrial sectors"
@@ -203,18 +209,20 @@ Generate Google search queries to find buyers, tenders, or expansions related to
 {f"Geography: {self.country}" if self.country else ""}
 {f"Region: {state}" if state else ""}
 
-CRITICAL RULES (FAILING THESE WILL BREAK THE SYSTEM):
-1. EXACTLY 3 TO 5 WORDS MAXIMUM per query.
-2. DO NOT include the exact product name if it makes the query longer than 5 words. Search for the broad project instead.
+CRITICAL RULES:
+1. Keep queries between 3 and 7 words.
+2. Each track has 2 queries:
+   - Query 1: Include the product name '{t}'. {state_rule}
+   - Query 2: Search for the broad project or industry requirement. {state_rule}
 3. No quotes, no operators, plain text only.
 
-TRACK_1_PUBLIC_TENDERS: broad government tenders or public infrastructure bids.
+TRACK_1_PUBLIC_TENDERS: government tenders, GeM bids, or public infrastructure bids.
 TRACK_2_CORPORATE_PROCUREMENT: private RFQs or vendor empanelment.
 TRACK_3_BUSINESS_EXPANSION: new facilities or commercial project launches.
 TRACK_4_COMMERCIAL_HIRING: companies hiring specialists.
 Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         return self._merge(self._ai_tracks(prompt), fb)
-
+        
 def _valid_verdicts(d):
     if isinstance(d, list): return all(isinstance(x, dict) for x in d)
     if isinstance(d, dict): return isinstance(d.get("leads"), list) or "item_index" in d
@@ -366,7 +374,6 @@ class Router:
             except SheetError as e:
                 log.warning(f"competitor intel not logged: {e}")
 
-        # NEW: Appends the source URL and the AI's reasoning directly to the routing log
         log.info(f"[*] {company} [{role}/{confidence}] -> {sheet_name} | {doc['url']} | Reason: {why}")
         try:
             res = self.sheet.post("insert_lead", target_sheet=sheet_name, company_name=safe_cell(company), signal_brief=safe_cell(why), row_data=[safe_cell(x) for x in row], contact_phone=safe_cell(phone), dm_name=safe_cell(dm), source_url=doc["url"])
@@ -374,7 +381,6 @@ class Router:
             log.error(f"insert_lead failed for {company}: {e}")
             return "FAILED", company
         if res.get("status") == "duplicate" or res.get("duplicate") or "appended note" in str(res.get("message", "")).lower():
-            # NEW: Appends the URL and reasoning to the Duplicate log as well
             log.info(f"[-] Already in CRM: {company} | {doc['url']} | Reason: {why}")
             return "DUPLICATE", company
         return outcome, company
@@ -462,7 +468,7 @@ def main():
     playwright_used = 0
     # ----------------------------------------
     # --- PRE-AI BOUNCER ---
-    core_kw = set() # Start completely empty!
+    core_kw = set()
     for group in (cfg["targets"], cfg["directives"], cfg["industries"], [special]):
         for item in group:
             for word in str(item).lower().replace("-", " ").split():
@@ -491,8 +497,7 @@ def main():
                         low_url = raw.lower()
                         protected = any(p in low_url for p in cfg["protected"] if p)
                         
-                        # --- STAGE 1: DYNAMIC DOMAIN BAN CHECK (Zero Latency, Zero Quota) ---
-                        # Uses the "Banned Websites" column from your Google Sheet
+                        # --- STAGE 1: DYNAMIC DOMAIN BAN CHECK ---
                         if not protected and any(bad_domain in low_url for bad_domain in cfg["banned_sites"] if bad_domain):
                             log.info(f"   [-] Auto-Drop (Banned Domain in URL): {raw}")
                             mark_seen(seen, raw)
@@ -535,12 +540,10 @@ def main():
                         if content and len(content) > 120:
                             low_content = content.lower()
                             
-                            # --- STAGE 2: DYNAMIC NEGATIVE WORD CHECK (Regex Word Boundaries) ---
-                            # Uses the "Banned Keywords" column from your Google Sheet
+                            # --- STAGE 2: DYNAMIC NEGATIVE WORD CHECK ---
                             bad_match = None
                             for bad in cfg["banned_kw"]:
                                 if not bad: continue
-                                # \b ensures it only matches whole words. 'ips' will NOT match 'circlips'.
                                 pattern = r'\b' + re.escape(bad) + r'\b'
                                 if re.search(pattern, low_content):
                                     bad_match = bad
@@ -558,7 +561,6 @@ def main():
                                 mark_seen(seen, raw)
                                 stats["trash"] += 1
                                 continue
-                            # ------------------------------------
 
                             fp = fingerprint(content)
                             if fp and (fp in fps or fp in pending_fp):
