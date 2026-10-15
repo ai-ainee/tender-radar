@@ -1,7 +1,7 @@
 import json
 import logging
 from playwright.sync_api import sync_playwright
-from common import _html_text
+from common import _html_text, is_safe_url
 
 logger = logging.getLogger("portal_crawler")
 
@@ -12,6 +12,9 @@ def crawl_all_pages(start_url, cookie_json_str="", max_pages=3):
     Handles page numbers ('1', '2', '3'), 'Next' links, and ASP.NET __doPostBack.
     """
     captured_html = []
+    if not is_safe_url(start_url):
+        logger.warning(f"Blocked unsafe portal URL: {start_url}")
+        return captured_html
 
     with sync_playwright() as p:
         # Launch headless Chromium with standard desktop viewport
