@@ -1,7 +1,7 @@
 import json
 import logging
 from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
+from common import _html_text
 
 logger = logging.getLogger("portal_crawler")
 
@@ -62,11 +62,10 @@ def crawl_all_pages(start_url, cookie_json_str="", max_pages=3):
 
         while current_page_num <= max_pages:
             raw_html = page.content()
-            soup = BeautifulSoup(raw_html, "html.parser")
-            for el in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "svg"]):
-                el.decompose()
-            clean_text = "\n".join(ln.strip() for ln in soup.get_text(separator="\n", strip=True).splitlines() if ln.strip())
-            captured_html.append(clean_text[:6000])
+            cleaned_page = _html_text(raw_html.encode("utf-8", errors="ignore"), "utf-8", 6000)
+            if cleaned_page:
+                captured_html.append(cleaned_page)
+
             if current_page_num >= max_pages:
                 break
 
