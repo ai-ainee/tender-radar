@@ -51,9 +51,11 @@ UA = "Mozilla/5.0 (compatible; RadarScout/2.0; business-research)"
 DEFAULT_CC = (os.getenv("DEFAULT_COUNTRY_CODE", "91") or "91").strip().lstrip("+")
 GUESS_EMAILS = os.getenv("ENRICH_GUESS_EMAILS", "0").strip() == "1"
 RETRY_ON_AI_FAIL = os.getenv("ENRICH_RETRY_ON_AI_FAIL", "0").strip() == "1"
+SELLER_NAME = os.getenv("SELLER_NAME", "[Your Name]").strip() or "[Your Name]"
+SELLER_PROOF = os.getenv("SELLER_PROOF", "").strip()
+SELLER_ELIGIBILITY = os.getenv("SELLER_ELIGIBILITY", "").strip()
 SELLER_COMPANY = os.getenv("SELLER_COMPANY", "").strip()
 SELLER_OFFER = os.getenv("SELLER_OFFER", "").strip()
-
 # --------------------------------------------------------------------------------------------------
 # small helpers
 # --------------------------------------------------------------------------------------------------
@@ -795,8 +797,11 @@ FACT_SCHEMA = """{
 
 def seller_block():
     if SELLER_OFFER:
-        return f"SELLER: {SELLER_COMPANY or 'our company'} sells: {SELLER_OFFER}"
-    return "SELLER: offering not specified - keep the pitch generic and focus on discovery."
+        extra = ""
+        if SELLER_PROOF: extra += f"\nPROOF / CASE STUDIES: {SELLER_PROOF}"
+        if SELLER_ELIGIBILITY: extra += f"\nELIGIBILITY / CERTIFICATIONS: {SELLER_ELIGIBILITY}"
+        return f"SELLER: {SELLER_COMPANY or 'our company'} (Rep: {SELLER_NAME}) sells: {SELLER_OFFER}{extra}"
+    return f"SELLER: offering not specified (Rep: {SELLER_NAME}) - keep the pitch generic and focus on discovery."
 
 def analyze_facts(llm, org, ref_url, text):
     prompt = (f"You are a senior B2B account researcher preparing a deal for a sales rep who has to close it.\n"
