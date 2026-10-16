@@ -1007,9 +1007,7 @@ def save_unidentified(sheet, lead_id, sheet_org, ref_url):
     except SheetError as e:
         log.error(f"   could not save placeholder dossier: {e}")
         return False
-    token = re.sub(r"[^a-zA-Z0-9\s]", "", sheet_org[:30]).strip()
-    buttons = [[{"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
-                {"text": "📦 Archive", "callback_data": f"archive::{token}"}]]
+    import hashlib as _hl
     text = (f"⚠️ <b>ORGANIZATION NOT IDENTIFIED</b>\n{tg_escape(sheet_org)}\n\n"
             f"The source page does not clearly name the buyer. Please check it manually:\n{tg_escape(ref_url)}")
     return True, text, buttons, 0
@@ -1218,7 +1216,10 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
         msg_txt = quote(pitch.get("whatsapp_message") or f"Hi {primary['name'] if primary['name'] != 'Decision Maker' else 'Team'}, "
                         f"I came across {org}. Would love to share how we can help.")
         buttons.append([{"text": "💬 WhatsApp", "url": f"https://wa.me/{wa}?text={msg_txt}"}])
-    token = re.sub(r"[^a-zA-Z0-9\s]", "", sheet_org[:30]).strip()
+        # Must match cbToken_() in the Apps Script — MD5 of the lowercase, non-alphanumeric-stripped name.
+    import hashlib as _hl
+    norm = re.sub(r"[^\w]", "", sheet_org.lower(), flags=re.UNICODE)
+    token = "h:" + _hl.md5(norm.encode("utf-8")).hexdigest()[:12]
     buttons.append([{"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
                     {"text": "📦 Archive", "callback_data": f"archive::{token}"}])
     qual = (facts.get("deal") or {}).get("qualification")
