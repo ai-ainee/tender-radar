@@ -254,3 +254,46 @@ hiring|c-dac|||2026-09|
 hiring|nvidiacorporation|||2026-10|
 hiring|nikkisocleanenergy&industrialgases|||2026-10|
 hiring|nclbuildtek|||2026-10|
+hiring|shapoorjipallonji|BIM Coordinator - Revit MEP|position|2026-10|india
+hiring|dataarchitecture|Senior AutoCAD Design Engineer|position|2026-10|india
+hiring|seniorai|Senior AutoCAD Design Engineer|position|2026-10|india
+hiring|infracool|2D/3D CAD Detailer - AutoCAD|position|2026-10|india
+hiring|lambdabuildtechprivate|2D/3D CAD Detailer - AutoCAD|position|2026-10|faridabad,india
+hiring|milekalengineering|2D/3D CAD Detailer - AutoCAD|position|2026-10|coimbatore,india
+hiring|axiscadesengineering|||2026-10|
+hiring|ozonecorpprivate|||2026-10|
+hiring|ramboll|3|years experience|2026-10|malaysia/india
+hiring|securedengineers|||2026-10|
+capex|ministryofhomeaffairs|13020|crore|2021-20|india
+market_report|colliers|||2026-10|
+hiring|dpworld|||2026-09|
+partnership|techture|1100|projects|2026-10|india
+partnership|sidraassociates|||2026-09|
+capex|kempower|||2026-10|
+capex|imaginitbuilding&constructionsolutions|||2026-10|
+hiring|vanderlande|||2026-10|
+hiring|cadssoftwareindia|||2026-10|
+hiring|caterpillarinc|||2026-10|
+hiring|boldbusiness|||2026-09|
+tender|cpwd|2500000|inr|2026-10|india
+services|vardaninfra|||2026-10|
+empanelment|bhel|||2023-03|
+blog|indiacadworks|||2025-10|
+product_page|autodesk|||2026-10|
+bim_services|hitechdigital|||2026-10|
+training_center|caddcentre|||2026-10|
+infrastructure_expansion|autodeskindia|||2025-06|
+academic_paper|gurunanakinstitutionstechnicalcampus|||2026-04|
+bim software integration|sofistikag|||2026-10|
+bim rendering workflow expansion|d5render|||2026-10|
+company blog post|newindiaconstruction&properties|||2024-12|
+capex|governmentofindia|28602|inr crore|2024-11|india
+capex|tatasteellimited|0.05|billion usd|2026-10|odisha
+hiring|bentelassociatesinternational(pty)ltd|||2026-09|
+hiring|larsen&toubro|14000|openings|2026-08|chennai
+hiring|aecom|50000|employees|2026-10|mumbai
+staffing|designheed|||2026-10|
+hiring|egis|19500|employees|2026-10|bengaluru
+hiring|vivibebuildingsolutionspvtltd|||2026-10|
+order_win|pioneerfoundationengineers(p)ltd|46.51|cr inr|2025-02|himachalpradesh
+capex|nationalhighwaysauthorityofindia|17|projects|2026-09|india
