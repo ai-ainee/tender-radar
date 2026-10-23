@@ -1,11 +1,10 @@
 """bse_filings.py — BSE corporate announcements (SEBI LODR Reg 30 material events).
 
-Every listed Indian company MUST file material events (order wins, capex,
-partnerships, M&A) with BSE the same day. This is the canonical source
-that news sites copy days later — and Google does not index it directly.
+NO hardcoded category keywords. Filings are filtered only by Target Products
+from Settings; the AI evaluator classifies each filing (order win / capex /
+partnership / etc.) via the event_fingerprint extraction.
 """
 import json
-import re
 import time
 import urllib.parse
 import urllib.request
@@ -15,40 +14,13 @@ from common import log
 
 UA = "Mozilla/5.0 (compatible; RadarScout/2.0; business-research)"
 
-# Signal category detection — used to tag filings and drop noise.
-SIGNAL_KEYWORDS = {
-    "order_win":       ["order", "award", "loi", "loa", "contract", "winning", "bagging"],
-    "capex_expansion": ["capex", "expansion", "capacity", "plant", "facility", "greenfield", "brownfield"],
-    "fundraising":     ["fund raising", "qip", "rights issue", "preferential", "fundraise"],
-    "partnership":     ["agreement", "mou", "partnership", "joint venture", "tie-up"],
-    "acquisition":     ["acquisition", "takeover", "merger"],
-    "new_product":     ["launch", "new product", "unveiling"],
-}
-
-
-def _classify(subject, details):
-    """Returns the category key ('order_win', 'capex_expansion', ...) or None."""
-    text = (str(subject or "") + " " + str(details or "")).lower()
-    for category, keywords in SIGNAL_KEYWORDS.items():
-        if any(kw in text for kw in keywords):
-            return category
-    return None
-
-
-def _is_relevant(subject, details, company, target_keywords):
-    """True if the filing mentions any of the user's target keywords."""
-    if not target_keywords:
-        return True
-    hay = (str(subject or "") + " " + str(details or "") + " " + str(company or "")).lower()
-    return any(str(k).lower() in hay for k in target_keywords if k)
-
 
 def fetch_bse_filings(target_keywords, max_days=3, max_results=60):
-    """Fetches recent BSE corporate announcements filtered by keyword + category.
+    """Fetches recent BSE corporate announcements filtered by target keywords.
 
-    Returns a list of dicts with keys:
-      source, company, subject, details, category, date, url
-    Returns [] on error (never raises).
+    Returns a list of dicts: source, company, subject, details, date, url.
+    No signal categorisation — that's the AI evaluator's job.
+    Returns [] on error.
     """
     out = []
     try:
@@ -71,22 +43,24 @@ def fetch_bse_filings(target_keywords, max_days=3, max_results=60):
 
         rows = data.get("Table") if isinstance(data, dict) else None
         if not isinstance(rows, list):
-            log.warning(f"BSE: unexpected response shape (no 'Table' array)")
+            log.warning("BSE: unexpected response shape (no 'Table' array)")
             return []
+
+        kw_lower = [str(k).lower() for k in target_keywords if k]
 
         for item in rows[:max_results]:
             if not isinstance(item, dict):
                 continue
             subject = str(item.get("NEWSSUB") or item.get("HEADLINE") or "").strip()
             details = str(item.get("MORE") or "").strip()
-            scrip   = str(item.get("SLONGNAME") or item.get("Scripname") or "").strip()
+            scrip = str(item.get("SLONGNAME") or item.get("Scripname") or "").strip()
             if not subject:
                 continue
-            category = _classify(subject, details)
-            if not category:
-                continue
-            if not _is_relevant(subject, details, scrip, target_keywords):
-                continue
+            # Filter ONLY by target keywords — no hardcoded category keywords
+            if kw_lower:
+                hay = (subject + " " + details + " " + scrip).lower()
+                if not any(k in hay for k in kw_lower):
+                    continue
             attachment = str(item.get("ATTACHMENTNAME") or "").strip()
             if attachment:
                 pdf_url = f"https://www.bseindia.com/xml-data/corpfiling/AttachLive/{urllib.parse.quote(attachment)}"
@@ -97,13 +71,11 @@ def fetch_bse_filings(target_keywords, max_days=3, max_results=60):
                 "company": scrip,
                 "subject": subject,
                 "details": details[:800],
-                "category": category,
                 "date": str(item.get("NEWS_DT") or "")[:10],
                 "url": pdf_url,
             })
             if len(out) >= max_results:
                 break
-        # Small polite pause — BSE rate-limits if hammered
         time.sleep(0.5)
     except Exception as e:
         log.warning(f"BSE filings fetch failed: {e}")
