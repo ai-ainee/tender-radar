@@ -24,6 +24,13 @@ def fetch_bse_filings(target_keywords, max_days=3, max_results=60):
     """
     out = []
     try:
+        # Try curl_cffi first (bypasses TLS fingerprint detection)
+        try:
+            from curl_cffi import requests as cffi_requests
+            _use_cffi = True
+        except ImportError:
+            _use_cffi = False
+
         to_date = datetime.now().strftime("%Y%m%d")
         from_date = (datetime.now() - timedelta(days=max_days)).strftime("%Y%m%d")
         api_url = (
@@ -31,15 +38,32 @@ def fetch_bse_filings(target_keywords, max_days=3, max_results=60):
             f"?strCat=-1&strPrevDate={from_date}&strScrip=&strSearch=P&strToDate={to_date}"
             "&strType=C&subcategory=-1"
         )
-        req = urllib.request.Request(api_url, headers={
+        hdrs = {
             "User-Agent": UA,
             "Referer": "https://www.bseindia.com/",
             "Origin": "https://www.bseindia.com",
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-IN,en;q=0.9",
-        })
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read(2_000_000).decode("utf-8", errors="replace"))
+        }
+
+        body_bytes = None
+        if _use_cffi:
+            try:
+                r = cffi_requests.get(api_url, headers=hdrs, impersonate="chrome120", timeout=20)
+                if r.status_code == 200:
+                    body_bytes = r.content
+                else:
+                    log.warning(f"BSE cffi HTTP {r.status_code}")
+            except Exception as e:
+                log.warning(f"BSE cffi error: {e}")
+
+        if body_bytes is None:
+            # Fallback to urllib
+            req = urllib.request.Request(api_url, headers=hdrs)
+            with urllib.request.urlopen(req, timeout=20) as r:
+                body_bytes = r.read(2_000_000)
+
+        data = json.loads(body_bytes.decode("utf-8", errors="replace"))
 
         rows = data.get("Table") if isinstance(data, dict) else None
         if not isinstance(rows, list):
