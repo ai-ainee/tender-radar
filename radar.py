@@ -13,6 +13,13 @@ column — no domain names in code.
 
 Signal categories (order win / capex / partnership) come from the AI evaluator,
 not from hardcoded keyword lists.
+
+API keys can come from Script Properties (Sheet-managed via 🔐 menu) — these
+override whatever GitHub Secrets contain, so you can rotate keys without a
+GitHub redeploy.
+
+GeM subdomains are permanently blocked from GitHub Actions IPs at TCP level —
+skipped before fetch to save 2-3 min per run.
 """
 import hashlib
 import os
@@ -243,7 +250,6 @@ def likely_in_target(url, snippet, target_countries, target_states, target_citie
     LOOSE MODE (target_cities is empty):
         Pass anything that isn't definitively foreign (.us, .uk, .de etc).
         No city list needed. Country gate at AI evaluation catches wrong-country leads.
-        Covers all India — business-standard.com, livemint.com, eprocure.gov.in all pass.
 
     STRICT MODE (target_cities has values):
         Only pass URLs matching:
@@ -293,6 +299,19 @@ def likely_in_target(url, snippet, target_countries, target_states, target_citie
             if s and s in combined:
                 return True
         return False  # strict mode — cities specified, nothing matched → skip
+
+    # ── 3b. Foreign ccTLD detection (2-letter country codes) ──────
+    _cc_match = re.search(r"\.([a-z]{2})(?:[/?#]|$)", u)
+    if _cc_match:
+        candidate_cc = "." + _cc_match.group(1)
+        if candidate_cc not in AMBIGUOUS_TLDS and candidate_cc not in tlds:
+            return False
+
+    # ── 3c. US-only 3-letter TLDs (.gov, .mil, .edu) ──────────────
+    for us_tld in (".gov", ".mil", ".edu"):
+        if u.endswith(us_tld) or us_tld + "/" in u:
+            # Exception: Indian .gov.in / .edu.in / .ac.in already caught above by 3a
+            return False
 
     # ── 4. LOOSE MODE: pass ────────────────────────────────────────
     return True
@@ -400,12 +419,55 @@ def load_settings(sheet):
         "industries": _as_list(s.get("industry_keywords")),
         "countries": _as_list(s.get("target_countries")),
         "states": _as_list(s.get("target_states")),
-        "cities": _as_list(s.get("target_cities")),                # ← NEW
+        "cities": _as_list(s.get("target_cities")),
         "banned_kw": [k.lower() for k in _as_list(s.get("banned_keywords"))],
         "banned_sites": [k.lower() for k in _as_list(s.get("banned_websites"))],
         "protected": [k.lower() for k in _as_list(s.get("protected_domains"))],
-        "job_portals": [k.lower().strip() for k in _as_list(s.get("job_portals"))],  # ← NEW
+        "job_portals": [k.lower().strip() for k in _as_list(s.get("job_portals"))],
+        "api_keys": s.get("api_keys") or {},           # ← NEW
     }
+
+
+# ─── NEW: inject Sheet-managed API keys into env vars before LLM/Search init ─
+def _inject_api_keys_from_settings(cfg):
+    """Copy Sheet-sourced API keys into env vars BEFORE LLMRouter/SearchEngine init.
+
+    Priority: Script Properties (via Sheet) > GitHub Secrets.
+    If the Sheet has values for a provider, they REPLACE the GitHub env var.
+    """
+    api_keys = cfg.get("api_keys") or {}
+    if not isinstance(api_keys, dict):
+        return
+
+    mapping = {
+        "gemini_api_keys":     "GEMINI_API_KEYS",
+        "groq_api_keys":       "GROQ_API_KEYS",
+        "openrouter_api_keys": "OPENROUTER_API_KEYS",
+        "serper_api_keys":     "SERPER_API_KEYS",
+        "brave_api_keys":      "BRAVE_API_KEYS",
+        "scraperapi_api_keys": "SCRAPERAPI_API_KEYS",
+        "jina_api_key":        "JINA_API_KEY",
+        "openai_api_key":      "OPENAI_API_KEY",
+    }
+
+    injected, kept = [], []
+    for sheet_field, env_name in mapping.items():
+        vals = api_keys.get(sheet_field) or []
+        if not isinstance(vals, list):
+            vals = [vals] if vals else []
+        vals = [str(v).strip() for v in vals if str(v).strip()]
+        if vals:
+            os.environ[env_name] = ",".join(vals)
+            injected.append(f"{env_name}({len(vals)})")
+        elif os.getenv(env_name, "").strip():
+            kept.append(env_name)
+
+    if injected:
+        log.info(f"API keys from Script Properties: {', '.join(injected)}")
+    if kept:
+        log.info(f"API keys from GitHub Secrets: {', '.join(kept)}")
+# ───────────────────────────────────────────────────────────────────────────
+
 
 class QueryGenerator:
     def __init__(self, target, industry, country, states, llm, use_ai=True, combo_offset=0):
@@ -706,7 +768,6 @@ class Router:
         _raw_org = str(ai.get("organization") or "").strip()
         if _raw_org and _AGGREGATE_RE.search(_raw_org):
             log.info(f"[AGGREGATE-REJECT] org='{_raw_org}' looks like a report/survey, not a buyer: {doc['url']}")
-            # Force rejection — routes to Review with explicit reason, NOT Trash
             ai = dict(ai, is_valid=False, entity_role="IRRELEVANT",
                       why_engage_now="[AGGREGATE/REPORT — not a specific buyer] " + str(ai.get("why_engage_now") or ""))
         # ─────────────────────────────────────────────────────────────────────────────
@@ -812,6 +873,10 @@ def main():
         log.error(f"Cannot read settings: {e}")
         tg.send(f"🚨 <b>Radar Scout halted</b>\nCannot read Google Sheet settings:\n<code>{tg_escape(e)}</code>")
         return 1
+
+    # ═══ Inject Sheet-managed API keys into env vars BEFORE LLMRouter/SearchEngine ═══
+    _inject_api_keys_from_settings(cfg)
+    # ═════════════════════════════════════════════════════════════════════════════════
 
     special = cfg["special_prompt"]
     if not cfg["targets"] and not special:
@@ -971,7 +1036,18 @@ def main():
                 if dom: cookie_domains.add(dom)
         except Exception as e:
             log.warning(f"Could not parse cookie domains: {e}")
-    portal_hosts = {"eprocure", "gem.gov", "etenders", "railone"} | {p for p in cfg.get("protected", []) if p}
+    portal_hosts = {"eprocure", "etenders", "railone"} | {p for p in cfg.get("protected", []) if p}
+
+    # ─── NEW: GeM subdomains are permanently blocked from GitHub Actions IPs ────
+    # They refuse connections at TCP level. Skip early to save 2-3 min per run
+    # of Playwright timeouts + retries (each Playwright attempt on GeM costs ~30s).
+    BLOCKED_HOSTS_PERMANENT = (
+        "gem.gov.in", "bidplus.gem.gov.in", "mkp.gem.gov.in",
+        "fulfilment.gem.gov.in", "mkp-pprod-bidplus.gem.gov.in",
+        "seller.gem.gov.in",
+    )
+    # ────────────────────────────────────────────────────────────────────────────
+
     max_playwright = env_int("MAX_PLAYWRIGHT_PER_RUN", 15)
     playwright_used = 0
 
@@ -1021,7 +1097,7 @@ def main():
                 c = clean_url(f["url"])
                 if not c or c in seen: continue
                 portal_docs.append({
-                    "track": "CORP::BSE",                    # no ::CATEGORY suffix
+                    "track": "CORP::BSE",
                     "url": f["url"],
                     "raw_text": f"[BSE FILING] {f['date']}\nCOMPANY: {f['company']}\nSUBJECT: {f['subject']}\nDETAILS: {f['details']}",
                     "fp": "",
@@ -1038,7 +1114,7 @@ def main():
                 c = clean_url(f["url"])
                 if not c or c in seen: continue
                 portal_docs.append({
-                    "track": "CORP::NSE",                    # no ::CATEGORY suffix
+                    "track": "CORP::NSE",
                     "url": f["url"],
                     "raw_text": f"[NSE FILING] {f['date']}\nCOMPANY: {f['company']}\nSUBJECT: {f['subject']}\nDETAILS: {f['details']}",
                     "fp": "",
@@ -1069,7 +1145,7 @@ def main():
 
     if _targets_india and collect_hiring_signals is not None:
         try:
-            hiring = collect_hiring_signals(cfg["targets"], llm, max_per_role=8)   # ← pass llm
+            hiring = collect_hiring_signals(cfg["targets"], llm, max_per_role=8)
             log.info(f"Hiring: {len(hiring)} signal(s)")
             for h in hiring:
                 fp_key = f"hiring|{h['company'].lower().replace(' ', '')}|{h['role'].lower()}"
@@ -1129,7 +1205,6 @@ def main():
                         protected = any(p in low_url for p in cfg["protected"] if p)
 
                         # ── Job-listing URL detection (tight regex + Settings domains) ──
-                        # /jobs?/ never appears in tender URLs like /opening-of-tender/.
                         JOB_URL_RE = r"/jobs?/"
                         host = urlparse(raw).netloc.lower()
                         is_careers_subdomain = bool(re.match(r"^(careers?\.|jobs?\.|hiring\.)", host))
@@ -1152,6 +1227,13 @@ def main():
                             log.info(f"   [-] Skip (Banned Domain): {raw}")
                             stats["banned_domain"] += 1
                             continue
+
+                        # ── NEW: GeM permanent blocklist (skips before fetch/Playwright) ──
+                        if any(bh in low_url for bh in BLOCKED_HOSTS_PERMANENT):
+                            log.info(f"   [-] Skip (GeM permanently blocked from GH Actions IPs): {raw}")
+                            stats["banned_domain"] += 1
+                            continue
+                        # ────────────────────────────────────────────────────────────────
 
                         # ── Target country/region pre-fetch filter (Settings-driven) ──
                         if not protected and country_list and not likely_in_target(
@@ -1238,7 +1320,6 @@ def main():
                                 "is_job_url": is_job_url,
                             })
                         else:
-                            # Snippet-only path — use snippet_raw (has pre-AI notes) not res.get('snippet')
                             snip = f"{title_raw}\n{snippet_raw}".strip()
                             if len(snip) >= 60:
                                 docs.append({
@@ -1285,6 +1366,16 @@ def main():
              f"• Duration: <code>{duration}</code>"]
     if stats["snippet_only"]: lines.append(f"• 🔎 Judged from snippet only: <code>{stats['snippet_only']}</code>")
     if stats["failed"]: lines.append(f"• ⚠️ Sheet write failures: <code>{stats['failed']}</code>")
+
+    # ─── NEW: ScraperAPI usage counter (safe if common.py doesn't have it yet) ───
+    try:
+        from common import _scraperapi_usage
+        if _scraperapi_usage and _scraperapi_usage[0] > 0:
+            lines.append(f"• 🚀 ScraperAPI rescued: <code>{_scraperapi_usage[0]}</code> portal URL(s)")
+    except Exception:
+        pass
+    # ──────────────────────────────────────────────────────────────────────────────
+
     if stop_reason: lines.append(f"• ⛔ Stopped early: {tg_escape(stop_reason)}")
     tg.send("\n".join(lines))
     return 0
