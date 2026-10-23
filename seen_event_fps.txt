@@ -253,3 +253,4 @@ hiring|gnfinternationalservicesprivatelimited|1|role|2026-10|ahmedabad
 hiring|c-dac|||2026-09|
 hiring|nvidiacorporation|||2026-10|
 hiring|nikkisocleanenergy&industrialgases|||2026-10|
+hiring|nclbuildtek|||2026-10|
