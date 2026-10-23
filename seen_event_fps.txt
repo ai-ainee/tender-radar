@@ -201,3 +201,55 @@ hiring|hindujatech|||2026-10|
 hiring|linkedin|4000|jobs|2026-10|india
 hiring|shine.com|217|jobs|2026-10|india
 other|cherryinstitute|||2026-10|
+hiring|shapoorjipallonji|senior bim engineer - revit
+hiring|hitechdigital|senior bim engineer - revit
+hiring|yrsany|enterprise bim manager - autodesk suite
+hiring|softwareassetmanager|software asset manager - engineering tools
+hiring|shapoorjipallonji|||2026-10|
+hiring|hitechdigital|||2026-10|
+tender|33bn-crpf-mha|2018-19|sre|2020-04|jammu
+tender|v.o.chidambaranarporttrust|||2026-10|
+tender|sportsauthorityofindia|2865256|inr|2026-09|manipur
+portal|gepnic|||2026-10|
+tender|indianinstituteoftechnologyropar|1691483|inr|2026-10|ropar
+aggregator|tenderdetail|||2026-10|
+tender|northeasternrailway|||2026-10|
+tender|financedepartmentodisha|||2026-10|
+rfq|kitcoltd.|||2026-10|
+service_offering|bimprollc||||
+service_offering|worldteams|||2024-07|
+blog_post|incorpx|||2026-10|
+hiring|actalent|||2026-10|
+vendor_profile|vistarmodels|||2026-10|
+research_paper|sandipuniversity|||2026-10|
+hiring|orange|||2026-10|
+services|treelife|||2026-10|
+supply_chain|jydmodels|||2026-03|
+workshop|comsnets|||2026-10|
+services|placemeright|||2026-10|
+hiring|desionicsglobal|||2025-10|
+hiring|azeengineering|||2026-10|
+hiring|jacobs|||2026-10|
+hiring|itoutsourcingchina|||2026-09|
+hiring|olous|||2026-07|
+hiring|lead|||2025-09|
+hiring|gmrgroup|||2026-10|
+hiring|adaniairportholdingsltd|||2026-10|
+hiring|cognizant|||2026-10|
+hiring|crescendoglobalclient|||2026-02|
+tender|departmentofminesandgeologybengaluruurbandistrict|||2026-10|
+tender|localselfgovernmentdepartmentkerala|300000|inr|2026-10|kerala
+capex_expansion|assamindustrialinfrastructuredevelopmentcorporation|||2026-10|
+infrastructure_list|mahabubnagardistricttelangana|||2026-10|
+blog_guide|pisoftware.in|||2026-10|
+vendor_registration|coalindia|||2025-04|
+capex_expansion|saab|||2022-09|
+capex_expansion|trelleborgsealingsolutionsindia|50000|square meters|2026-04|bengaluru
+capex_expansion|häfele|||2026-03|
+partnership|governmentofindia|||2026-10|
+capex_expansion|tataelectronicsprivatelimited|9100|billion inr|2024-03|dholera
+hiring|tyzertechnologies|1|role|2026-10|navimumbai
+hiring|gnfinternationalservicesprivatelimited|1|role|2026-10|ahmedabad
+hiring|c-dac|||2026-09|
+hiring|nvidiacorporation|||2026-10|
+hiring|nikkisocleanenergy&industrialgases|||2026-10|
