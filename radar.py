@@ -238,40 +238,64 @@ PORTAL_COUNTRY = {
 
 
 def likely_in_target(url, snippet, target_countries, target_states, target_cities):
-    """True if URL/snippet plausibly belongs to a target country/state/city.
+    """Two modes — toggled by whether Target Cities is populated.
 
-    ALL data comes from Settings + runtime-generated TLD map (_COUNTRY_CTX).
-    If target_countries is empty, no country filter is applied.
+    LOOSE MODE (target_cities is empty):
+        Pass anything that isn't definitively foreign (.us, .uk, .de etc).
+        No city list needed. Country gate at AI evaluation catches wrong-country leads.
+        Covers all India — business-standard.com, livemint.com, eprocure.gov.in all pass.
+
+    STRICT MODE (target_cities has values):
+        Only pass URLs matching:
+          • a target-country TLD (.in, .gov.in) → always pass (TLD authoritative)
+          • a target city name in URL or snippet
+          • a target state name in URL or snippet
+        Otherwise skip. This is the "only Mumbai" mode.
+
+    Toggle by adding/removing values from Settings → Target Cities.
     """
+    if not target_countries:
+        return True  # no country filter requested
+
     u = (url or "").lower()
     combined = u + " " + (snippet or "").lower()
     u_flat = u.replace("-", " ").replace("_", " ")
 
-    if target_countries:
-        allowed_norm = {_norm_country_(c) for c in target_countries if c}
-        tlds = _COUNTRY_CTX.get("tlds") or {}
-        for tld in sorted(tlds.keys(), key=lambda x: -len(x)):
-            country_of_tld = _norm_country_(tlds[tld])
-            if country_of_tld not in allowed_norm:
-                continue
+    allowed_norm = {_norm_country_(c) for c in target_countries if c}
+    tlds = _COUNTRY_CTX.get("tlds") or {}
+    AMBIGUOUS_TLDS = {".com", ".org", ".net", ".io", ".co", ".info", ".biz", ".app", ".dev", ".online"}
+
+    # ── 1. Definitive foreign TLD → SKIP (highest priority) ────────
+    for tld in sorted(tlds.keys(), key=lambda x: -len(x)):
+        if tld in AMBIGUOUS_TLDS:
+            continue
+        country_of_tld = _norm_country_(tlds[tld])
+        if country_of_tld not in allowed_norm:
             if u.endswith(tld) or tld + "/" in u or tld + "?" in u:
+                return False
+
+    # ── 2. Target-country TLD → PASS (always authoritative) ────────
+    for tld in sorted(tlds.keys(), key=lambda x: -len(x)):
+        country_of_tld = _norm_country_(tlds[tld])
+        if country_of_tld not in allowed_norm:
+            continue
+        if u.endswith(tld) or tld + "/" in u or tld + "?" in u:
+            return True
+
+    # ── 3. STRICT MODE: cities specified → match city or state ─────
+    if target_cities:
+        for city in target_cities:
+            c = str(city).lower().strip()
+            if c and (c in u_flat or c in combined):
                 return True
+        for state in (target_states or []):
+            s = str(state).lower().strip()
+            if s and s in combined:
+                return True
+        return False  # strict mode — cities specified, nothing matched → skip
 
-    for state in target_states or []:
-        s = str(state).lower().strip()
-        if s and s in combined:
-            return True
-
-    for city in target_cities or []:
-        c = str(city).lower().strip()
-        if c and (c in u_flat or c in combined):
-            return True
-
-    if not target_countries:
-        return True                              # no country filter → pass everything
-
-    return False
-
+    # ── 4. LOOSE MODE: pass ────────────────────────────────────────
+    return True
 
 def apply_quality_gates(ai, url, allowed_countries, track=""):
     """Returns (ai_modified, gate_flags). 3 gates: country, expiry, genuineness."""
