@@ -1,26 +1,13 @@
 #!/usr/bin/env python3
 """
-enrichment_worker.py (v2, deal-ready) - runs when a lead moves Harvester -> Leads.
+enrichment_worker.py (v2.1, deal-ready) - runs when a lead moves Harvester -> Leads.
 
-For every pending lead it:
-  1. researches the company from several FREE sources (your SearchEngine, the company website itself,
-     Google News RSS, Bing News RSS, Wikipedia), each one isolated so a failure / quota hit on one source
-     never stops the others;
-  2. extracts company facts, up to N decision makers (account map) and deal intelligence with the LLM
-     (your LLMRouter, which already rotates providers) - every contact detail must literally appear in the research;
-  3. finds LinkedIn profiles for the key people, checks the company's email domain (MX) and, optionally, suggests
-     likely email patterns (never mixed with verified emails);
-  4. de-duplicates contacts with stable unique keys (email, LinkedIn, phone, company-domain + name) instead of a bare name;
-  5. writes a CRM-ready dossier to the Leads tab, one row per decision maker to Contact Master and a Telegram summary.
-
-Optional environment variables (all have defaults):
-  SELLER_COMPANY / SELLER_OFFER   what you sell (makes the pitch + deal fit specific)
-  MAX_ENRICH_PER_RUN (15)  MAX_RUNTIME_MIN (25)  MAX_CONTACTS_PER_ACCOUNT (5)  ENRICH_QUERY_BUDGET (6)
-  SITE_CRAWL_PAGES (6)  OSINT_CHARS (12000)  SOURCE_MAX_FAILS (3)  CONTACT_LOOKUPS (3)
-  DEFAULT_COUNTRY_CODE (91)  NEWS_HL (en-IN)  NEWS_GL (IN)  NEWS_CEID (IN:en)
-  ENRICH_GUESS_EMAILS (0)  put a guessed email into the Email column when none was found (status = inferred)
-  MAX_ENRICH_ATTEMPTS (4)  a lead that fails this many runs is parked with a note (state in enrich_attempts.json)
-  ENRICH_RETRY_ON_AI_FAIL (0)  1 = leave the lead pending when the AI fails instead of saving a basic dossier
+Fixes applied in this version:
+  • save_unidentified() now returns proper buttons (was NameError)
+  • hash token generation now matches Apps Script nameHash_() exactly
+    (handles Ltd/Limited, Pvt/Private, &/and substitutions)
+  • Cold Outreach Pitch section removed from dossier (per user request)
+  • sheet.post() continuation indentation cleaned up
 """
 import difflib
 import hashlib
@@ -41,9 +28,9 @@ from urllib.request import Request, urlopen
 from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram, env_int, extract_emails, extract_phones,
                     is_safe_url, log, tg_escape)
 
-try:  # fetch_page is kept for the reference URL exactly as before
+try:
     from common import fetch_page
-except Exception:  # pragma: no cover
+except Exception:
     def fetch_page(url):
         return ""
 
@@ -56,6 +43,7 @@ SELLER_PROOF = os.getenv("SELLER_PROOF", "").strip()
 SELLER_ELIGIBILITY = os.getenv("SELLER_ELIGIBILITY", "").strip()
 SELLER_COMPANY = os.getenv("SELLER_COMPANY", "").strip()
 SELLER_OFFER = os.getenv("SELLER_OFFER", "").strip()
+
 # --------------------------------------------------------------------------------------------------
 # small helpers
 # --------------------------------------------------------------------------------------------------
@@ -70,7 +58,6 @@ def cap(s, n):
     return s if len(s) <= n else s[:n]
 
 def safe_cell(v):
-    """Stops Google Sheets from running scraped text that starts with = + - @ as a formula."""
     v = "" if v is None else str(v)
     return " " + v if v[:1] in ("=", "+", "-", "@") else v
 
@@ -81,8 +68,27 @@ def as_list(v):
         return [clean(v, 400)]
     return []
 
+# ─── NEW: exact match for Apps Script nameHash_() ─────────────────────────
+def _name_hash_token(org):
+    """Produces the same 'h:<12-hex>' token as cbToken_() in the Apps Script.
+
+    Must mirror normName_() exactly:
+      - lowercase
+      - 'private'/'pvt' (with optional dot) → 'pvt'
+      - 'limited'/'ltd' (with optional dot) → 'ltd'
+      - 'and'/'&' → '' (removed)
+      - strip everything that is not a Unicode letter or digit
+    """
+    s = str(org or "").lower()
+    s = re.sub(r"\b(private|pvt)\b\.?", "pvt", s)
+    s = re.sub(r"\b(limited|ltd)\b\.?", "ltd", s)
+    s = re.sub(r"\b(and|&)\b", "", s)
+    s = re.sub(r"[\W_]", "", s, flags=re.UNICODE)
+    return "h:" + hashlib.md5(s.encode("utf-8")).hexdigest()[:12]
+# ───────────────────────────────────────────────────────────────────────────
+
 # --------------------------------------------------------------------------------------------------
-# per-source circuit breaker: a failing / rate-limited source is skipped, the others keep working
+# per-source circuit breaker
 # --------------------------------------------------------------------------------------------------
 _FAILS = {}
 
@@ -101,7 +107,7 @@ def guarded(name, fn, *args, default=None, **kw):
         return default
 
 # --------------------------------------------------------------------------------------------------
-# HTTP (stdlib only, so no new dependency)
+# HTTP
 # --------------------------------------------------------------------------------------------------
 def http_get(url, timeout=12, max_bytes=700_000, insecure=False):
     if not is_safe_url(url):
@@ -115,7 +121,6 @@ def http_get(url, timeout=12, max_bytes=700_000, insecure=False):
     return raw.decode(charset, errors="replace")
 
 def http_get_site(url):
-    """Public company pages: retry once without certificate verification (read-only) when the cert is broken."""
     try:
         return http_get(url)
     except Exception as e:
@@ -300,7 +305,7 @@ def phone_key(p):
     return d[-10:] if len(d) >= 10 else ""
 
 # --------------------------------------------------------------------------------------------------
-# uniqueness: several keys, never name alone
+# uniqueness
 # --------------------------------------------------------------------------------------------------
 def person_keys(name, email, phone, linkedin, account_key, org, uid=""):
     toks = name_tokens(name)
@@ -310,7 +315,7 @@ def person_keys(name, email, phone, linkedin, account_key, org, uid=""):
             "email": "" if (not em or is_generic_email(em)) else em,
             "li": linkedin_person_key(linkedin),
             "phone": phone_key(phone),
-            "name": " ".join(sorted(toks)) if len(toks) >= 2 and not placeholder else "",   # one-word names never identify
+            "name": " ".join(sorted(toks)) if len(toks) >= 2 and not placeholder else "",
             "domain": account_key or "",
             "org": org_norm(org or ""),
             "placeholder": placeholder}
@@ -319,7 +324,6 @@ def same_account(a, b):
     return bool((a["domain"] and a["domain"] == b["domain"]) or (a["org"] and a["org"] == b["org"]))
 
 def same_person(a, b):
-    """Returns the reason two records are the same person, or '' when they are not."""
     if a["placeholder"] or b["placeholder"]:
         return "account placeholder" if (a["placeholder"] and b["placeholder"] and same_account(a, b)) else ""
     if a["email"] and a["email"] == b["email"]:
@@ -327,7 +331,7 @@ def same_person(a, b):
     if a["li"] and a["li"] == b["li"]:
         return "linkedin"
     if a["li"] and b["li"] and a["li"] != b["li"]:
-        return ""                                    # two different LinkedIn profiles = two different people
+        return ""
     if not a["name"] or not b["name"]:
         return ""
     acct = same_account(a, b)
@@ -347,7 +351,6 @@ def make_uid(k):
     return "C" + hashlib.sha1(base.encode("utf-8")).hexdigest()[:10].upper()
 
 def load_contact_index(sheet):
-    """Existing Contact Master people. Needs the 'get_contact_index' action (see contact_upsert_patch.gs)."""
     try:
         data = sheet.get("get_contact_index")
     except Exception as e:
@@ -382,7 +385,6 @@ CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/about-us", "/team", "/le
                  "/our-team", "/company", "/people"]
 
 def crawl_site(base, max_pages):
-    """Reads the company's own pages: mailto/tel/LinkedIn links, JSON-LD and the visible text."""
     try:
         home = http_get_site(base)
     except Exception as e:
@@ -494,7 +496,6 @@ def short_name(org):
     return clean(re.sub(r"[()\[\],.]", " ", n), 120) or org
 
 def guess_website(org):
-    """No website in the results? Try likely domains and accept one only if the page really mentions the company."""
     toks = org_tokens(org)
     if not toks:
         return ""
@@ -520,7 +521,6 @@ def guess_website(org):
     return ""
 
 def extra_people_search(org, search, seen_links):
-    """Second pass used only when no decision maker was found."""
     sn = short_name(org)
     out = []
     for q in (f'"{sn}" founder OR owner OR "managing director" OR proprietor',
@@ -620,7 +620,7 @@ def find_linkedin(search, name, org):
     return ""
 
 # --------------------------------------------------------------------------------------------------
-# grounding: nothing is accepted unless it literally appears in the research
+# grounding
 # --------------------------------------------------------------------------------------------------
 def ground_phone(raw, low_digits):
     d = digits(raw)
@@ -704,7 +704,6 @@ def norm_role(role, title, seniority):
     return "Economic Buyer" if seniority >= 5 else "Influencer"
 
 def near_org(low, toks, otoks, site_low, window=500):
-    """True when the person is named on the company's own site or within `window` chars of the company name."""
     if site_low and all(re.search(rf"\b{re.escape(t)}\b", site_low) for t in toks):
         return True
     last = toks[-1]
@@ -727,13 +726,13 @@ def build_contacts(raw_contacts, research, company, org):
         if len(toks) < 2 or name.lower() in PLACEHOLDER_NAMES:
             continue
         if not all(re.search(rf"\b{re.escape(t)}\b", low) for t in toks):
-            continue                                    # name not in the research = invented
+            continue
         email = clean(rc.get("email"), 120).lower()
         if not email or email not in low or not valid_email(email) or is_generic_email(email):
             email = ""
         phone = ground_phone(rc.get("phone"), low_digits)
         if phone and (phone == company["phone"] or digits(phone)[-10:] == digits(company["phone"])[-10:]):
-            phone = ""                                  # the company switchboard is not a personal number
+            phone = ""
         li = clean(rc.get("linkedin_url"), 200)
         if not (li and linkedin_person_key(li) and linkedin_person_key(li).split(":", 1)[1] in low):
             li = ""
@@ -753,7 +752,7 @@ def build_contacts(raw_contacts, research, company, org):
         if li:
             c["prov"]["linkedin"] = "research"
         key = " ".join(sorted(toks))
-        if key in out:                                  # same person listed twice in this run -> merge
+        if key in out:
             old = out[key]
             for f in ("title", "department", "email", "phone", "linkedin_url", "reports_to", "evidence"):
                 if not old[f] and c[f]:
@@ -779,7 +778,7 @@ def confidence_of(c):
     return "High" if pts >= 4 else "Medium" if pts >= 2 else "Low"
 
 # --------------------------------------------------------------------------------------------------
-# LLM steps (two small calls are more reliable on free models than one huge one)
+# LLM steps
 # --------------------------------------------------------------------------------------------------
 FACT_SCHEMA = """{
   "company": {"official_name": "", "website": "", "industry": "", "sub_industry": "", "size_hint": "employees/turnover if stated",
@@ -905,10 +904,12 @@ def build_dossier(org, company, contacts, primary, facts, pitch, research, ai_ok
     L.append("\n### 🎯 Key Buying Triggers & Operational Bottlenecks")
     L.append(md_list(["**Trigger:** " + t for t in as_list(deal.get("buying_triggers"))] +
                      ["**Pain:** " + p for p in as_list(deal.get("pain_points"))]))
-    L.append("\n### 🚀 Ready-to-Send Cold Outreach Pitch")
-    L.append(f"**Email subject:** {pitch.get('email_subject', '')}\n\n{pitch.get('email_body', '')}\n\n"
-             f"**WhatsApp:** {pitch.get('whatsapp_message', '')}\n\n**LinkedIn note:** {pitch.get('linkedin_note', '')}\n\n"
-             f"**Call opener:** {pitch.get('call_opening', '')}")
+
+    # ─── REMOVED: Ready-to-Send Cold Outreach Pitch (per user request) ───
+    # Deal Snapshot below still uses pitch.get("deal_name"), pitch.get("value_proposition"),
+    # pitch.get("next_best_actions"), pitch.get("discovery_questions"). Those stay.
+    # ─────────────────────────────────────────────────────────────────────
+
     L.append("\n### 🧾 Deal Snapshot (CRM-ready)")
     snap = [("Suggested deal name", pitch.get("deal_name") or f"{org} - new opportunity"),
             ("Account", f"{org} ({company['website'] or 'website not found'})"),
@@ -955,7 +956,6 @@ def wa_number(phone):
 # main
 # --------------------------------------------------------------------------------------------------
 def is_unidentified(org):
-    """radar.py names leads whose company it could not read 'Unidentified <hash> <host>'."""
     return bool(re.match(r"(?i)^\s*unidentified\b", org or ""))
 
 def identify_org(llm, ref_url):
@@ -981,7 +981,6 @@ def identify_org(llm, ref_url):
     return name if all(t in low for t in toks) else ""
 
 def apply_sheet_settings(sheet):
-    """If SELLER_OFFER is not set, reuse the Target Products from the same Settings tab radar.py reads."""
     global SELLER_OFFER
     if SELLER_OFFER:
         return
@@ -997,24 +996,29 @@ def apply_sheet_settings(sheet):
         SELLER_OFFER = ", ".join(items[:8])
         log.info(f"Using Target Products from Settings as the seller offer: {SELLER_OFFER}")
 
+# ─── FIXED: buttons now properly defined, hash matches Apps Script ────────
 def save_unidentified(sheet, lead_id, sheet_org, ref_url):
     dossier = (f"### 🏢 Executive Profile & Operations\n{sheet_org}\n\n"
                f"_The organization could not be identified from the source page. Open the source and add the company manually._"
                f"\n\nSource: {ref_url}")
     try:
         sheet.post("update_lead_dossier", lead_id=lead_id, dossier=safe_cell(dossier),
-                   contacts={"dm_name": "Decision Maker", "dm_title": "", "email": "", "phone": "", "website": "", "linkedin_url": ""})
+                   contacts={"dm_name": "Decision Maker", "dm_title": "", "email": "", "phone": "",
+                             "website": "", "linkedin_url": ""})
     except SheetError as e:
         log.error(f"   could not save placeholder dossier: {e}")
         return False
-    import hashlib as _hl
+
+    token = _name_hash_token(sheet_org)
+    buttons = [[
+        {"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
+        {"text": "📦 Archive",           "callback_data": f"archive::{token}"}
+    ]]
     text = (f"⚠️ <b>ORGANIZATION NOT IDENTIFIED</b>\n{tg_escape(sheet_org)}\n\n"
             f"The source page does not clearly name the buyer. Please check it manually:\n{tg_escape(ref_url)}")
     return True, text, buttons, 0
+# ───────────────────────────────────────────────────────────────────────────
 
-# --------------------------------------------------------------------------------------------------
-# retry counter: stops a lead that keeps failing from being retried forever (file is committed by the workflow)
-# --------------------------------------------------------------------------------------------------
 ATTEMPTS_FILE = "enrich_attempts.json"
 MAX_ATTEMPTS = env_int("MAX_ENRICH_ATTEMPTS", 4)
 
@@ -1039,7 +1043,6 @@ def save_attempts(attempts):
         log.warning(f"Could not write {ATTEMPTS_FILE}: {e}")
 
 def give_up(sheet, lead_id, org, ref_url, tries):
-    """Write a visible placeholder dossier so the lead leaves the pending queue. 'Re-enrich' in the sheet restarts it."""
     dossier = (f"### ⚠️ Auto-enrichment failed\n{org}\n\n_Tried {tries} times (no research data or AI unavailable). "
                f"Set Action = Re-enrich to try again, or enrich it manually._\n\nSource: {ref_url}")
     try:
@@ -1050,11 +1053,10 @@ def give_up(sheet, lead_id, org, ref_url, tries):
         return False
 
 def process_lead(lead, search, llm, sheet, index, index_ok):
-    """Returns (ok, telegram_text, buttons) or raises."""
     lead_id = str(lead.get("lead_id") or "").strip()
     org = str(lead.get("organization") or "").strip()
     ref_url = str(lead.get("url") or "").strip()
-    sheet_org = org                       # the name as stored in the sheet (Telegram buttons must use this one)
+    sheet_org = org
     if is_unidentified(org):
         real = identify_org(llm, ref_url)
         if not real:
@@ -1095,7 +1097,6 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
     contacts.sort(key=contact_score, reverse=True)
     contacts = contacts[:max_c]
 
-    # LinkedIn lookups for the most important people who have none yet
     lookups = env_int("CONTACT_LOOKUPS", 3)
     for c in contacts[:lookups]:
         if not c["linkedin_url"]:
@@ -1103,7 +1104,6 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
             if li:
                 c["linkedin_url"], c["prov"]["linkedin"] = li, "linkedin-search"
 
-    # email domain check + pattern guesses (kept separate from verified emails)
     dom = base_domain(host_of(company["website"])) if company["website"] else ""
     mx_ok = bool(dom) and bool(guarded("mx", domain_has_mx, dom, default=False))
     known = [c["email"] for c in contacts if c["email_status"] == "found"]
@@ -1121,7 +1121,6 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
         c["db_status"] = "new"
     primary = contacts[0]
 
-    # primary contact falls back to the company mailbox / phone so a deal can always be worked
     if not primary["email"] and company["email"]:
         primary["email"], primary["email_status"] = company["email"], "generic"
         primary["prov"]["email"] = "company"
@@ -1132,15 +1131,14 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
         primary["phone"], primary["phone_scope"] = company["phone"], "company"
         primary["prov"]["phone"] = "company"
 
-    # reports_to only keeps names that exist in the account map
     names = {" ".join(sorted(name_tokens(c["name"]))): c["name"] for c in contacts}
     for c in contacts:
         c["reports_to"] = names.get(" ".join(sorted(name_tokens(c["reports_to"]))), "")
 
-    # duplicate check (email / LinkedIn / phone+name / company+name - never a bare name)
     batch = []
     for c in contacts:
-        k = person_keys(c["name"], c["email"] if c["email_status"] == "found" else "", c["phone"] if c["phone_scope"] == "personal" else "",
+        k = person_keys(c["name"], c["email"] if c["email_status"] == "found" else "",
+                        c["phone"] if c["phone_scope"] == "personal" else "",
                         c["linkedin_url"], account_key, org)
         hit, why = find_existing(k, index)
         c["match_row"] = hit.get("row") if hit else ""
@@ -1165,16 +1163,20 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
 
     dossier = build_dossier(org, company, contacts, primary, facts, pitch, research, ai_ok, comp_score)
     try:
-        res = sheet.post("update_lead_dossier", lead_id=lead_id, organization=safe_cell(org), dossier=safe_cell(dossier),
-    contacts={
-        "dm_name": safe_cell(primary["name"]),
-        "dm_title": safe_cell(primary["title"]),
-        "email": safe_cell(primary["email"]),
-        "phone": safe_cell(primary["phone"]),
-        "website": safe_cell(company["website"]),
-        "linkedin_url": safe_cell(primary["linkedin_url"]),
-    },
-)
+        res = sheet.post(
+            "update_lead_dossier",
+            lead_id=lead_id,
+            organization=safe_cell(org),
+            dossier=safe_cell(dossier),
+            contacts={
+                "dm_name": safe_cell(primary["name"]),
+                "dm_title": safe_cell(primary["title"]),
+                "email": safe_cell(primary["email"]),
+                "phone": safe_cell(primary["phone"]),
+                "website": safe_cell(company["website"]),
+                "linkedin_url": safe_cell(primary["linkedin_url"]),
+            },
+        )
         log.info(f"   saved: {res.get('message', 'ok') if isinstance(res, dict) else 'ok'}")
     except SheetError as e:
         log.error(f"   could not save dossier for {org}: {e}")
@@ -1183,7 +1185,7 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     to_save = contacts
     if not index_ok and len(contacts) > 1:
-        log.warning("   Contact index not available (apply contact_upsert_patch.gs) - saving only the primary contact "
+        log.warning("   Contact index not available - saving only the primary contact "
                     "to avoid overwriting rows; the other contacts are listed in the dossier.")
         to_save = contacts[:1]
     for i, c in enumerate(to_save):
@@ -1201,11 +1203,12 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
                                    "is_primary", "email_status", "confidence", "possible_emails", "evidence", "last_enriched")]
         try:
             sheet.post("upsert_contact", contact_data={
-                "company_name": safe_cell(org), "linkedin_url": safe_cell(c["linkedin_url"]), "row_array": row, "fields": fields,
+                "company_name": safe_cell(org), "linkedin_url": safe_cell(c["linkedin_url"]),
+                "row_array": row, "fields": fields,
                 "unique_id": c["uid"], "match_uid": c["uid"] if c["match_reason"] else "",
                 "match_row": c["match_row"], "match_reason": c["match_reason"], "account_key": account_key})
             if not c["match_reason"]:
-                index.append(c["keys"])                 # later leads in this run see this contact
+                index.append(c["keys"])
         except SheetError as e:
             log.warning(f"   contact upsert failed for {c['name']}: {e}")
 
@@ -1213,15 +1216,17 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
     buttons = []
     wa = wa_number(primary["phone"]) if primary["phone_scope"] in ("personal", "company") else ""
     if wa:
-        msg_txt = quote(pitch.get("whatsapp_message") or f"Hi {primary['name'] if primary['name'] != 'Decision Maker' else 'Team'}, "
+        msg_txt = quote(pitch.get("whatsapp_message") or
+                        f"Hi {primary['name'] if primary['name'] != 'Decision Maker' else 'Team'}, "
                         f"I came across {org}. Would love to share how we can help.")
         buttons.append([{"text": "💬 WhatsApp", "url": f"https://wa.me/{wa}?text={msg_txt}"}])
-        # Must match cbToken_() in the Apps Script — MD5 of the lowercase, non-alphanumeric-stripped name.
-    import hashlib as _hl
-    norm = re.sub(r"[^\w]", "", sheet_org.lower(), flags=re.UNICODE)
-    token = "h:" + _hl.md5(norm.encode("utf-8")).hexdigest()[:12]
+
+    # ─── FIXED: exact-match hash token (also works for Ltd/Limited/and/& variants) ───
+    token = _name_hash_token(sheet_org)
+    # ────────────────────────────────────────────────────────────────────────────────
     buttons.append([{"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
-                    {"text": "📦 Archive", "callback_data": f"archive::{token}"}])
+                    {"text": "📦 Archive",           "callback_data": f"archive::{token}"}])
+
     qual = (facts.get("deal") or {}).get("qualification")
     qual = qual if isinstance(qual, dict) else {}
     m = [f"🎯 <b>LEAD ENRICHED: {tg_escape(org)}</b>", ""]
@@ -1254,7 +1259,7 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
 def main():
     started = time.time()
     tg = Telegram()
-    log.info("=== Enrichment worker v2 starting ===")
+    log.info("=== Enrichment worker v2.1 starting ===")
     try:
         sheet = SheetAPI()
         data = sheet.get("get_pending_leads")
@@ -1270,7 +1275,7 @@ def main():
         log.warning(f"{skipped} row(s) in the Leads tab have no Lead ID or Organization and cannot be enriched.")
     attempts = load_attempts()
     pending_ids = {str(l.get("lead_id")).strip() for l in leads}
-    attempts = {k: v for k, v in attempts.items() if k in pending_ids}        # forget leads no longer pending
+    attempts = {k: v for k, v in attempts.items() if k in pending_ids}
     gave_up = []
     for l in list(leads):
         lid = str(l.get("lead_id")).strip()
@@ -1280,7 +1285,7 @@ def main():
             if give_up(sheet, lid, org_l, str(l.get("url") or ""), attempts[lid]):
                 gave_up.append(org_l)
                 attempts.pop(lid, None)
-            leads.remove(l)                                                      # never let it block the queue
+            leads.remove(l)
     save_attempts(attempts)
     leads = leads[:env_int("MAX_ENRICH_PER_RUN", 15)]
     if not leads:
@@ -1308,7 +1313,7 @@ def main():
         log.info(f"Enriching {org} ({lid})")
         try:
             result = process_lead(lead, search, llm, sheet, index, index_ok)
-        except Exception as e:          # one bad lead must never stop the batch
+        except Exception as e:
             log.error(f"   unexpected error for {org}: {e}")
             result = None
         if not result:
@@ -1328,7 +1333,8 @@ def main():
     off = [k for k, v in _FAILS.items() if v >= env_int("SOURCE_MAX_FAILS", 3)]
     duration = f"{int(time.time() - started)}s"
     tg.send(f"🏁 <b>Enrichment complete</b>\n• Enriched: <code>{done}</code>\n• Failed / retry next run: <code>{failed}</code>"
-            f"\n• Duration: <code>{duration}</code>" + (f"\n• Sources disabled this run: <code>{tg_escape(', '.join(off))}</code>" if off else "")
+            f"\n• Duration: <code>{duration}</code>"
+            + (f"\n• Sources disabled this run: <code>{tg_escape(', '.join(off))}</code>" if off else "")
             + (f"\n• Thin results, check manually: {tg_escape('; '.join(thin[:8]))}" if thin else "")
             + (f"\n• Parked after {MAX_ATTEMPTS} failed tries (use Re-enrich): {tg_escape('; '.join(gave_up[:8]))}" if gave_up else ""))
     log.info(f"Enrichment done: {done} ok, {failed} failed")
