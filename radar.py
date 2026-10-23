@@ -571,18 +571,25 @@ class Router:
         self.event_fps = event_fps if event_fps is not None else set()
 
     def push(self, lead: StandardLead, ai_verdict: dict, default_target: str, default_industry: str):
-        # Merge AI verdict into StandardLead
+        # Merge AI verdict into StandardLead.
+        # Map AI field names to dataclass field names where they differ.
+        # Set any field that exists on StandardLead; skip unknown keys silently.
+        _field_map = {"organization": "buyer_org"}
         for k, v in ai_verdict.items():
-            if k in ("item_index",):
+            if k in ("item_index", "event_fingerprint"):
                 continue
-            if hasattr(lead, k) and v not in (None, ""):
-                try:
-                    if k == "lead_score" and isinstance(v, (int, str)):
-                        lead.lead_score = int(v) if str(v).isdigit() else 50
-                    else:
-                        setattr(lead, k, v)
-                except Exception:
-                    pass
+            if v in (None, ""):
+                continue
+            target = _field_map.get(k, k)
+            if not hasattr(lead, target):
+                continue
+            try:
+                if k == "lead_score":
+                    lead.lead_score = int(v) if str(v).isdigit() else 50
+                else:
+                    setattr(lead, target, v)
+            except Exception:
+                pass
 
         # Normalise common fields
         lead.buyer_org = normalize_company(str(lead.buyer_org or lead.dm_name or ""))
