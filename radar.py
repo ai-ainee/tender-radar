@@ -470,8 +470,10 @@ GATE 2 — Expiry: Set "expiry_status" to ACTIVE / CLOSED / COMPLETED / UNKNOWN.
   CLOSED = bid deadline explicitly before TODAY.
   COMPLETED = text says "commissioned"/"handed over"/"inaugurated".
   An LOA from 6 months ago for a project still under construction = ACTIVE, not CLOSED.
-GATE 3 — Genuineness: GENUINE / JOB_PORTAL / STUDENT / BLOG / RESELLER / AGGREGATOR / OTHER.
-  RESELLER = dealer selling your product (goes to Partners, not Inbox). Only GENUINE → Inbox.
+GATE 3 — Genuineness: GENUINE / JOB_PORTAL / HIRING_SIGNAL / STUDENT / BLOG / RESELLER / AGGREGATOR / OTHER.
+  - JOB_PORTAL = the page is a job board / aggregator (LinkedIn Jobs, Naukri, Indeed, Internshala, Instahyre, bebee, jobhai, jobswindow, randstad.in, weekday.works, iitjobs) → Review.
+  - HIRING_SIGNAL = a specific company posting a job that directly consumes our products → Review (never Inbox).
+  - GENUINE = actual procurement notice / tender / capex announcement → Inbox.
 
 ═══ SIGNAL FRESHNESS BY EVENT TYPE ═══
 - TENDER: FRESH (bid deadline future), RECENT (<45 days past), STALE (bid closed >45 days)
@@ -968,7 +970,16 @@ def main():
 
                         low_url = raw.lower()
                         protected = any(p in low_url for p in cfg["protected"] if p)
-
+                        
+                        # ── Job-portal URL detection (route to Review, not Inbox) ──
+                        JOB_URL_RE = r"/(job|jobs|careers?|hiring|vacanc|opening)[-/]"
+                        is_job_url = bool(re.search(JOB_URL_RE, low_url, re.I))
+                        if is_job_url and not protected:
+                            log.info(f"   [JOB] URL looks like a job listing — routing to Review: {raw}")
+                            # Prepend a note that the AI must see
+                            snippet_raw = f"[PRE-AI NOTE: URL is a job listing, NOT a procurement notice. " \
+                                          f"Only treat as GENUINE if this is a company that's SPECIFICALLY hiring " \
+                                          f"for a role directly consuming our products AND the company is a real buyer.]\n{snippet_raw}"
                         # --- STAGE 1: BANNED DOMAIN (hard drop) ---
                         if not protected and any(bad_domain in low_url for bad_domain in cfg["banned_sites"] if bad_domain):
                             log.info(f"   [-] Skip (Banned Domain): {raw}")
@@ -1051,7 +1062,7 @@ def main():
                                 stats["dupes"] += 1
                                 continue
                             if fp: pending_fp.add(fp)
-                            docs.append({"track": track_name, "url": raw, "raw_text": content, "fp": fp})
+                            docs.append({"track": track_name, "url": raw, "raw_text": content, "fp": fp, "is_job_url": is_job_url})
                         else:
                             snip = f"{res.get('title', '')}\n{res.get('snippet', '')}".strip()
                             if len(snip) >= 60:
