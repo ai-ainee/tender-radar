@@ -947,9 +947,8 @@ def main():
     _targets_india = not country_list or "india" in {_norm_country_(c) for c in country_list}
     if not _targets_india:
         log.info("India not in Target Countries — skipping CPPP/BSE/NSE/GeM/Hiring")
-        fetch_cppp = fetch_bse_filings = fetch_nse_filings = fetch_gem = collect_hiring_signals = None
 
-    if fetch_cppp is not None:
+    if _targets_india and fetch_cppp is not None:
         try:
             cppp_hits = fetch_cppp(portal_kw)
             log.info(f"CPPP: {len(cppp_hits)} tender(s)")
@@ -969,7 +968,7 @@ def main():
         except Exception as e:
             log.warning(f"CPPP ingestion failed: {e}")
 
-    if fetch_bse_filings is not None:
+    if _targets_india and fetch_bse_filings is not None:
         try:
             bse = fetch_bse_filings(portal_kw, max_days=3)
             log.info(f"BSE: {len(bse)} filing(s)")
@@ -986,7 +985,7 @@ def main():
         except Exception as e:
             log.warning(f"BSE ingestion failed: {e}")
 
-    if fetch_nse_filings is not None:
+    if _targets_india and fetch_nse_filings is not None:
         try:
             nse = fetch_nse_filings(portal_kw)
             log.info(f"NSE: {len(nse)} filing(s)")
@@ -1003,7 +1002,7 @@ def main():
         except Exception as e:
             log.warning(f"NSE ingestion failed: {e}")
 
-    if fetch_gem is not None:
+    if _targets_india and fetch_gem is not None:
         try:
             gem = fetch_gem(portal_kw)
             log.info(f"GeM: {len(gem)} bid(s)")
@@ -1023,7 +1022,7 @@ def main():
         except Exception as e:
             log.warning(f"GeM ingestion failed: {e}")
 
-    if collect_hiring_signals is not None:
+    if _targets_india and collect_hiring_signals is not None:
         try:
             hiring = collect_hiring_signals(cfg["targets"], llm, max_per_role=8)   # ← pass llm
             log.info(f"Hiring: {len(hiring)} signal(s)")
