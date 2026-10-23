@@ -1,8 +1,7 @@
 """nse_filings.py — NSE corporate announcements.
 
-Same purpose as BSE filings, different API. NSE requires a valid session
-cookie; we warm one by hitting the homepage first. Shares the category
-classifier with bse_filings to keep the pipeline consistent.
+Same as bse_filings: no hardcoded category keywords, filtered only by Target
+Products. AI evaluator classifies each filing via event_fingerprint.
 """
 import http.cookiejar
 import json
@@ -11,17 +10,15 @@ import urllib.parse
 import urllib.request
 
 from common import log
-from bse_filings import _classify, _is_relevant  # shared classifier
 
 UA = "Mozilla/5.0 (compatible; RadarScout/2.0; business-research)"
 
 
 def fetch_nse_filings(target_keywords, max_results=60):
-    """Fetches recent NSE corporate announcements filtered by keyword + category.
+    """Fetches recent NSE corporate announcements filtered by target keywords.
 
-    Returns a list of dicts with keys:
-      source, company, subject, details, category, date, url
-    Returns [] on error (never raises).
+    Returns a list of dicts: source, company, subject, details, date, url.
+    Returns [] on error.
     """
     out = []
     try:
@@ -32,7 +29,6 @@ def fetch_nse_filings(target_keywords, max_results=60):
             ("Accept-Language", "en-IN,en;q=0.9"),
             ("Accept", "*/*"),
         ]
-        # Warm the session — NSE blocks API calls without valid cookies
         opener.open("https://www.nseindia.com/", timeout=15)
         time.sleep(1)
         opener.open("https://www.nseindia.com/companies-listing/corporate-filings-announcements", timeout=15)
@@ -43,33 +39,32 @@ def fetch_nse_filings(target_keywords, max_results=60):
         )
         data = json.loads(resp.read().decode("utf-8", errors="replace"))
         if not isinstance(data, list):
-            log.warning(f"NSE: unexpected response shape (expected list)")
+            log.warning("NSE: unexpected response shape (expected list)")
             return []
+
+        kw_lower = [str(k).lower() for k in target_keywords if k]
 
         for item in data[:max_results]:
             if not isinstance(item, dict):
                 continue
             subject = str(item.get("subject") or item.get("desc") or "").strip()
-            symbol  = str(item.get("symbol") or "").strip()
+            symbol = str(item.get("symbol") or "").strip()
             details = str(item.get("attchmntText") or "").strip()
             if not subject:
                 continue
-            category = _classify(subject, details)
-            if not category:
-                continue
-            if not _is_relevant(subject, details, symbol, target_keywords):
-                continue
+            # Filter ONLY by target keywords
+            if kw_lower:
+                hay = (subject + " " + details).lower()
+                if not any(k in hay for k in kw_lower):
+                    continue
             attach = str(item.get("attchmntFile") or "").strip()
-            if attach and attach.startswith("http"):
-                url = attach
-            else:
-                url = f"https://www.nseindia.com/get-quotes/equity?symbol={urllib.parse.quote(symbol)}"
+            url = attach if (attach and attach.startswith("http")) else \
+                  f"https://www.nseindia.com/get-quotes/equity?symbol={urllib.parse.quote(symbol)}"
             out.append({
                 "source": "NSE",
                 "company": symbol,
                 "subject": subject,
                 "details": details[:800],
-                "category": category,
                 "date": str(item.get("an_dt") or item.get("exchdisstime") or "")[:10],
                 "url": url,
             })
