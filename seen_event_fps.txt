@@ -73,3 +73,38 @@ hiring|ascendumsolutionsindia|||2026-10|
 product_offering|cizeron|||2026-10|
 service_offering|webdoidtechnologies|||2026-10|
 blog_article|vizexperts|||2026-10|
+thought_leadership|desapex|||2026-10|
+hiring|wsp|BIM Technician - Public Health|position|2026-10|india
+conference|konkanrailwaycorporationlimited|GeoInfraTech 2027|event|2027-02|mumbai
+hiring|leadingcompanyinsaudiarabia|||2026-10|
+hiring|urbtechindiadevelopers|||2026-10|
+captcha_blocked|trimble|||2026-10|
+job_portal_index|jobsuraksha|||2026-10|
+developer_docs|withone|||2026-10|
+job_board_listing|jobtoday|||2026-10|
+blog_post|united-bim|||2026-10|
+marketing_post|developerlook|||2026-10|
+tender|centralbankofliberia|CBL/RFP/12/2026/LIB-PSS|tender_ref|2026-09|liberia
+marketing|binsky|||2026-10|
+policy_manual|armyreserve|||2026-10|
+editorial|institutionofcivilengineers|||2026-10|
+marketing|tekminds|||2026-10|
+framework_agreement|governmentcommercialagency|RM6088|framework_ref|2026-06|unitedkingdom
+hiring|hilti|21262|requisition_id|2026-10|mexicocity
+tender|departmentofhousingandworks|WCS2024NR1|tender_ref|2024-01|westernaustralia
+hiring|arup|LON0005KF|requisition_id|2026-10|london
+hiring|aecom|||2026-10|
+hiring|powerinternationalholding|||2026-10|
+hiring|amazondevelopmentcentreirelandlimited|10569108|job id|2026-10|ireland
+blog_post|archdaily|||2020-11|
+student_project|skill-lync||||
+article|consulting-specifyingengineer||||
+forum_post|autodeskforums||||
+forum_post|revitforum||||
+blog_post|ae7|||2019-03|
+blog_post|swecoarchitects|||2017-08|
+textbook_sample|sdcpublications|||2018-01|
+capex_expansion|toyodagosei|||2026-09|
+directory_listing|projectsindia|||2026-10|
+blog_post|gncservice|||2026-04|
+directory_listing|91infra|||2026-10|
