@@ -35,7 +35,9 @@ env:
 jobs:
   run-radar-scout:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Raised from 90 → 120 to fit the 70-min harvester + 25-min enrichment
+    # + ~15 min of checkout/pip/OCR overhead in 'both' mode.
+    timeout-minutes: 120
     env:
       WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
@@ -85,6 +87,10 @@ jobs:
         if: >-
           (github.event_name == 'schedule' && (github.event.schedule == '30 1 * * *' || github.event.schedule == '30 14 * * *')) ||
           (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'harvest'))
+        env:
+          # Harvester-only budget. Overrides radar.py's default 45 min.
+          # This does NOT affect the enrichment worker below (which keeps its 25 min default).
+          MAX_RUNTIME_MIN: '70'
         run: python radar.py
 
       - name: Run enrichment worker
@@ -99,14 +105,17 @@ jobs:
           (github.event_name == 'workflow_dispatch' && inputs.job == 'health')
         run: python healthcheck.py
 
-      # Persist the de-duplication cache and retry counters even if a step above failed
+      # Persist the de-duplication cache and retry counters even if a step above failed.
+      # seen_tenders.txt  = tender-ID dedup (same tender across GeM/CPPP/state/aggregator → 1 row)
+      # seen_event_fps.txt = event-fingerprint dedup (4 news articles about the same capex → 1 row)
+      # Both files are created on first run; the `-f` guard skips them until then.
       - name: Save cache and fingerprints
         if: always()
         run: |
           git config user.name "Radar Scout Bot"
           git config user.email "bot@radarscout.local"
           # add only the files that exist (one missing path would make `git add` stage nothing)
-          for f in seen_links.txt seen_fingerprints.txt enrich_attempts.json; do
+          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt enrich_attempts.json; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
           if git diff --cached --quiet; then
