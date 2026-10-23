@@ -39,6 +39,7 @@ class StandardLead:
     title:       str = ""
     snippet:     str = ""
     raw_text:    str = ""              # full text if fetched, else ""
+    industry:    str = ""              # AI-extracted industry label
     structured:  Dict[str, Any] = field(default_factory=dict)  # source-specific payload
 
     # ── Buyer (structured sources fill this; search sources leave empty) ──
@@ -62,9 +63,10 @@ class StandardLead:
     # ── Derived ───────────────────────────────────────────────────────
     event_fingerprint: str = ""
 
-    # ── Contact (populated by enrichment, not source) ─────────────────
+   # ── Contact (populated by enrichment, not source) ─────────────────
     dm_name:          str = ""
     dm_title:         str = ""
+    phone:            str = ""          # raw phone from AI verdict (before validation)
     dm_email:         str = ""
     dm_email_status:  str = ""         # one of EMAIL_STATUS
     dm_phone:         str = ""         # E.164 format "+91XXXXXXXXXX"
