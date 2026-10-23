@@ -829,6 +829,113 @@ def main():
                     core_kw.add(word)
     log.info(f"Pre-AI Bouncer Keywords: {core_kw}")
 
+# ═══ PORTAL SOURCES — RUN FIRST (before search budget consumed) ═══
+    portal_kw = cfg["targets"] + cfg["industries"]
+    portal_docs = []
+    
+    if fetch_cppp is not None:
+        try:
+            cppp_hits = fetch_cppp(portal_kw)
+            log.info(f"CPPP: {len(cppp_hits)} tender(s)")
+            for h in cppp_hits:
+                c = clean_url(h["url"])
+                if not c or c in seen: continue
+                tid = extract_tender_id(h.get("title", "")) or tender_id_from_url(h["url"])
+                if tid and tid in tender_ids: continue
+                if tid: mark_tender_seen(tender_ids, tid)
+                pending.add(c)
+                content = fetch_page(h["url"], protected_domains=cfg["protected"])
+                if not content or len(content) < 120:
+                    content = f"[PORTAL SNIPPET]\n{h.get('title','')}\n{h.get('snippet','')}"  # fallback for WAF-blocked pages
+                if content and len(content) > 60:
+                    portal_docs.append({"track": "PORTAL::CPPP", "url": h["url"], "raw_text": content, "fp": fingerprint(content)})
+                    stats["scanned"] += 1
+        except Exception as e:
+            log.warning(f"CPPP ingestion failed: {e}")
+    
+    if fetch_bse_filings is not None:
+        try:
+            bse = fetch_bse_filings(portal_kw, max_days=3)
+            log.info(f"BSE: {len(bse)} filing(s)")
+            for f in bse:
+                c = clean_url(f["url"])
+                if not c or c in seen: continue
+                portal_docs.append({
+                    "track": f"CORP::BSE::{f['category'].upper()}",
+                    "url": f["url"],
+                    "raw_text": f"[BSE FILING] {f['date']}\nCOMPANY: {f['company']}\nSUBJECT: {f['subject']}\nDETAILS: {f['details']}",
+                    "fp": "",
+                })
+                stats["scanned"] += 1
+        except Exception as e:
+            log.warning(f"BSE ingestion failed: {e}")
+    
+    if fetch_nse_filings is not None:
+        try:
+            nse = fetch_nse_filings(portal_kw)
+            log.info(f"NSE: {len(nse)} filing(s)")
+            for f in nse:
+                c = clean_url(f["url"])
+                if not c or c in seen: continue
+                portal_docs.append({
+                    "track": f"CORP::NSE::{f['category'].upper()}",
+                    "url": f["url"],
+                    "raw_text": f"[NSE FILING] {f['date']}\nCOMPANY: {f['company']}\nSUBJECT: {f['subject']}\nDETAILS: {f['details']}",
+                    "fp": "",
+                })
+                stats["scanned"] += 1
+        except Exception as e:
+            log.warning(f"NSE ingestion failed: {e}")
+    
+    if fetch_gem is not None:
+        try:
+            gem = fetch_gem(portal_kw)
+            log.info(f"GeM: {len(gem)} bid(s)")
+            for h in gem:
+                c = clean_url(h["url"])
+                if not c or c in seen: continue
+                tid = tender_id_from_url(h["url"])
+                if tid and tid in tender_ids: continue
+                if tid: mark_tender_seen(tender_ids, tid)
+                pending.add(c)
+                content = fetch_page(h["url"], protected_domains=cfg["protected"])
+                if not content or len(content) < 120:
+                    content = f"[PORTAL SNIPPET]\n{h.get('title','')}\n{h.get('snippet','')}"
+                if content and len(content) > 60:
+                    portal_docs.append({"track": "PORTAL::GeM", "url": h["url"], "raw_text": content, "fp": fingerprint(content)})
+                    stats["scanned"] += 1
+        except Exception as e:
+            log.warning(f"GeM ingestion failed: {e}")
+    
+    if collect_hiring_signals is not None:
+        try:
+            hiring = collect_hiring_signals(cfg["targets"], max_per_role=8)
+            log.info(f"Hiring: {len(hiring)} signal(s)")
+            for h in hiring:
+                fp_key = f"hiring|{h['company'].lower().replace(' ', '')}|{h['role'].lower()}"
+                if fp_key in event_fps: continue
+                _mark_fp_cache(EVENT_FP_FILE, fp_key)
+                event_fps.add(fp_key)
+                portal_docs.append({
+                    "track": "HIRING::SIGNAL",
+                    "url": f"https://www.naukri.com/{h['role'].replace(' ', '-')}-jobs",
+                    "raw_text": f"[HIRING SIGNAL]\nCOMPANY: {h['company']}\nROLE: {h['role']}\nLikely deployment within 60-90 days.",
+                    "fp": "",
+                })
+                stats["scanned"] += 1
+        except Exception as e:
+            log.warning(f"Hiring ingestion failed: {e}")
+    
+    # Evaluate portal docs BEFORE the campaign loop
+    default_target   = cfg["targets"][0] if cfg["targets"] else "General"
+    default_industry = cfg["industries"][0] if cfg["industries"] else "ALL_SECTORS"
+    stats["portal_added"] = len(portal_docs)
+    for i in range(0, len(portal_docs), AI_BATCH):
+        _evaluate_and_route_(portal_docs[i:i + AI_BATCH], default_target, default_industry)
+        stats["portal_evaluated"] += min(AI_BATCH, len(portal_docs) - i)
+    # ═════════════════════════════════════════════════════════════════════
+
+    # ═══ NOW run the web search campaigns ═══
     try:
         for target, industry, gen in campaigns:
             check_budget()
@@ -956,111 +1063,6 @@ def main():
                 # Evaluate this track's docs in batches
                 for i in range(0, len(docs), AI_BATCH):
                     _evaluate_and_route_(docs[i:i + AI_BATCH], target, industry)
-
-        # ═══════════════════════════════════════════════════════════════════
-        # EXTRA SOURCES — collected into portal_docs, then evaluated in their
-        # own batch loop. This is the fix for the "sources produce 0 leads" bug.
-        # ═══════════════════════════════════════════════════════════════════
-        portal_kw = cfg["targets"] + cfg["industries"]
-        portal_docs = []
-
-        if fetch_cppp is not None:
-            try:
-                cppp_hits = fetch_cppp(portal_kw)
-                log.info(f"CPPP: {len(cppp_hits)} tender(s)")
-                for h in cppp_hits:
-                    c = clean_url(h["url"])
-                    if not c or c in seen: continue
-                    tid = extract_tender_id(h.get("title", "")) or tender_id_from_url(h["url"])
-                    if tid and tid in tender_ids: continue
-                    if tid: mark_tender_seen(tender_ids, tid)
-                    pending.add(c)
-                    content = fetch_page(h["url"], protected_domains=cfg["protected"])
-                    if content and len(content) > 120:
-                        portal_docs.append({"track": "PORTAL::CPPP", "url": h["url"], "raw_text": content, "fp": fingerprint(content)})
-                        stats["scanned"] += 1
-            except Exception as e:
-                log.warning(f"CPPP ingestion failed: {e}")
-
-        if fetch_bse_filings is not None:
-            try:
-                bse = fetch_bse_filings(portal_kw, max_days=3)
-                log.info(f"BSE: {len(bse)} filing(s)")
-                for f in bse:
-                    c = clean_url(f["url"])
-                    if not c or c in seen: continue
-                    portal_docs.append({
-                        "track": f"CORP::BSE::{f['category'].upper()}",
-                        "url": f["url"],
-                        "raw_text": f"[BSE FILING] {f['date']}\nCOMPANY: {f['company']}\nSUBJECT: {f['subject']}\nDETAILS: {f['details']}",
-                        "fp": "",
-                    })
-                    stats["scanned"] += 1
-            except Exception as e:
-                log.warning(f"BSE ingestion failed: {e}")
-
-        if fetch_nse_filings is not None:
-            try:
-                nse = fetch_nse_filings(portal_kw)
-                log.info(f"NSE: {len(nse)} filing(s)")
-                for f in nse:
-                    c = clean_url(f["url"])
-                    if not c or c in seen: continue
-                    portal_docs.append({
-                        "track": f"CORP::NSE::{f['category'].upper()}",
-                        "url": f["url"],
-                        "raw_text": f"[NSE FILING] {f['date']}\nCOMPANY: {f['company']}\nSUBJECT: {f['subject']}\nDETAILS: {f['details']}",
-                        "fp": "",
-                    })
-                    stats["scanned"] += 1
-            except Exception as e:
-                log.warning(f"NSE ingestion failed: {e}")
-
-        if fetch_gem is not None:
-            try:
-                gem = fetch_gem(portal_kw)
-                log.info(f"GeM: {len(gem)} bid(s)")
-                for h in gem:
-                    c = clean_url(h["url"])
-                    if not c or c in seen: continue
-                    tid = tender_id_from_url(h["url"])
-                    if tid and tid in tender_ids: continue
-                    if tid: mark_tender_seen(tender_ids, tid)
-                    pending.add(c)
-                    content = fetch_page(h["url"], protected_domains=cfg["protected"])
-                    if content and len(content) > 120:
-                        portal_docs.append({"track": "PORTAL::GeM", "url": h["url"], "raw_text": content, "fp": fingerprint(content)})
-                        stats["scanned"] += 1
-            except Exception as e:
-                log.warning(f"GeM ingestion failed: {e}")
-
-        if collect_hiring_signals is not None:
-            try:
-                hiring = collect_hiring_signals(cfg["targets"], max_per_role=8)
-                log.info(f"Hiring: {len(hiring)} signal(s)")
-                for h in hiring:
-                    fp_key = f"hiring|{h['company'].lower().replace(' ', '')}|{h['role'].lower()}"
-                    if fp_key in event_fps: continue
-                    _mark_fp_cache(EVENT_FP_FILE, fp_key)
-                    event_fps.add(fp_key)
-                    portal_docs.append({
-                        "track": "HIRING::SIGNAL",
-                        "url": f"https://www.naukri.com/{h['role'].replace(' ', '-')}-jobs",
-                        "raw_text": f"[HIRING SIGNAL]\nCOMPANY: {h['company']}\nROLE: {h['role']}\nLikely deployment within 60-90 days.",
-                        "fp": "",
-                    })
-                    stats["scanned"] += 1
-            except Exception as e:
-                log.warning(f"Hiring ingestion failed: {e}")
-
-        # FIXED: actually evaluate the portal docs.
-        default_target   = cfg["targets"][0] if cfg["targets"] else "General"
-        default_industry = cfg["industries"][0] if cfg["industries"] else "ALL_SECTORS"
-        stats["portal_added"] = len(portal_docs)
-        for i in range(0, len(portal_docs), AI_BATCH):
-            _evaluate_and_route_(portal_docs[i:i + AI_BATCH], default_target, default_industry)
-            stats["portal_evaluated"] += min(AI_BATCH, len(portal_docs) - i)
-        # ═══════════════════════════════════════════════════════════════════
 
     except StopRun as e:
         stop_reason = str(e)
