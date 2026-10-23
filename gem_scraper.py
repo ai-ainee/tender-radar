@@ -14,16 +14,32 @@ from common import log
 GEM_URLS = [
     "https://bidplus.gem.gov.in/all-bids-data",
     "https://bidplus.gem.gov.in/all-bids",
+    "https://mkp-pprod-bidplus.gem.gov.in/all-bids-data",
+    "https://mkp-pprod-bidplus.gem.gov.in/all-bids",
 ]
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
 def _fetch_html(url):
-    req = urllib.request.Request(url, headers={
+    hdrs = {
         "User-Agent": UA,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-IN,en;q=0.9",
-    })
+        "Referer": "https://gem.gov.in/",
+    }
+    # Try curl_cffi first (bypasses bot detection)
+    try:
+        from curl_cffi import requests as cffi_requests
+        r = cffi_requests.get(url, headers=hdrs, impersonate="chrome120", timeout=30)
+        if r.status_code == 200 and r.content:
+            return r.content.decode("utf-8", errors="replace")
+        raise ValueError(f"HTTP {r.status_code}")
+    except ImportError:
+        pass
+    except Exception as e:
+        raise e
+    # Fallback to urllib
+    req = urllib.request.Request(url, headers=hdrs)
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read(3_000_000).decode("utf-8", errors="replace")
 
