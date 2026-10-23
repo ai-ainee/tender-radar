@@ -94,11 +94,28 @@ def fetch_bse_filings(target_keywords, max_days=3, max_results=60):
         data = json.loads(body_bytes.decode("utf-8", errors="replace"))
     except Exception as e:
         log.warning(f"BSE JSON parse failed: {str(e)[:100]}")
+        # Debug: log first 300 chars of raw response
+        log.warning(f"BSE raw response preview: {body_bytes[:300]!r}")
         return out
 
-    rows = data.get("Table") if isinstance(data, dict) else None
+    # Debug + auto-fix for common alternate shapes
+    rows = None
+    if isinstance(data, dict):
+        log.warning(f"BSE response dict keys: {list(data.keys())[:15]}")
+        for key in ("Table", "Data", "data", "Announcements", "announcements",
+                    "Table1", "records", "result", "results"):
+            if isinstance(data.get(key), list):
+                rows = data[key]
+                log.info(f"BSE: using key '{key}' ({len(rows)} rows)")
+                break
+    elif isinstance(data, list):
+        log.info(f"BSE: response is a list directly ({len(data)} items)")
+        rows = data
+    else:
+        log.warning(f"BSE: unexpected type {type(data).__name__}, preview: {str(data)[:300]}")
+
     if not isinstance(rows, list):
-        log.warning("BSE: unexpected response shape (no 'Table' array)")
+        log.warning("BSE: no usable rows found")
         return out
 
     kw_lower = [str(k).lower() for k in (target_keywords or []) if k]
