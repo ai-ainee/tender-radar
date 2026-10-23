@@ -20,24 +20,60 @@ def fetch_nse_filings(target_keywords, max_results=60):
     Returns a list of dicts: source, company, subject, details, date, url.
     Returns [] on error.
     """
-    out = []
+   out = []
     try:
-        cj = http.cookiejar.CookieJar()
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-        opener.addheaders = [
-            ("User-Agent", UA),
-            ("Accept-Language", "en-IN,en;q=0.9"),
-            ("Accept", "*/*"),
-        ]
-        opener.open("https://www.nseindia.com/", timeout=15)
-        time.sleep(1)
-        opener.open("https://www.nseindia.com/companies-listing/corporate-filings-announcements", timeout=15)
-        time.sleep(1)
-        resp = opener.open(
-            "https://www.nseindia.com/api/corporate-announcements?index=equities",
-            timeout=20,
-        )
-        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        # curl_cffi with cookie jar to bypass TLS fingerprint + maintain session
+        try:
+            from curl_cffi import requests as cffi_requests
+            _use_cffi = True
+        except ImportError:
+            _use_cffi = False
+
+        body_bytes = None
+        if _use_cffi:
+            try:
+                session = cffi_requests.Session(impersonate="chrome120")
+                hdrs = {
+                    "User-Agent": UA,
+                    "Accept-Language": "en-IN,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                }
+                session.get("https://www.nseindia.com/", headers=hdrs, timeout=15)
+                time.sleep(1)
+                session.get("https://www.nseindia.com/companies-listing/corporate-filings-announcements", headers=hdrs, timeout=15)
+                time.sleep(1)
+                r = session.get(
+                    "https://www.nseindia.com/api/corporate-announcements?index=equities",
+                    headers={**hdrs, "Accept": "application/json"},
+                    timeout=20,
+                )
+                if r.status_code == 200:
+                    body_bytes = r.content
+                else:
+                    log.warning(f"NSE cffi HTTP {r.status_code}")
+            except Exception as e:
+                log.warning(f"NSE cffi error: {e}")
+
+        if body_bytes is None:
+            # Fallback to urllib
+            cj = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+            opener.addheaders = [
+                ("User-Agent", UA),
+                ("Accept-Language", "en-IN,en;q=0.9"),
+                ("Accept", "*/*"),
+            ]
+            opener.open("https://www.nseindia.com/", timeout=15)
+            time.sleep(1)
+            opener.open("https://www.nseindia.com/companies-listing/corporate-filings-announcements", timeout=15)
+            time.sleep(1)
+            resp = opener.open(
+                "https://www.nseindia.com/api/corporate-announcements?index=equities",
+                timeout=20,
+            )
+            body_bytes = resp.read()
+
+        data = json.loads(body_bytes.decode("utf-8", errors="replace"))
         if not isinstance(data, list):
             log.warning("NSE: unexpected response shape (expected list)")
             return []
