@@ -10,8 +10,12 @@ import xml.etree.ElementTree as ET
 
 from common import log
 
-CPPP_RSS = "https://eprocure.gov.in/cppp/rssdldtlist"
-UA = "Mozilla/5.0 (compatible; RadarScout/2.0; business-research)"
+CPPP_URLS = [
+    "https://eprocure.gov.in/cppp/rssdldtlist",                    # original feed
+    "https://eprocure.gov.in/cppp/latestactivetendersnew/cpppdata", # alternate JSON endpoint
+    "https://eprocure.gov.in/epublish/app?page=FrontEndListTendersbyDate&service=page",  # HTML fallback
+]
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
 def fetch_cppp(keywords, max_results=100):
@@ -21,10 +25,32 @@ def fetch_cppp(keywords, max_results=100):
     Returns [] on any error (never raises).
     """
     out = []
+    body = ""
+    for url in CPPP_URLS:
+        try:
+            try:
+                from curl_cffi import requests as cffi_requests
+                r = cffi_requests.get(url, headers={"User-Agent": UA}, impersonate="chrome120", timeout=20)
+                if r.status_code == 200 and r.content:
+                    body = r.content.decode("utf-8", errors="replace")
+                    break
+                else:
+                    log.info(f"CPPP {url} -> HTTP {r.status_code}")
+            except ImportError:
+                req = urllib.request.Request(url, headers={"User-Agent": UA})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    body = r.read(1_000_000).decode("utf-8", errors="replace")
+                if body:
+                    break
+        except Exception as e:
+            log.info(f"CPPP {url} failed: {str(e)[:80]}")
+            continue
+
+    if not body:
+        log.warning("CPPP: all URLs failed")
+        return out
+
     try:
-        req = urllib.request.Request(CPPP_RSS, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            body = r.read(1_000_000).decode("utf-8", errors="replace")
         root = ET.fromstring(body)
         kw_lower = [str(k).lower() for k in keywords if k]
         for item in root.iter("item"):
