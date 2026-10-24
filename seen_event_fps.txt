@@ -383,3 +383,34 @@ pricing_page|zoho_corporation|||2026-10|
 software_promotion|econ_engineering|||2026-10|
 documentation|one_click_lca|||2025-11|
 blog_post|autodesk|||2026-04|
+hiring|unknown|Autodesk Enterprise License Specialist|role|2026-10|india
+documentation|autodesk|||2026-08|
+product_offering|coreframecloud|||2026-10|
+stock_analysis|reuters|||2026-10|
+hiring|valcon|||2026-10|
+tender|mmtclimited|50000|inr|2026-10|mumbai
+academic_project|sinhgadcollegeofengineering|||2026-05|
+promotion|zocodentechnologies|||2026-10|
+service_offering|united-bim|||2026-10|
+procurement_notice|thepacificcommunity|||2026-09|
+research_paper|chandigarhuniversity|||2018-01|
+blog_post|bimoffis|||2026-04|
+bim content services|powerkh|||2026-06|
+property acquisition|clearbridgeventuresllp|335|inr crore|2024-08|mumbai
+tech park construction expansion|brick&bolt|15|mn sq ft|2026-10|bangalore
+it park development planning|maharashtragovernment|||2026-03|
+commercial it park development|krahejarealty|2.25|million sq ft|2026-10|mumbai
+commercial real estate expansion|kalyanidevelopers|||2026-10|
+capex|tidelparklimited|415|inr crores|2025-01|trichytamilnadu
+capex|myhomegroup|45|floors|2026-10|hyderabadtelangana
+hiring architects using autocad|modarchindia|multiple openings|positions|2026-10|noida
+consulting|apexengineeringservices|||2026-10|
+project delivery|idsl|||2026-10|
+vendor_page|argustechnologies|||2025-01|
+industry_report|creativeengineeringsolutions|1.78|lakh crore|2026-03|bangalore
+blog_post|corenggtech|||2025-10|
+blog_post|kaarwan|2000|jobs|2026-03|india
+student_blog|assignmenthelppro|50|projects|2026-03|india
+infrastructure_capex|tataconsultingengineers|||2026-08|
+marketing_article|steelbuildinfraprojectsltd|||2026-04|
+hiring civil design manager|thyssenkruppnuceraindiaprivatelimited|||2024-10|
