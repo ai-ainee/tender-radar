@@ -333,3 +333,53 @@ hiring_404|cushman&wakefield|r339394|job id|2026-10|mumbai
 hiring_blocked|marmonholdings,inc|75328737|job id|2026-10|india
 tender|governmentofkerala|50000000|inr|2026-10|kannurkerala
 tender|informationandbroadcasting|||2026-11|
+hiring|bostonconsulting|Revit MEP Engineer|role|2026-10|india
+hiring|arkotechcrafts|Revit MEP Engineer|role|2026-10|india
+hiring|inspiredgeit|Junior Mechanical Drafter - Inventor|role|2026-10|india
+hiring|infinitydata|Junior Mechanical Drafter - Inventor|role|2026-10|india
+hiring|sakhatechinformation|Junior Mechanical Drafter - Inventor|role|2026-10|india
+hiring|xylemwater|Mechanical Design Engineer - Autodesk Inventor|role|2026-10|india
+hiring|virajprofilesprivate|Mechanical Design Engineer - Autodesk Inventor|role|2026-10|india
+hiring|yrsany|IT License Compliance Specialist|role|2026-10|india
+tender|indianarmy|||2026-10|
+service_marketing|rusaviengineering|||2026-10|
+service_marketing|silverskills|||2026-10|
+blog_post|revicadsolutionsllp|||2026-10|
+portfolio_listing|bimdjsoftech|||2017-05|
+blog_post|vibim|||2026-10|
+capex|pioneerfabricatorslimited|19000|inr_lakh|2026-09|meerut
+capex|avinashdevelopersprivatelimited|221.3|inr_crore|2026-03|raipur
+market_article|property_kumbh|||2026-02|
+hiring_instructor|glorious_hr_services|bim_instructor|job|2026-10|ahmedabad_gujarat_india
+hiring_bim_architect|tesla_outsourcing_services|revit_autocad|job_role|2026-08|ahmedabad_gujarat_india
+hiring|arm|Staff Design Engineer|job_opening|2026-10|bengaluru_india
+tender|bangladeshkrishibank|1655442|tender_id|2026-10|dhaka,bangladesh
+rfq|hadesimpexprivatelimited|7|licenses|2024-10|newdelhi,india
+tender|kuwaitinstituteforscientificresearch|103101207|tender_id|2024-09|kuwait
+tender_award|departmentforinternationaldevelopment|299444|tender_id|2016-02|uk
+vendor_documentation|autodesk|5z8R9IdPZI8IJFXzTm3mbZ|unit_id|2026-10|global
+tender|panevėžysenergijaab|54138216|tender_id|2021-06|lithuania
+job_posting|fidelityinvestments|2136207|job_id|2026-10|ireland
+vendor_service_page|e2xinfotech|||2026-10|
+tender|indiahealthactiontrust|||2026-10|
+services|arobit|||2026-10|
+case_study|shapoorjipallonjiengineeringandconstruction|1800|inr crores|2024-10|india
+freelance|upwork|||2026-10|
+vendor_page|autodesk|||2026-10|
+service_offering|rediansoftware|||2026-10|
+blog_post|caddcentre|||2025-03|
+service_guide|shivaengineeringservices|||2026-10|
+capex_expansion|amd|175000|sq ft|2013-08|hyderabad
+training_courses|dhanush-mepcentre|MEP Training|course|2026-09|hyderabad_telangana_india
+blog_article|wisemonk|Captive Engineering Centers|article|2026-08|india
+blog_article|mercurius|Data Centre Setup Guide|article|2026-05|india
+hiring|cyberinfrastructure|Senior Autocad Designer|job_opening|2024-09|indore_madhya_pradesh_india
+course_listing|edwartens|||2026-09|
+app_listing|aveosoftwareinc.|||2026-10|
+tender_notice|surveyofindia|||2026-10|
+reseller_offering|microgenesis|||2026-10|
+education_resources|autodesk|||2026-10|
+pricing_page|zoho_corporation|||2026-10|
+software_promotion|econ_engineering|||2026-10|
+documentation|one_click_lca|||2025-11|
+blog_post|autodesk|||2026-04|
