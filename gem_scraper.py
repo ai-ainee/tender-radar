@@ -27,18 +27,21 @@ def _fetch_html(url):
         "Accept-Language": "en-IN,en;q=0.9",
         "Referer": "https://gem.gov.in/",
     }
-    # Try curl_cffi first (bypasses bot detection)
+
     try:
         from curl_cffi import requests as cffi_requests
-        r = cffi_requests.get(url, headers=hdrs, impersonate="chrome120", timeout=30)
-        if r.status_code == 200 and r.content:
-            return r.content.decode("utf-8", errors="replace")
-        raise ValueError(f"HTTP {r.status_code}")
     except ImportError:
-        pass
-    except Exception as e:
-        raise e
-    # Fallback to urllib
+        cffi_requests = None
+
+    if cffi_requests is not None:
+        try:
+            r = cffi_requests.get(url, headers=hdrs, impersonate="chrome120", timeout=30)
+            if r.status_code == 200 and r.content:
+                return r.content.decode("utf-8", errors="replace")
+            log.info(f"GeM cffi {url} -> HTTP {r.status_code}")
+        except Exception as e:
+            log.info(f"GeM cffi {url} failed: {str(e)[:120]}")
+
     req = urllib.request.Request(url, headers=hdrs)
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read(3_000_000).decode("utf-8", errors="replace")
