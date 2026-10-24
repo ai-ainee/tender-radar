@@ -146,7 +146,41 @@ class KeyPool:
         return [self.keys[(self.index + i) % n] for i in range(n)] if n else []
     def advance(self):
         if self.keys: self.index = (self.index + 1) % len(self.keys)
+def inject_api_keys_from_settings(api_keys):
+    """Push API keys from the Settings tab into os.environ.
 
+    Settings wins over env only when it has a non-empty value for that
+    provider; an empty Settings cell leaves the existing GitHub
+    Secret / local .env value in place.
+    """
+    if not isinstance(api_keys, dict):
+        return
+    mapping = {
+        "gemini_api_keys":     "GEMINI_API_KEYS",
+        "groq_api_keys":       "GROQ_API_KEYS",
+        "openrouter_api_keys": "OPENROUTER_API_KEYS",
+        "serper_api_keys":     "SERPER_API_KEYS",
+        "brave_api_keys":      "BRAVE_API_KEYS",
+        "scraperapi_api_keys": "SCRAPERAPI_API_KEYS",
+        "jina_api_key":        "JINA_API_KEY",
+        "openai_api_key":      "OPENAI_API_KEY",
+    }
+    injected, kept = [], []
+    for field, env_name in mapping.items():
+        vals = api_keys.get(field) or []
+        if not isinstance(vals, list):
+            vals = [vals] if vals else []
+        vals = [str(v).strip() for v in vals if str(v).strip()]
+        if vals:
+            os.environ[env_name] = ",".join(vals)
+            injected.append(f"{env_name}({len(vals)})")
+        elif os.getenv(env_name, "").strip():
+            kept.append(env_name)
+    if injected:
+        log.info(f"API keys from Settings: {', '.join(injected)}")
+    if kept:
+        log.info(f"API keys from env: {', '.join(kept)}")
+        
 class Telegram:
     def __init__(self):
         self.token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -339,9 +373,12 @@ def _fetch_jina(url, max_chars):
 def _read_limited(resp, limit):
     buf = bytearray()
     for chunk in resp.iter_content(65536):
-        if not chunk: break
+        if not chunk:
+            break
         buf.extend(chunk)
-        if len(buf) >= limit: break
+        if len(buf) >= limit:
+            del buf[limit:]
+            break
     return bytes(buf)
 
 def _ocr_pdf(data, pages):
@@ -518,6 +555,13 @@ class LLMRouter:
             r = requests.post(f"{self.base[provider]}/chat/completions", headers=headers, json=body, timeout=(10, 120))
         return r
     @staticmethod
+    def _provider_order():
+        default = "gemini,groq,openrouter,extra,openai"
+        raw = os.getenv("LLM_PROVIDER_ORDER", default) or default
+        valid = {"gemini", "groq", "openrouter", "extra", "openai"}
+        order = [p.strip().lower() for p in raw.split(",") if p.strip().lower() in valid]
+        return order or default.split(",")
+    @staticmethod
     def _text_from(provider, r):
         try:
             data = r.json()
@@ -548,7 +592,7 @@ class LLMRouter:
     def generate_json(self, prompt, validator=None, max_rounds=2):
         validator = validator or (lambda d: d is not None)
         pools = self._pools()
-        order = ["gemini", "groq", "openrouter", "extra", "openai"]
+        order = self._provider_order()
         for rnd in range(max_rounds):
             for provider in order:
                 pool = pools[provider]
