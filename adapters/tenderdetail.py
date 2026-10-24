@@ -1,9 +1,10 @@
 """adapters/tenderdetail.py - TenderDetail.com specialized adapter.
 
-Deploy 1.1 changes:
-  - Removed `site:` operator from queries (was stripped by SearchEngine
-    → returning 0 leads).
-  - Added pre-check against CompanyDedup.
+Deploy 1.1.1 hotfix:
+  - Removed `site:` operator from queries (was stripped by SearchEngine).
+  - Removed pre-check against CompanyDedup — aggregator pages are category
+    listings, not specific companies, so pre-check caused false-positive
+    skips on the aggregator's own brand name in page titles.
 """
 import re
 
@@ -36,12 +37,10 @@ class TenderDetailAdapter(SourceAdapter):
         targets = settings.get("targets") or []
         states = settings.get("states") or []
         protected = settings.get("protected") or []
-        company_dedup = settings.get("company_dedup")
 
         if not targets:
             return []
 
-        # Deploy 1.1: removed `site:` operator
         queries = []
         for target in targets[:5]:
             queries.append(f"{DOMAIN} {target} tender")
@@ -50,7 +49,6 @@ class TenderDetailAdapter(SourceAdapter):
 
         leads = []
         seen_urls = set()
-        precheck_dupes = 0
 
         for q in queries:
             try:
@@ -67,15 +65,6 @@ class TenderDetailAdapter(SourceAdapter):
                 if not c or c in seen_urls:
                     continue
                 seen_urls.add(c)
-
-                if company_dedup:
-                    match = company_dedup.find_in(
-                        res.get("title") or "", res.get("snippet") or ""
-                    )
-                    if match:
-                        log.info(f"[tenderdetail] pre-check skip {match!r}: {raw[:70]}")
-                        precheck_dupes += 1
-                        continue
 
                 try:
                     content = fetch_page(raw, protected_domains=protected)
@@ -110,8 +99,7 @@ class TenderDetailAdapter(SourceAdapter):
                 )
                 leads.append(lead)
 
-        log.info(f"[tenderdetail] {len(leads)} lead(s) collected, "
-                 f"{precheck_dupes} pre-check dupes skipped")
+        log.info(f"[tenderdetail] {len(leads)} lead(s) collected")
         return leads
 
 
