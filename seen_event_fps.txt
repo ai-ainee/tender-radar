@@ -297,3 +297,39 @@ hiring|egis|19500|employees|2026-10|bengaluru
 hiring|vivibebuildingsolutionspvtltd|||2026-10|
 order_win|pioneerfoundationengineers(p)ltd|46.51|cr inr|2025-02|himachalpradesh
 capex|nationalhighwaysauthorityofindia|17|projects|2026-09|india
+hiring_signal|technologies_pvt|bim_modeler_revit|job_opening|2026-10|india
+hiring_signal|mars_bim|bim_modeler_revit|job_opening|2026-10|chennai_india
+hiring_signal|intec_infra|bim_modeler_revit|job_opening|2026-10|india
+hiring_signal|hss_bim|bim_modeler_revit|job_opening|2026-10|india
+hiring_signal|unknown|autocad_drafter|job_opening|2026-10|india
+hiring|xiphiassoftware|||2026-10|
+hiring|merrittinnovative|||2026-10|
+hiring|softwareassetmanager|||2026-10|
+hiring|cadbim|||2026-10|
+hiring|yrsany|||2026-10|
+hiring|flairnetwork|||2026-10|
+hiring for cad/autodesk infrastructure|isgecheavy|||2026-10|
+hiring|habtoorleighton|||2026-10|
+hiring|theboston|||2026-10|
+hiring|avevaunified|||2026-10|
+blog_post|mikinarchitects|||2026-04|
+partnership|ishanovaconcepts|||2026-10|
+award|gstarbim|||2026-09|
+hiring|crescentcareers|1|vacancy|2026-06|india
+hiring|linxon|||2026-10|
+hiring|weworkindia|1200000|inr|2026-10|bengaluru
+tender|officeoftheadjutantgeneralattndivisionoffacilitiesengineering|||2015-09|
+tender|societyforappliedmicrowaveelectronicsengineeringandresearch|Gem/2026/B/7565485|tender_id|2026-05|chennai,tamilnadu
+tender|bapcoenergies|133750495|tender_id|2026-06|bahrain
+marketing|autodesk||||
+award|pacebus|57170|rfq|2025-01|unitedstates
+capex|abb|75|usd million|2026-10|bengaluruindia
+capex|vmigroup|50|employees|2024-10|vadodaragujarat
+capex|delvitech|10|usd million|2026-08|bengaluru
+capex|itcinfotech|||2026-01|
+capex_expansion|augury|75000000|usd|2026-10|bengaluru
+hiring|jacobs|47155|job id|2026-10|navimumbai
+hiring_404|cushman&wakefield|r339394|job id|2026-10|mumbai
+hiring_blocked|marmonholdings,inc|75328737|job id|2026-10|india
+tender|governmentofkerala|50000000|inr|2026-10|kannurkerala
+tender|informationandbroadcasting|||2026-11|
