@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-enrichment_worker.py (v2.1, deal-ready) - runs when a lead moves Harvester -> Leads.
+enrichment_worker.py (v3, phone-enhanced) - runs when a lead moves Harvester -> Leads.
 
-Fixes applied in this version:
-  • save_unidentified() now returns proper buttons (was NameError)
-  • hash token generation now matches Apps Script nameHash_() exactly
-    (handles Ltd/Limited, Pvt/Private, &/and substitutions)
-  • Cold Outreach Pitch section removed from dossier (per user request)
-  • sheet.post() continuation indentation cleaned up
+Deploy 2 additions:
+  • Phone waterfall — calls find_dm_phone() from phone_extractor.py after email
+    resolution. 4 stages: existing content → tender PDF → web search → directory.
+  • Contact Master now stores Mobile, Phone Type, Phone Status, Phone Source,
+    WhatsApp columns alongside existing email/phone.
+  • Telegram card gets a 📞 Call button + mobile line. WhatsApp button prefers
+    mobile over landline.
+
+Everything else (research, LLM extraction, dedupe, pitch, dossier) unchanged.
 """
 import difflib
 import hashlib
@@ -28,6 +31,9 @@ from urllib.request import Request, urlopen
 from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram, env_int, extract_emails, extract_phones,
                     is_safe_url, log, tg_escape)
 
+from standard_lead import StandardLead
+from phone_extractor import find_dm_phone, find_company_phone
+
 try:
     from common import fetch_page
 except Exception:
@@ -43,6 +49,7 @@ SELLER_PROOF = os.getenv("SELLER_PROOF", "").strip()
 SELLER_ELIGIBILITY = os.getenv("SELLER_ELIGIBILITY", "").strip()
 SELLER_COMPANY = os.getenv("SELLER_COMPANY", "").strip()
 SELLER_OFFER = os.getenv("SELLER_OFFER", "").strip()
+
 
 # --------------------------------------------------------------------------------------------------
 # small helpers
@@ -68,24 +75,16 @@ def as_list(v):
         return [clean(v, 400)]
     return []
 
-# ─── NEW: exact match for Apps Script nameHash_() ─────────────────────────
-def _name_hash_token(org):
-    """Produces the same 'h:<12-hex>' token as cbToken_() in the Apps Script.
 
-    Must mirror normName_() exactly:
-      - lowercase
-      - 'private'/'pvt' (with optional dot) → 'pvt'
-      - 'limited'/'ltd' (with optional dot) → 'ltd'
-      - 'and'/'&' → '' (removed)
-      - strip everything that is not a Unicode letter or digit
-    """
+def _name_hash_token(org):
+    """Mirror of cbToken_() in the Apps Script."""
     s = str(org or "").lower()
     s = re.sub(r"\b(private|pvt)\b\.?", "pvt", s)
     s = re.sub(r"\b(limited|ltd)\b\.?", "ltd", s)
     s = re.sub(r"\b(and|&)\b", "", s)
     s = re.sub(r"[\W_]", "", s, flags=re.UNICODE)
     return "h:" + hashlib.md5(s.encode("utf-8")).hexdigest()[:12]
-# ───────────────────────────────────────────────────────────────────────────
+
 
 # --------------------------------------------------------------------------------------------------
 # per-source circuit breaker
@@ -105,6 +104,7 @@ def guarded(name, fn, *args, default=None, **kw):
         state = "quota/rate-limit -> disabled for this run" if quota else f"{_FAILS[name]}/{limit}"
         log.warning(f"   source '{name}' failed ({state}): {msg[:140]}")
         return default
+
 
 # --------------------------------------------------------------------------------------------------
 # HTTP
@@ -194,6 +194,7 @@ def html_signals(html):
             seen.add(line)
             uniq.append(line)
     return uniq[:60]
+
 
 # --------------------------------------------------------------------------------------------------
 # domains / names / identity keys
@@ -304,6 +305,7 @@ def phone_key(p):
     d = digits(p)
     return d[-10:] if len(d) >= 10 else ""
 
+
 # --------------------------------------------------------------------------------------------------
 # uniqueness
 # --------------------------------------------------------------------------------------------------
@@ -377,6 +379,7 @@ def find_existing(keys, index):
         if why:
             return row, why
     return None, ""
+
 
 # --------------------------------------------------------------------------------------------------
 # free research sources
@@ -619,6 +622,7 @@ def find_linkedin(search, name, org):
                 return m.group(0)
     return ""
 
+
 # --------------------------------------------------------------------------------------------------
 # grounding
 # --------------------------------------------------------------------------------------------------
@@ -744,7 +748,10 @@ def build_contacts(raw_contacts, research, company, org):
              "email": email, "email_status": "found" if email else "", "phone": phone,
              "phone_scope": "personal" if phone else "", "linkedin_url": li,
              "reports_to": clean_name(rc.get("reports_to")), "evidence": clean(rc.get("evidence"), 220),
-             "near_org": near, "prov": {}, "possible_emails": []}
+             "near_org": near, "prov": {}, "possible_emails": [],
+             # NEW phone fields (populated by waterfall)
+             "mobile": "", "phone_type": "", "phone_status": "", "phone_source": "",
+             "phone_score": 0, "whatsapp": False}
         if email:
             c["prov"]["email"] = "research"
         if phone:
@@ -770,12 +777,15 @@ def contact_score(c):
     s += 1.0 if c["linkedin_url"] else 0
     s += 1.0 if c["phone_scope"] == "personal" else 0
     s += 1.0 if c["near_org"] else -1.0
+    s += 1.0 if c.get("mobile") else 0  # NEW: mobile adds score
     return s
 
 def confidence_of(c):
     pts = (2 if c.get("near_org") else 0) + (1 if c["email_status"] == "found" else 0) + (1 if c["linkedin_url"] else 0) \
-          + (1 if c["title"] else 0) + (1 if c["phone_scope"] == "personal" else 0)
+          + (1 if c["title"] else 0) + (1 if c["phone_scope"] == "personal" else 0) \
+          + (1 if c.get("mobile") else 0)  # NEW
     return "High" if pts >= 4 else "Medium" if pts >= 2 else "Low"
+
 
 # --------------------------------------------------------------------------------------------------
 # LLM steps
@@ -863,6 +873,7 @@ def fallback_pitch(org, primary, facts):
             "linkedin_note": f"Hi {who}, {hook}. Would be glad to connect and share how we help teams like yours.",
             "call_opening": f"Hi {who}, this is [Your Name]. {hook} and wanted to understand your current plans."}
 
+
 # --------------------------------------------------------------------------------------------------
 # dossier + notification
 # --------------------------------------------------------------------------------------------------
@@ -879,6 +890,7 @@ def completeness(company, primary, contacts):
     s += 20 if primary and primary["email_status"] == "found" else (8 if primary and primary["email"] else 0)
     s += 15 if primary and primary["phone"] else 0
     s += 10 if primary and primary["linkedin_url"] else 0
+    s += 10 if primary and primary.get("mobile") else 0  # NEW
     s += 10 if len([c for c in contacts if c["name"] != "Decision Maker"]) >= 2 else 0
     return min(s, 100)
 
@@ -904,12 +916,6 @@ def build_dossier(org, company, contacts, primary, facts, pitch, research, ai_ok
     L.append("\n### 🎯 Key Buying Triggers & Operational Bottlenecks")
     L.append(md_list(["**Trigger:** " + t for t in as_list(deal.get("buying_triggers"))] +
                      ["**Pain:** " + p for p in as_list(deal.get("pain_points"))]))
-
-    # ─── REMOVED: Ready-to-Send Cold Outreach Pitch (per user request) ───
-    # Deal Snapshot below still uses pitch.get("deal_name"), pitch.get("value_proposition"),
-    # pitch.get("next_best_actions"), pitch.get("discovery_questions"). Those stay.
-    # ─────────────────────────────────────────────────────────────────────
-
     L.append("\n### 🧾 Deal Snapshot (CRM-ready)")
     snap = [("Suggested deal name", pitch.get("deal_name") or f"{org} - new opportunity"),
             ("Account", f"{org} ({company['website'] or 'website not found'})"),
@@ -931,7 +937,8 @@ def build_dossier(org, company, contacts, primary, facts, pitch, research, ai_ok
                 f"role: {c['buying_role']}" if c["name"] != "Decision Maker" else "",
                 f"reports to: {c['reports_to']}" if c["reports_to"] else "",
                 f"✉ {c['email']} ({c['email_status']})" if c["email"] else "",
-                f"📞 {c['phone']}" + (" (company line)" if c["phone_scope"] == "company" else "") if c["phone"] else "",
+                f"📱 {c.get('mobile', '')} ({c.get('phone_status', '')} {c.get('phone_type', '')})" if c.get("mobile") else "",
+                f"📞 {c['phone']}" + (" (company line)" if c["phone_scope"] == "company" else "") if (c["phone"] and not c.get("mobile")) else "",
                 f"🔗 {c['linkedin_url']}" if c["linkedin_url"] else "",
                 f"confidence: {c['confidence']}", f"Contact Master: {c['db_status']}"]
         rows.append(" | ".join(b for b in bits if b))
@@ -951,6 +958,7 @@ def wa_number(phone):
     if len(d) == 10:
         d = DEFAULT_CC + d
     return d if 11 <= len(d) <= 15 else ""
+
 
 # --------------------------------------------------------------------------------------------------
 # main
@@ -996,7 +1004,6 @@ def apply_sheet_settings(sheet):
         SELLER_OFFER = ", ".join(items[:8])
         log.info(f"Using Target Products from Settings as the seller offer: {SELLER_OFFER}")
 
-# ─── FIXED: buttons now properly defined, hash matches Apps Script ────────
 def save_unidentified(sheet, lead_id, sheet_org, ref_url):
     dossier = (f"### 🏢 Executive Profile & Operations\n{sheet_org}\n\n"
                f"_The organization could not be identified from the source page. Open the source and add the company manually._"
@@ -1008,7 +1015,6 @@ def save_unidentified(sheet, lead_id, sheet_org, ref_url):
     except SheetError as e:
         log.error(f"   could not save placeholder dossier: {e}")
         return False
-
     token = _name_hash_token(sheet_org)
     buttons = [[
         {"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
@@ -1017,7 +1023,7 @@ def save_unidentified(sheet, lead_id, sheet_org, ref_url):
     text = (f"⚠️ <b>ORGANIZATION NOT IDENTIFIED</b>\n{tg_escape(sheet_org)}\n\n"
             f"The source page does not clearly name the buyer. Please check it manually:\n{tg_escape(ref_url)}")
     return True, text, buttons, 0
-# ───────────────────────────────────────────────────────────────────────────
+
 
 ATTEMPTS_FILE = "enrich_attempts.json"
 MAX_ATTEMPTS = env_int("MAX_ENRICH_ATTEMPTS", 4)
@@ -1051,6 +1057,60 @@ def give_up(sheet, lead_id, org, ref_url, tries):
     except SheetError as e:
         log.error(f"   could not save give-up note for {org}: {e}")
         return False
+
+
+def _build_phone_shim(org, ref_url, research_text, primary):
+    """Build a StandardLead shim for the phone extractor."""
+    return StandardLead(
+        source="enrichment",
+        category="news",
+        url=ref_url,
+        dm_name=(primary.get("name") if primary else "") or "",
+        dm_title=(primary.get("title") if primary else "") or "",
+        raw_text=research_text or "",
+        buyer_org=org,
+    )
+
+
+def _run_phone_waterfall(org, ref_url, research_text, primary, search):
+    """Call find_dm_phone + find_company_phone; populate primary + return company phone data.
+
+    Returns (company_phone_dict or None, dm_found_bool).
+    """
+    result = {"dm_found": False, "company_phone": None}
+
+    if not primary or primary.get("name", "").lower() in PLACEHOLDER_NAMES:
+        return result
+
+    try:
+        shim = _build_phone_shim(org, ref_url, research_text, primary)
+        dm_phone, dm_type, dm_status, dm_source, dm_score = find_dm_phone(shim, search)
+
+        if dm_phone and dm_type:
+            primary["mobile"] = dm_phone
+            primary["phone_type"] = dm_type
+            primary["phone_status"] = dm_status or "unverified"
+            primary["phone_source"] = dm_source or "waterfall"
+            primary["phone_score"] = dm_score or 0
+            primary["whatsapp"] = (dm_type == "mobile")
+            # Prefer mobile over existing landline/guessed phone
+            if dm_type == "mobile":
+                primary["phone"] = dm_phone
+                primary["phone_scope"] = "personal"
+                primary["prov"]["phone"] = dm_source or "phone_waterfall"
+            log.info(f"   phone: {dm_type} {dm_phone} ({dm_status}, score {dm_score}, via {dm_source})")
+            result["dm_found"] = True
+        else:
+            # Try company phone as fallback
+            cp, cpt, cps, cpsrc, _ = find_company_phone(shim, search)
+            if cp:
+                result["company_phone"] = {"phone": cp, "type": cpt, "status": cps or "unverified", "source": cpsrc or "company"}
+                log.info(f"   company phone: {cp} ({cpt}, via {cpsrc})")
+    except Exception as e:
+        log.warning(f"   phone waterfall failed: {str(e)[:150]}")
+
+    return result
+
 
 def process_lead(lead, search, llm, sheet, index, index_ok):
     lead_id = str(lead.get("lead_id") or "").strip()
@@ -1097,6 +1157,7 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
     contacts.sort(key=contact_score, reverse=True)
     contacts = contacts[:max_c]
 
+    # LinkedIn lookups for top contacts
     lookups = env_int("CONTACT_LOOKUPS", 3)
     for c in contacts[:lookups]:
         if not c["linkedin_url"]:
@@ -1104,6 +1165,7 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
             if li:
                 c["linkedin_url"], c["prov"]["linkedin"] = li, "linkedin-search"
 
+    # Email domain + pattern guesses
     dom = base_domain(host_of(company["website"])) if company["website"] else ""
     mx_ok = bool(dom) and bool(guarded("mx", domain_has_mx, dom, default=False))
     known = [c["email"] for c in contacts if c["email_status"] == "found"]
@@ -1112,15 +1174,28 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
             if c["email_status"] != "found":
                 c["possible_emails"] = guess_emails(c["name"], dom, known)
 
+    # ── NEW: Phone waterfall (Deploy 2) ─────────────────────────────
+    primary_pre = contacts[0] if contacts else None
+    phone_result = _run_phone_waterfall(org, ref_url, text, primary_pre, search)
+    if phone_result["company_phone"] and not company["phone"]:
+        company["phone"] = phone_result["company_phone"]["phone"]
+        company["phone_type"] = phone_result["company_phone"]["type"]
+    # ────────────────────────────────────────────────────────────────
+
+    # Placeholder contact if empty
     if not contacts:
         contacts = [{"name": "Decision Maker", "title": "", "department": "", "seniority": 1, "buying_role": "Influencer",
                      "email": "", "email_status": "", "phone": "", "phone_scope": "", "linkedin_url": "",
-                     "reports_to": "", "evidence": "", "near_org": False, "prov": {}, "possible_emails": []}]
+                     "reports_to": "", "evidence": "", "near_org": False, "prov": {}, "possible_emails": [],
+                     "mobile": "", "phone_type": "", "phone_status": "", "phone_source": "",
+                     "phone_score": 0, "whatsapp": False}]
+
     for c in contacts:
         c["confidence"] = confidence_of(c)
         c["db_status"] = "new"
     primary = contacts[0]
 
+    # Fallbacks for primary contact
     if not primary["email"] and company["email"]:
         primary["email"], primary["email_status"] = company["email"], "generic"
         primary["prov"]["email"] = "company"
@@ -1131,10 +1206,12 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
         primary["phone"], primary["phone_scope"] = company["phone"], "company"
         primary["prov"]["phone"] = "company"
 
+    # reports_to cleanup
     names = {" ".join(sorted(name_tokens(c["name"]))): c["name"] for c in contacts}
     for c in contacts:
         c["reports_to"] = names.get(" ".join(sorted(name_tokens(c["reports_to"]))), "")
 
+    # Duplicate check against CRM
     batch = []
     for c in contacts:
         k = person_keys(c["name"], c["email"] if c["email_status"] == "found" else "",
@@ -1196,11 +1273,16 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
                   "buying_role": c["buying_role"], "seniority": SENIOR_LABEL.get(c["seniority"], ""),
                   "reports_to": c["reports_to"], "is_primary": "Yes" if i == 0 else "No",
                   "email_status": c["email_status"], "confidence": c["confidence"],
-                  "possible_emails": ", ".join(c["possible_emails"]), "evidence": evidence, "last_enriched": now}
+                  "possible_emails": ", ".join(c["possible_emails"]), "evidence": evidence, "last_enriched": now,
+                  # NEW phone fields
+                  "mobile": c.get("mobile", ""), "phone_type": c.get("phone_type", ""),
+                  "phone_status": c.get("phone_status", ""), "phone_source": c.get("phone_source", ""),
+                  "whatsapp": "Yes" if c.get("whatsapp") else "No"}
         fields = {k: (v if k == "lead_id" else safe_cell(v)) for k, v in fields.items()}
         row = [fields[k] for k in ("lead_id", "name", "organization", "designation", "phone", "email", "linkedin", "notes",
                                    "unique_id", "account_key", "department", "buying_role", "seniority", "reports_to",
-                                   "is_primary", "email_status", "confidence", "possible_emails", "evidence", "last_enriched")]
+                                   "is_primary", "email_status", "confidence", "possible_emails", "evidence", "last_enriched",
+                                   "mobile", "phone_type", "phone_status", "phone_source", "whatsapp")]
         try:
             sheet.post("upsert_contact", contact_data={
                 "company_name": safe_cell(org), "linkedin_url": safe_cell(c["linkedin_url"]),
@@ -1214,16 +1296,27 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
 
     # ---- Telegram ----
     buttons = []
-    wa = wa_number(primary["phone"]) if primary["phone_scope"] in ("personal", "company") else ""
-    if wa:
+    primary_mobile = primary.get("mobile", "")
+    primary_type = primary.get("phone_type", "")
+    primary_wa = wa_number(primary_mobile) if (primary_mobile and primary_type == "mobile") else ""
+    if not primary_wa and primary["phone_scope"] in ("personal", "company"):
+        primary_wa = wa_number(primary["phone"])
+
+    if primary_wa:
         msg_txt = quote(pitch.get("whatsapp_message") or
                         f"Hi {primary['name'] if primary['name'] != 'Decision Maker' else 'Team'}, "
                         f"I came across {org}. Would love to share how we can help.")
-        buttons.append([{"text": "💬 WhatsApp", "url": f"https://wa.me/{wa}?text={msg_txt}"}])
+        buttons.append([{"text": "💬 WhatsApp", "url": f"https://wa.me/{primary_wa}?text={msg_txt}"}])
 
-    # ─── FIXED: exact-match hash token (also works for Ltd/Limited/and/& variants) ───
+    # NEW: Call button if any phone exists
+    call_target = primary_mobile or primary["phone"]
+    if call_target:
+        call_digits = digits(call_target)
+        if len(call_digits) == 10:
+            call_digits = "91" + call_digits
+        buttons.append([{"text": "📞 Call", "url": f"tel:+{call_digits}"}])
+
     token = _name_hash_token(sheet_org)
-    # ────────────────────────────────────────────────────────────────────────────────
     buttons.append([{"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
                     {"text": "📦 Archive",           "callback_data": f"archive::{token}"}])
 
@@ -1234,7 +1327,9 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
         m.append(f"📝 {tg_escape(cap(company['description'], 260))}")
         m.append("")
     m.append(f"👤 <b>Primary:</b> {tg_escape(primary['name'])}" + (f" (<i>{tg_escape(primary['title'])}</i>)" if primary["title"] else ""))
-    if primary["phone"]:
+    if primary.get("mobile"):
+        m.append(f"📱 {tg_escape(primary['mobile'])} <i>({tg_escape(primary.get('phone_status', '') or 'unverified')} {tg_escape(primary.get('phone_type', ''))})</i>")
+    elif primary["phone"]:
         m.append(f"📞 {tg_escape(primary['phone'])}" + (" <i>(company line)</i>" if primary["phone_scope"] == "company" else ""))
     if primary["email"]:
         m.append(f"✉️ {tg_escape(primary['email'])} <i>({primary['email_status']})</i>")
@@ -1251,15 +1346,20 @@ def process_lead(lead, search, llm, sheet, index, index_ok):
     m.append(f"📊 Completeness {comp_score}/100" + (f" • {dups} contact(s) merged into existing records" if dups else ""))
     m.append("")
     m.append("📋 Full dossier + deal snapshot saved in the 🎯 Leads tab; people saved to Contact Master.")
-    log.info(f"   result: sources={len(research['sources'])} contacts={len([c for c in contacts if c['name'] != 'Decision Maker'])} "
-             f"email={'yes' if primary['email'] else 'no'} phone={'yes' if primary['phone'] else 'no'} "
-             f"linkedin={'yes' if primary['linkedin_url'] else 'no'} completeness={comp_score}")
+    log.info(f"   result: sources={len(research['sources'])} "
+             f"contacts={len([c for c in contacts if c['name'] != 'Decision Maker'])} "
+             f"email={'yes' if primary['email'] else 'no'} "
+             f"mobile={'yes' if primary.get('mobile') else 'no'} "
+             f"phone={'yes' if primary['phone'] else 'no'} "
+             f"linkedin={'yes' if primary['linkedin_url'] else 'no'} "
+             f"completeness={comp_score}")
     return True, cap("\n".join(m), 3900), buttons, comp_score
+
 
 def main():
     started = time.time()
     tg = Telegram()
-    log.info("=== Enrichment worker v2.1 starting ===")
+    log.info("=== Enrichment worker v3 (phone-enhanced) starting ===")
     try:
         sheet = SheetAPI()
         data = sheet.get("get_pending_leads")
