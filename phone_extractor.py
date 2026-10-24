@@ -330,7 +330,10 @@ def _stage_4_directory(lead, search_engine):
 
 
 def find_company_phone(lead, search_engine=None):
-    """Fallback: find company-level phone when no DM phone is available."""
+    """Fallback: find company-level phone when no DM phone is available.
+
+    ALWAYS returns a 5-tuple, never None — even when no phone is found.
+    """
     text = getattr(lead, "raw_text", "") or ""
     candidates = extract_phone_candidates(text)
     for c in candidates:
@@ -338,5 +341,7 @@ def find_company_phone(lead, search_engine=None):
             return (c["phone"], c["type"], "unverified", "content", 20)
 
     if search_engine:
-        return _stage_4_directory(lead, search_engine)
+        result = _stage_4_directory(lead, search_engine)
+        if result:
+            return result
     return ("", "", "", "", 0)
