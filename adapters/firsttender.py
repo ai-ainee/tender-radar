@@ -75,15 +75,13 @@ class FirstTenderAdapter(SourceAdapter):
                     continue
                 seen_urls.add(c)
 
-                # Pre-check against CRM
-                if company_dedup:
-                    match = company_dedup.find_in(
-                        res.get("title") or "", res.get("snippet") or ""
-                    )
-                    if match:
-                        log.info(f"[firsttender] pre-check skip {match!r}: {raw[:70]}")
-                        precheck_dupes += 1
-                        continue
+                # Deploy 1.1 hotfix: pre-check removed from aggregator adapters.
+                # These adapters fetch category pages (e.g. /bids/building-tenders.html)
+                # which don't describe a specific company. Pre-checking against
+                # CRM known-set caused false positives (matched on aggregator's
+                # own brand name in the page title).
+                # Pre-check remains active only in the search adapter.
+                pass
 
                 try:
                     content = fetch_page(raw, protected_domains=protected)
