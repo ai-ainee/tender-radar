@@ -652,8 +652,8 @@ class Router:
         reason = "valid_high"
         capture = datetime.now().strftime("%Y-%m-%d %H:%M")
         solution = str(lead.target_solution or default_target)
-        industry = default_industry if default_industry != "ALL_SECTORS" else (lead.industry or "Commercial Enterprise")
-        phone = extract_phone(lead.phone or lead.raw_text or "")
+        industry = default_industry if default_industry != "ALL_SECTORS" else (getattr(lead, "industry", "") or "Commercial Enterprise")
+        phone = extract_phone(getattr(lead, "phone", "") or lead.raw_text or "")
         lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(lead.url.encode()).hexdigest()[:10]}"
 
         # Route
