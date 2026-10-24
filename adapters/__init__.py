@@ -109,12 +109,61 @@ class CompanyDedup:
         if sheet is not None:
             self._load_from_crm(sheet)
 
+       # ── STOPLIST — names that are NOT real companies and must never be
+    # added to the pre-check set. These are aggregator brands, AI-generated
+    # aggregate labels, and generic descriptors that polluted the CRM
+    # during earlier runs.
+    STOPLIST = {
+        # Aggregator brands (URL-driven, not buyers)
+        "firsttender", "first tender", "tenderdetail", "tender detail",
+        "tender247", "tender 247", "bidassist", "bid alert", "bidalert",
+        "naukri", "glassdoor", "indeed", "linkedin", "internshala",
+        "instahyre", "bebee", "jobhai", "randstad", "foundit", "adzuna",
+        "tenderapex", "tender apex", "thetenders", "globaltenders",
+        "tenderfiles", "tendernews", "tendernews com", "tenders info",
+        "justdial", "indiamart", "sulekha", "tradeindia", "exportersindia",
+        "biharinfratales", "tendershark", "bidassist com",
+        # AI-generated aggregate labels (from earlier buggy runs)
+        "various companies", "multiple companies", "multiple firms",
+        "various firms", "all companies", "indian organisations",
+        "indian organizations", "various buyers", "multiple buyers",
+        "sector", "industry", "market", "tenders portal", "assam tenders portal",
+        "state government departments public sector banks",
+        "indian firms", "indian firms aggregate",
+        "commercial service building project",
+        # Training institutes / service providers that should never be "buyers"
+        "cadd centre", "cad training", "training institute",
+        "cads software india", "edc engineering design center",
+        "engineering design center",
+        # Placeholder artifacts
+        "unknown", "not available", "n a", "na", "unidentified",
+    }
+
     def _add(self, name):
+        """Add a company name to the known set. Rejects stoplisted/generic names."""
+        if not name:
+            return
         norm = normalize_company_name(name)
-        if norm and len(norm) >= 6:
-            self.known.add(norm)
-            if norm not in self.originals:
-                self.originals[norm] = name
+        if not norm or len(norm) < 8:
+            return
+        # Reject stoplist matches (case-insensitive, exact-after-normalize)
+        if norm in {normalize_company_name(s) for s in self.STOPLIST}:
+            return
+        # Reject names that are 90%+ generic English words
+        words = [w.lower() for w in re.findall(r"\b[a-zA-Z]+\b", name)]
+        meaningful = [w for w in words if w not in self.SUFFIX_WORDS and len(w) >= 3]
+        if len(meaningful) < 2:
+            return
+        # Reject if ALL meaningful words are on a small generic list
+        GENERIC = {"various", "multiple", "several", "all", "any", "many",
+                   "companies", "firms", "organisations", "organizations",
+                   "buyers", "sellers", "contractors", "suppliers",
+                   "tenders", "bids", "projects", "portal", "report", "survey"}
+        if all(w in GENERIC for w in meaningful):
+            return
+        self.known.add(norm)
+        if norm not in self.originals:
+            self.originals[norm] = name
 
     def _load_local(self):
         try:
@@ -153,36 +202,53 @@ class CompanyDedup:
             pass
 
     def find_in(self, title, snippet=""):
-        """Return matching original name if any known company appears in title+snippet."""
+        """Return matching original name if a known company appears in title+snippet.
+
+        Stricter matching than before:
+        - Require 12+ char substring match (was 6)
+        - Require 3+ word overlap with 60%+ ratio (was 2+ / 50%)
+        - Skip if title is very short (<15 chars) — likely a category page
+        - Skip if title's first word is a generic descriptor
+        """
         if not self.known:
             return ""
-        text = (title or "") + " " + (snippet or "")
-        if len(text) < 8:
+        text = (title or "").strip()
+        snippet_text = (snippet or "").strip()
+        combined = text + " " + snippet_text
+        if len(combined) < 15:
             return ""
 
-        text_norm = normalize_company_name(text)
+        text_norm = normalize_company_name(combined)
         if not text_norm:
             return ""
 
-        # Fast path: substring match
+        # Skip pre-check entirely if title starts with a generic descriptor
+        GENERIC_STARTERS = {"various", "multiple", "several", "all", "any", "many",
+                            "top", "best", "list", "browse", "search"}
+        first_word = (text.split()[0].lower() if text.split() else "")
+        if first_word in GENERIC_STARTERS:
+            return ""
+
+        # Fast path: 12+ char substring match only
         for norm in self.known:
-            if norm in text_norm:
+            if len(norm) >= 12 and norm in text_norm:
                 return self.originals.get(norm, norm)
 
-        # Word-overlap match (2+ shared words, half present)
-        text_words = set(w.lower() for w in re.findall(r"\b[a-zA-Z]{3,}\b", text))
+        # Word-overlap match — strict: 3+ shared words AND 60%+ of company
+        text_words = set(w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", combined))
         if text_words:
             for norm, orig in self.originals.items():
                 orig_words = [w.lower() for w in re.findall(r"\b[a-zA-Z]+\b", orig)]
-                meaningful = [w for w in orig_words if w not in self.SUFFIX_WORDS and len(w) >= 3]
-                if len(meaningful) < 2:
+                meaningful = [w for w in orig_words
+                              if w not in self.SUFFIX_WORDS and len(w) >= 4]
+                if len(meaningful) < 3:
                     continue
                 overlap = set(meaningful) & text_words
-                if len(overlap) >= 2 and len(overlap) / len(meaningful) >= 0.5:
+                if len(overlap) >= 3 and len(overlap) / len(meaningful) >= 0.6:
                     return orig
 
-        # Acronym match (CPWD ↔ Central Public Works Department)
-        text_upper = text.upper()
+        # Acronym match (CPWD ↔ Central Public Works Department) — unchanged
+        text_upper = combined.upper()
         for norm, orig in self.originals.items():
             caps_words = re.findall(r"\b[A-Z][A-Za-z]{2,}\b", orig)
             meaningful = [w for w in caps_words if w.lower() not in self.SUFFIX_WORDS]
@@ -191,7 +257,6 @@ class CompanyDedup:
             full_acronym = "".join(w[0] for w in meaningful).upper()
             if len(full_acronym) < 3:
                 continue
-            # Try progressively longer prefix acronyms
             for n in range(3, len(full_acronym) + 1):
                 acr = full_acronym[:n]
                 if re.search(rf"\b{acr}\b", text_upper):
