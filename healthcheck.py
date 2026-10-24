@@ -1,14 +1,14 @@
 """
 Radar Scout health check - run weekly by the workflow, on demand (job = health) or locally: python healthcheck.py
 
-Deploy 2 additions:
-  • Adapter health — which of the 4 source adapters are registered + enabled
-  • Phone coverage — % of Contact Master rows with mobile / email / both
-  • CompanyDedup size — how many companies are in the pre-check cache
+Deploy 2.1 fixes:
+  • Adapter health — uses load_settings() to get normalised shape (was showing
+    all adapters disabled because it passed raw API response)
+  • CompanyDedup — now loads CRM snapshot too (was only showing 22 local cache rows)
+  • Contact Master — distinguishes empty tab vs missing tab vs filtered rows
 
-Verifies the things that silently rot: libraries, OCR tools, API keys, the Apps Script
-webhook, a live LLM call, a live search, Telegram. Sends a ✅/⚠️/❌ summary to Telegram
-and exits 1 when something CRITICAL is broken.
+Verifies: libraries, OCR tools, API keys, Apps Script webhook, live LLM, live search,
+Telegram, adapters, phone coverage, CompanyDedup cache. Exits 1 when CRITICAL.
 """
 import importlib
 import os
@@ -23,9 +23,6 @@ RUN_INFO = {}
 OK, WARN, BAD = "✅", "⚠️", "❌"
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Existing: libraries
-# ─────────────────────────────────────────────────────────────────────
 def check_libs(add):
     for mod, why, critical in (("requests", "HTTP", True), ("bs4", "HTML parsing", True), ("pypdf", "PDF text", False),
                                ("dns", "e-mail MX checks", False), ("ddgs", "free search fallback", False),
@@ -39,7 +36,6 @@ def check_libs(add):
         if not shutil.which(tool):
             add(WARN, f"'{tool}' not installed ({why}); scanned PDFs will be skipped", False)
 
-    # Deploy 2: verify the new phone/adapter modules are present
     for mod, why, critical in (("standard_lead", "StandardLead schema", True),
                                ("phone_extractor", "Phone extraction waterfall", True),
                                ("adapters", "Source adapter framework", True)):
@@ -49,9 +45,6 @@ def check_libs(add):
             add(BAD, f"New module '{mod}' missing/broken ({why}): {str(e)[:80]}", critical)
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Existing: API keys
-# ─────────────────────────────────────────────────────────────────────
 def check_keys(add):
     llm = LLMRouter()
     pools = {"Gemini": llm.gemini, "Groq": llm.groq, "OpenRouter": llm.openrouter, "Extra LLM": llm.extra}
@@ -73,12 +66,11 @@ def check_keys(add):
     return llm
 
 
-# ─────────────────────────────────────────────────────────────────────
-# NEW: Adapter health — which adapters are registered + enabled
-# ─────────────────────────────────────────────────────────────────────
 def check_adapters(add, sheet):
+    """FIX: use load_settings() so is_enabled() sees 'countries'/'targets' keys."""
     try:
         from adapters import get_all, get_enabled
+        from radar import load_settings
     except Exception as e:
         add(BAD, f"Adapter framework not importable: {str(e)[:80]}", True)
         return
@@ -88,11 +80,10 @@ def check_adapters(add, sheet):
         add(BAD, "No adapters registered — adapter auto-register failed", True)
         return
 
-    # Fetch settings to test is_enabled()
     try:
-        cfg = sheet.get("get_settings")
-    except SheetError as e:
-        add(WARN, f"Cannot check adapter enablement (settings fetch failed): {str(e)[:80]}", False)
+        cfg = load_settings(sheet)          # ← FIX: normalised shape
+    except Exception as e:
+        add(WARN, f"Cannot check adapter enablement (settings load failed): {str(e)[:80]}", False)
         return
 
     enabled_names = {a.name for a in get_enabled(cfg)}
@@ -110,19 +101,25 @@ def check_adapters(add, sheet):
         add(OK, f"All {len(all_adapters)} adapters enabled: {all_names}", False)
 
 
-# ─────────────────────────────────────────────────────────────────────
-# NEW: Phone coverage — % of Contacts with mobile / email
-# ─────────────────────────────────────────────────────────────────────
 def check_phone_coverage(add, sheet):
+    """FIX: distinguish empty vs missing vs filtered."""
     try:
         data = sheet.get("get_contact_index")
     except SheetError as e:
         add(WARN, f"Cannot check phone coverage (contact index failed): {str(e)[:80]}", False)
         return
 
+    if isinstance(data, dict) and data.get("status") == "error":
+        add(BAD, f"Contact Master unreachable: {data.get('message', '')[:100]}", False)
+        return
+
     rows = data.get("contacts") if isinstance(data, dict) else None
-    if not isinstance(rows, list) or not rows:
-        add(WARN, "Contact Master empty — no phone/email coverage data yet", False)
+    if rows is None:
+        add(WARN, "Contact Master: unexpected response shape (no 'contacts' array)", False)
+        return
+    if len(rows) == 0:
+        add(WARN, "Contact Master is EMPTY (0 contacts) — run /enrich to populate. "
+                  "No phone/email coverage to measure yet.", False)
         return
 
     total = len(rows)
@@ -135,7 +132,6 @@ def check_phone_coverage(add, sheet):
     email_pct = round(with_email / total * 100) if total else 0
     both_pct = round(with_both / total * 100) if total else 0
 
-    # Green if decent, yellow if low, red if almost zero
     mobile_level = OK if mobile_pct >= 20 else WARN if mobile_pct >= 5 else BAD
     email_level = OK if email_pct >= 30 else WARN if email_pct >= 10 else BAD
 
@@ -146,32 +142,25 @@ def check_phone_coverage(add, sheet):
         f"Email coverage: {with_email}/{total} contacts with personal email ({email_pct}%)", False)
     if mobile_pct >= 20 and email_pct >= 30:
         add(OK, f"Contact quality healthy — {both_pct}% of contacts have BOTH mobile + email", False)
-    elif mobile_pct < 5 and email_pct < 10:
-        add(WARN, "Contact coverage very thin — enrichment may need tuning (check phone waterfall logs)", False)
 
 
-# ─────────────────────────────────────────────────────────────────────
-# NEW: CompanyDedup size — pre-check cache health
-# ─────────────────────────────────────────────────────────────────────
-def check_company_dedup(add):
+def check_company_dedup(add, sheet):
+    """FIX: pass sheet= to load CRM snapshot (was sheet=None → only 22 local)."""
     try:
         from adapters import CompanyDedup
-        # Local cache only (no sheet call — the file lives on the runner)
-        dedup = CompanyDedup(sheet=None)
+        dedup = CompanyDedup(sheet=sheet) if sheet else CompanyDedup(sheet=None)   # ← FIX
         n = len(dedup)
         if n == 0:
             add(WARN, "CompanyDedup empty — pre-check will not save quota until first run repopulates it", False)
         elif n < 100:
-            add(WARN, f"CompanyDedup only {n} companies — pre-check coverage is thin", False)
+            add(WARN, f"CompanyDedup only {n} companies — pre-check coverage is thin "
+                      f"(local cache only; CRM snapshot may have failed to load)", False)
         else:
             add(OK, f"CompanyDedup cache: {n} companies (pre-check armed)", False)
     except Exception as e:
         add(WARN, f"CompanyDedup cache check failed: {str(e)[:80]}", False)
 
 
-# ─────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────
 def main(live=True):
     started = time.time()
     lines, state = [], {"critical": 0}
@@ -185,7 +174,6 @@ def main(live=True):
     check_libs(add)
     llm = check_keys(add)
 
-    # Sheet connection (also required by adapter health + phone coverage checks)
     sheet = None
     try:
         t0 = time.time()
@@ -197,18 +185,15 @@ def main(live=True):
             f"{n_targets} target product(s) in Settings", False)
     except SheetError as e:
         add(BAD, f"Apps Script webhook FAILED: {e} "
-                 f"(check WEBHOOK_URL / WEBHOOK_SECRET and that the latest deployment is 'New version')", True)
+                 f"(check WEBHOOK_URL / WEBHOOK_SECRET and latest deployment)", True)
 
-    # Adapter health (needs a working sheet connection)
     if sheet:
         check_adapters(add, sheet)
         check_phone_coverage(add, sheet)
 
-    # CompanyDedup local cache health (works even without sheet)
-    check_company_dedup(add)
+    check_company_dedup(add, sheet)
 
     if live:
-        # Live LLM check
         try:
             out = llm.generate_json('Return only this JSON: {"ok": true}', validator=lambda d: isinstance(d, dict))
             used = ", ".join(f"{k}:{v}" for k, v in llm.calls.items()) or "?"
@@ -217,8 +202,6 @@ def main(live=True):
                 not out)
         except Exception as e:
             add(BAD, f"Live LLM call crashed: {e}", True)
-
-        # Live search check
         try:
             res = SearchEngine().search("public tender notice", country="india")
             add(OK if res else BAD,
@@ -229,7 +212,6 @@ def main(live=True):
             add(BAD, f"Live search crashed: {e}", True)
 
     crit = state["critical"]
-    has_warn = any(l.startswith(WARN) for l in lines)
     head = (f"🩺 <b>Radar health check</b> - "
             f"{'ALL GOOD' if not any(l.startswith((BAD, WARN)) for l in lines) else ('PROBLEMS' if crit else 'warnings')}")
     Telegram().send(head + "\n" + "\n".join(tg_escape(l) for l in lines))
