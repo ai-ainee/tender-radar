@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
 """
-radar_v3.py - Radar Scout V3 pipeline orchestrator.
+radar.py - Radar Scout V3 pipeline orchestrator.
 
-NEW PIPELINE:
-  adapters → StandardLead → deterministic gates → AI → router → sheet
+NEW PIPELINE (Deploy 1.1):
+  adapters → StandardLead → pre-check + gates → AI → router → sheet
 
-This file is NOT called by default. Deploy 1 ships it for testing.
-Deploy 2 renames it to radar.py (archiving old as radar_legacy.py).
+Deploy 1.1 additions over V3 base:
+  • CompanyDedup pre-check — skip URLs whose company is already in CRM
+    BEFORE fetch and AI (catches ~80% of duplicate-URL waste)
+  • Vendor-domain demotion — autodesk.com, d5render.com, sofistik.com etc.
+    force entity_role=SELLER → Partners tab (never Inbox)
+  • Content-page demotion — /blog/, /resources/, /insights/ → confidence=LOW
+    (Review, never Inbox)
+  • Prompt block: explicit VENDOR PAGE DETECTION rules
+  • Country TLD floor — merges hardcoded .in / .gov.in / .co.in for India
+    even if the LLM returns only 2 TLDs
 
 Usage:
-  python radar_v3.py                # full run (AI + sheet writes + telegram)
-  python radar_v3.py --dry-run      # collect + gates only, no AI/sheet
-  RADAR_DRY_RUN=1 python radar_v3.py
+  python radar.py                # full run (AI + sheet writes + telegram)
+  python radar.py --dry-run      # collect + gates only, no AI/sheet
+  RADAR_DRY_RUN=1 python radar.py
 """
 import hashlib
 import json
@@ -28,7 +36,8 @@ from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram,
                     normalize_company, tg_escape)
 
 from standard_lead import StandardLead
-from adapters import get_enabled, get_all
+from adapters import (get_enabled, get_all, CompanyDedup,
+                      _is_vendor_domain, _is_content_page)
 
 try:
     from tender_utils import extract_tender_id, tender_id_from_url
@@ -47,6 +56,7 @@ except ImportError:
 def fingerprint_key_cached(fp):
     """Alias used by adapters/search.py. Safe to import."""
     return _fp_key(fp)
+
 
 # ── Constants ─────────────────────────────────────────────────────────
 CACHE_FILE = "seen_links.txt"
@@ -152,6 +162,45 @@ def mark_tender_seen(tender_ids, tid):
 _COUNTRY_CTX = {"aliases": {}, "tlds": {}, "cache_key": ""}
 
 
+# TLD floors — guarantee these are always in the map even if the LLM
+# returns fewer. Extend per-country as needed.
+_TLD_FLOOR = {
+    "india": [
+        (".gov.in", "India"), (".nic.in", "India"), (".co.in", "India"),
+        (".org.in", "India"), (".ac.in", "India"), (".net.in", "India"),
+        (".in", "India"),
+    ],
+    "uae": [
+        (".gov.ae", "UAE"), (".ae", "UAE"),
+    ],
+    "united states": [
+        (".gov", "United States"), (".us", "United States"),
+    ],
+    "usa": [
+        (".gov", "United States"), (".us", "United States"),
+    ],
+    "united kingdom": [
+        (".gov.uk", "United Kingdom"), (".co.uk", "United Kingdom"),
+        (".uk", "United Kingdom"),
+    ],
+}
+
+
+def _add_floor_tlds(countries):
+    """Guarantee minimum TLD coverage for each configured country."""
+    added = 0
+    for c in countries or []:
+        key = str(c).lower().strip()
+        for tld, country in _TLD_FLOOR.get(key, []):
+            if tld not in _COUNTRY_CTX["tlds"]:
+                _COUNTRY_CTX["tlds"][tld] = country
+                added += 1
+            if key not in _COUNTRY_CTX["aliases"]:
+                _COUNTRY_CTX["aliases"][key] = {key}
+    if added:
+        log.info(f"country_context: +{added} floor TLDs (total {len(_COUNTRY_CTX['tlds'])})")
+
+
 def generate_country_context(llm, countries):
     if not countries:
         _COUNTRY_CTX["aliases"] = {}
@@ -173,10 +222,11 @@ Return JSON: {{"aliases": {{"<Country>": ["alias1"]}}, "tlds": {{"<Country>": ["
         data = llm.generate_json(prompt, validator=lambda d: isinstance(d, dict) and "aliases" in d)
 
     if not isinstance(data, dict):
-        log.warning("country_context: LLM unavailable — name-only matching")
+        log.warning("country_context: LLM unavailable — using floor TLDs only")
         _COUNTRY_CTX["aliases"] = {str(c).lower(): {str(c).lower()} for c in countries if c}
         _COUNTRY_CTX["tlds"] = {}
         _COUNTRY_CTX["cache_key"] = cache_key
+        _add_floor_tlds(countries)
         return
 
     aliases = {}
@@ -200,6 +250,7 @@ Return JSON: {{"aliases": {{"<Country>": ["alias1"]}}, "tlds": {{"<Country>": ["
     _COUNTRY_CTX["tlds"] = tlds
     _COUNTRY_CTX["cache_key"] = cache_key
     log.info(f"country_context: {len(aliases)} countr(y/ies), {len(tlds)} TLDs")
+    _add_floor_tlds(countries)
 
 
 def _norm_country_(c):
@@ -233,7 +284,7 @@ PORTAL_COUNTRY = {
 
 
 def likely_in_target(url, snippet, target_countries, target_states, target_cities):
-    """Same two-mode logic as old radar.py."""
+    """Two-mode country/region pre-filter (unchanged from V3 base)."""
     if not target_countries:
         return True
 
@@ -282,11 +333,10 @@ def likely_in_target(url, snippet, target_countries, target_states, target_citie
     return True
 
 
-def apply_quality_gates(lead: StandardLead, allowed_countries):
-    """Returns (lead_modified, gate_flags). Operates on StandardLead."""
+def apply_quality_gates(lead, allowed_countries):
+    """Operates on StandardLead; returns (lead, flags)."""
     flags = []
 
-    # Gate 1 — Country
     if allowed_countries:
         source_country = ""
         track = str(lead.metadata.get("track") or "")
@@ -308,13 +358,11 @@ def apply_quality_gates(lead: StandardLead, allowed_countries):
             flags.append("COUNTRY UNKNOWN")
         lead.country = detected or "Unknown"
 
-    # Gate 2 — Expiry
     expiry = str(lead.expiry_status or "UNKNOWN").upper()
     if expiry in ("CLOSED", "COMPLETED"):
         evidence = str(lead.expiry_evidence or expiry).strip()
         flags.append(f"EXPIRED: {evidence[:80]}")
 
-    # Gate 3 — Genuineness
     genuine = str(lead.genuineness or "GENUINE").upper()
     if genuine not in ("GENUINE", "") and genuine != "RESELLER":
         flags.append(f"NOT GENUINE: {genuine}")
@@ -415,8 +463,7 @@ def map_verdicts(verdicts, n):
     return out
 
 
-def _format_lead(lead: StandardLead, idx: int, max_chars: int = 3000) -> str:
-    """Format a StandardLead for the AI prompt, showing structured fields."""
+def _format_lead(lead, idx, max_chars=3000):
     parts = [f"--- ITEM {idx} ---"]
     parts.append(f"SOURCE: {lead.source}")
     parts.append(f"CATEGORY: {lead.category}")
@@ -484,25 +531,37 @@ TARGET INDUSTRIES: {industries_str or "All"}
 ═══ STRUCTURED DATA — TRUST THESE ═══
 When a lead has BUYER_ORG, TENDER_ID, VALUE_INR, DEADLINE populated,
 these are authoritative facts from the source. Do NOT re-derive them
-from <scraped_data>. Use them as-is.
+from <scraped_data>.
 
-If structured fields are absent, extract facts from <scraped_data> as before.
+═══ VENDOR PAGE DETECTION — critical ═══
+If the URL domain belongs to the VENDOR of a target product (e.g.
+autodesk.com, d5render.com, sofistik.com, imaginit.com, grabcad.com,
+bentley.com), that page is the VENDOR's own marketing site.
+NEVER classify as BUYER. Set entity_role="SELLER" → Partners.
+
+If the URL contains /products/, /blog/, /resources/, /insights/,
+/case-studies/, /news/, /press-release/, the page is content marketing
+or documentation. Set confidence="LOW" (routes to Review, not Inbox).
+
+If the page SELLS or describes software/service offerings as the primary
+content, it is not a buyer — it is the vendor.
 
 ═══ EVALUATION RULES ═══
 1. INBOX (is_valid=true, confidence="HIGH"):
    - Text mentions ANY product in TARGET PORTFOLIO
    - Aligns with Directives OR Industries
    - Passes all 3 QUALITY GATES below
+   - NOT a vendor page, NOT a blog/article/resources page
 
 2. REVIEW (is_valid=true, confidence="LOW"):
    - Matches directive/industry but doesn't name portfolio product
-   - Names a competitor product or related service
+   - Names competitor product or related service
+   - Is a content page (blog/article/insights)
 
 3. EXCLUDE (is_valid=false):
    - Irrelevant context (catering, janitorial, paving)
-   - Schools/students, freelancers, blogs
-   - IT resellers → entity_role="SELLER"
-   - AGGREGATE / MARKET INTELLIGENCE — reject surveys, reports, "X% of companies"
+   - Schools/students, freelancers, training institutes
+   - AGGREGATE/MARKET INTELLIGENCE — reject surveys, reports, "X% of companies"
    - ORG must be a specific legal entity. Reject descriptions:
      ❌ "Indian Organisations Aggregate Survey", "Multiple Firms", "Sector Report"
    - If no real org name extractable → organization="" AND is_valid=false
@@ -565,15 +624,14 @@ BATCH:
 
 # ── Router ────────────────────────────────────────────────────────────
 class Router:
-    def __init__(self, sheet, allowed_countries=None, event_fps=None):
+    def __init__(self, sheet, allowed_countries=None, event_fps=None, company_dedup=None):
         self.sheet = sheet
         self.allowed_countries = allowed_countries or []
         self.event_fps = event_fps if event_fps is not None else set()
+        self.company_dedup = company_dedup
 
-    def push(self, lead: StandardLead, ai_verdict: dict, default_target: str, default_industry: str):
-        # Merge AI verdict into StandardLead.
-        # Map AI field names to dataclass field names where they differ.
-        # Set any field that exists on StandardLead; skip unknown keys silently.
+    def push(self, lead, ai_verdict, default_target, default_industry):
+        # Merge AI verdict into StandardLead
         _field_map = {"organization": "buyer_org"}
         for k, v in ai_verdict.items():
             if k in ("item_index", "event_fingerprint"):
@@ -591,7 +649,7 @@ class Router:
             except Exception:
                 pass
 
-        # Normalise common fields
+        # Normalise
         lead.buyer_org = normalize_company(str(lead.buyer_org or lead.dm_name or ""))
         is_valid = str(lead.is_valid).lower() in ("true", "1", "yes")
         confidence = str(lead.confidence or "LOW").upper()
@@ -612,6 +670,27 @@ class Router:
             lead.why_engage_now = "[AGGREGATE/REPORT] " + str(lead.why_engage_now or "")
             is_valid = False
 
+        # ── NEW: Vendor domain detection ────────────────────────────────
+        # If URL is on a vendor's own domain, force SELLER role → Partners.
+        vendor_hit = _is_vendor_domain(lead.url)
+        if vendor_hit:
+            log.info(f"[VENDOR-DEMOTE] {lead.url[:70]} → Partners")
+            lead.entity_role = "SELLER"
+            lead.genuineness = "RESELLER"
+            lead.is_valid = True
+            is_valid = True
+            role = "SELLER"
+            confidence = "LOW"
+
+        # ── NEW: Content page detection ─────────────────────────────────
+        # If URL is a blog/article/resources page, downgrade confidence
+        # so it lands in Review, not Inbox.
+        content_hit = _is_content_page(lead.url)
+        if content_hit and role != "SELLER":
+            log.info(f"[CONTENT-DEMOTE] {lead.url[:70]} → Review")
+            confidence = "LOW"
+            lead.why_engage_now = "[CONTENT PAGE] " + str(lead.why_engage_now or "")
+
         # Assign Unidentified fallback
         if lead.buyer_org.lower() in ("unknown", "unknown firm", ""):
             if is_valid and role != "SELLER":
@@ -621,7 +700,7 @@ class Router:
             else:
                 return "SKIPPED", lead.buyer_org, "unknown"
 
-        # Quality gates (may set flags)
+        # Quality gates
         lead, gate_flags = apply_quality_gates(lead, self.allowed_countries)
 
         # Event fingerprint dedup
@@ -652,7 +731,8 @@ class Router:
         reason = "valid_high"
         capture = datetime.now().strftime("%Y-%m-%d %H:%M")
         solution = str(lead.target_solution or default_target)
-        industry = default_industry if default_industry != "ALL_SECTORS" else (getattr(lead, "industry", "") or "Commercial Enterprise")
+        industry = (default_industry if default_industry != "ALL_SECTORS"
+                    else (getattr(lead, "industry", "") or "Commercial Enterprise"))
         phone = extract_phone(getattr(lead, "phone", "") or lead.raw_text or "")
         lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(lead.url.encode()).hexdigest()[:10]}"
 
@@ -720,6 +800,13 @@ class Router:
             log.error(f"insert_lead failed for {lead.buyer_org}: {e}")
             return "FAILED", lead.buyer_org, "sheet_error"
 
+        # ── NEW: Mark company in pre-check cache after successful push ──
+        # Both INBOX and REVIEW outcomes mean the company is now in the CRM.
+        # Future URLs mentioning this company will be caught pre-fetch.
+        if self.company_dedup and lead.buyer_org and \
+           not lead.buyer_org.lower().startswith("unidentified"):
+            self.company_dedup.mark(lead.buyer_org)
+
         if res.get("status") == "duplicate" or res.get("duplicate") or \
            "appended note" in str(res.get("message", "")).lower():
             log.info(f"[-] Already in CRM: {lead.buyer_org}")
@@ -761,6 +848,11 @@ def main():
     tender_ids = load_tender_cache()
     event_fps = _load_fp_cache(EVENT_FP_FILE)
 
+    # ── CompanyDedup — pre-flight CRM check (NEW) ────────────────────
+    company_dedup = CompanyDedup(sheet=sheet)
+    cfg["company_dedup"] = company_dedup
+    # ────────────────────────────────────────────────────────────────
+
     all_countries = cfg["countries"]
     country = all_countries[0] if all_countries else ""
     country_list = all_countries or []
@@ -782,7 +874,7 @@ def main():
     all_leads = []
     for adapter in adapters:
         if DRY_RUN:
-            log.info(f"[adapter] {adapter.name} (dry-run, still fetching)")
+            log.info(f"[adapter] {adapter.name} (dry-run)")
         adapter_leads = adapter.safe_fetch(cfg)
         all_leads.extend(adapter_leads)
         log.info(f"[adapter] {adapter.name}: {len(adapter_leads)} lead(s)")
@@ -832,11 +924,11 @@ def main():
         for lead in filtered[:5]:
             log.info(f"  {lead}")
         log.info(f"[DRY RUN] Would evaluate {len(filtered)} leads via AI")
-        log.info("[DRY RUN] Skipping sheet writes and Telegram")
         return 0
 
     evaluator = Evaluator(llm)
-    router = Router(sheet, allowed_countries=country_list, event_fps=event_fps)
+    router = Router(sheet, allowed_countries=country_list,
+                    event_fps=event_fps, company_dedup=company_dedup)
 
     AI_BATCH = env_int("AI_BATCH_SIZE", 6)
     ai_failures = 0
@@ -870,11 +962,6 @@ def main():
                 mark_seen(seen, lead.url)
                 mark_fp(fps, _fingerprint(lead.raw_text))
                 continue
-
-            # Dedupe within-run
-            sol_key = re.sub(r"\s+", " ", str(verdict.get("target_solution") or "").lower())
-            sig_key = (normalize_company(verdict.get("organization") or "").lower(), sol_key)
-            # (skipping session_signals for now, event_fp handles it)
 
             outcome, company, reason = router.push(
                 lead, verdict,
@@ -911,6 +998,7 @@ def main():
         f"• After gates: <code>{len(filtered)}</code>",
         f"• Gate drops: tender-dupe={stats['gate_tender_dupe']} "
         f"url-seen={stats['gate_url_seen']} fp-dupe={stats['gate_fp_dupe']}",
+        f"• CompanyDedup known: <code>{len(company_dedup)}</code>",
         f"• AI evaluated: <code>{stats['evaluated']}</code>",
         f"• New leads → Inbox {stats['inbox']}, Review {stats['review']}, "
         f"Partners {stats['partners']}",
