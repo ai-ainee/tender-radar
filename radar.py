@@ -32,7 +32,8 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram,
-                    clean_url, env_int, extract_phone, fetch_page, log,
+                    clean_url, env_int, extract_phone, fetch_page,
+                    inject_api_keys_from_settings, log,
                     normalize_company, tg_escape)
 
 from standard_lead import StandardLead
@@ -406,38 +407,6 @@ def load_settings(sheet):
         "job_portals": [k.lower().strip() for k in _as_list(s.get("job_portals"))],
         "api_keys": s.get("api_keys") or {},
     }
-
-
-def _inject_api_keys_from_settings(cfg):
-    api_keys = cfg.get("api_keys") or {}
-    if not isinstance(api_keys, dict):
-        return
-    mapping = {
-        "gemini_api_keys": "GEMINI_API_KEYS",
-        "groq_api_keys": "GROQ_API_KEYS",
-        "openrouter_api_keys": "OPENROUTER_API_KEYS",
-        "serper_api_keys": "SERPER_API_KEYS",
-        "brave_api_keys": "BRAVE_API_KEYS",
-        "scraperapi_api_keys": "SCRAPERAPI_API_KEYS",
-        "jina_api_key": "JINA_API_KEY",
-        "openai_api_key": "OPENAI_API_KEY",
-    }
-    injected, kept = [], []
-    for sheet_field, env_name in mapping.items():
-        vals = api_keys.get(sheet_field) or []
-        if not isinstance(vals, list):
-            vals = [vals] if vals else []
-        vals = [str(v).strip() for v in vals if str(v).strip()]
-        if vals:
-            os.environ[env_name] = ",".join(vals)
-            injected.append(f"{env_name}({len(vals)})")
-        elif os.getenv(env_name, "").strip():
-            kept.append(env_name)
-    if injected:
-        log.info(f"API keys from Script Properties: {', '.join(injected)}")
-    if kept:
-        log.info(f"API keys from GitHub Secrets: {', '.join(kept)}")
-
 
 # ── AI Evaluator ──────────────────────────────────────────────────────
 def _valid_verdicts(d):
@@ -829,7 +798,7 @@ def main():
         tg.send(f"🚨 <b>Radar Scout V3 halted</b>\n<code>{tg_escape(e)}</code>")
         return 1
 
-    _inject_api_keys_from_settings(cfg)
+    inject_api_keys_from_settings(cfg.get("api_keys") if isinstance(cfg, dict) else None)
 
     special = cfg["special_prompt"]
     if not cfg["targets"] and not special:
