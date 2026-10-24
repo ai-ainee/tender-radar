@@ -1,15 +1,11 @@
 """adapters/firsttender.py - FirstTender.com specialized adapter.
 
-FirstTender is an Indian tender aggregator that re-publishes GeM/CPPP/state
-tenders in clean, readable HTML. Unlike GeM itself, FirstTender pages are
-fetchable from GitHub Actions IPs.
-
-Strategy: run domain-targeted queries, fetch result pages, wrap in StandardLead.
-FirstTender pages have consistent tender structure (value, deadline, buyer)
-but parsing HTML is fragile — so we pass content to the AI for extraction.
-
-FirstTender surfaced the Grid Controller ₹305 Cr tender in an earlier run.
-This adapter makes that hit repeatable and discoverable systematically.
+Deploy 1.1 changes:
+  - Removed `site:` operator from queries (was stripped by SearchEngine
+    → returning 0 leads). Now uses "firsttender.com <target> tender"
+    which Google still prioritizes to that domain.
+  - Added pre-check against CompanyDedup to skip CRM-known companies
+    before fetch.
 """
 import re
 
@@ -19,18 +15,18 @@ from adapters import SourceAdapter, register
 
 
 DOMAIN = "firsttender.com"
+DOMAIN_TOKEN = "firsttender"     # for query — Google treats as domain hint
 
 
 class FirstTenderAdapter(SourceAdapter):
     name = "firsttender"
     category = "tender"
-    priority = 30           # runs before generic search
+    priority = 30
 
     def __init__(self):
         self._search = None
 
     def is_enabled(self, settings):
-        # Only if target countries include India
         countries = settings.get("countries") or []
         if not countries:
             return bool(settings.get("targets"))
@@ -42,23 +38,26 @@ class FirstTenderAdapter(SourceAdapter):
 
         targets = settings.get("targets") or []
         states = settings.get("states") or []
-        banned_sites = settings.get("banned_sites") or []
         protected = settings.get("protected") or []
+        company_dedup = settings.get("company_dedup")
 
         if not targets:
             return []
 
-        # Build domain-restricted queries — 2 per target
+        # Deploy 1.1: removed `site:` operator.
+        # Queries are "firsttender.com <target> tender" which Google
+        # still prioritises to firsttender.com results without triggering
+        # the site:-stripping behaviour of SearchEngine.clean_query().
         queries = []
         for target in targets[:5]:
-            queries.append(f"site:{DOMAIN} {target} tender")
-            queries.append(f"site:{DOMAIN} {target} bid india")
-
+            queries.append(f"{DOMAIN} {target} tender")
+            queries.append(f"{DOMAIN} {target} bid india")
         if states:
-            queries.append(f"site:{DOMAIN} tender {states[0]}")
+            queries.append(f"{DOMAIN} tender {states[0]}")
 
         leads = []
         seen_urls = set()
+        precheck_dupes = 0
 
         for q in queries:
             try:
@@ -76,7 +75,16 @@ class FirstTenderAdapter(SourceAdapter):
                     continue
                 seen_urls.add(c)
 
-                # Fetch page
+                # Pre-check against CRM
+                if company_dedup:
+                    match = company_dedup.find_in(
+                        res.get("title") or "", res.get("snippet") or ""
+                    )
+                    if match:
+                        log.info(f"[firsttender] pre-check skip {match!r}: {raw[:70]}")
+                        precheck_dupes += 1
+                        continue
+
                 try:
                     content = fetch_page(raw, protected_domains=protected)
                 except Exception as e:
@@ -86,7 +94,6 @@ class FirstTenderAdapter(SourceAdapter):
                 if not content or len(content) < 120:
                     continue
 
-                # Extract any visible tender details for structured hint
                 structured = _extract_hints(content)
 
                 lead = StandardLead(
@@ -111,11 +118,11 @@ class FirstTenderAdapter(SourceAdapter):
                 )
                 leads.append(lead)
 
-        log.info(f"[firsttender] {len(leads)} lead(s) collected")
+        log.info(f"[firsttender] {len(leads)} lead(s) collected, "
+                 f"{precheck_dupes} pre-check dupes skipped")
         return leads
 
 
-# ── Light structured hints (best-effort; AI still verifies) ───────────
 def _extract_hints(text):
     """Extract tender hints via regex. Not exhaustive — just aids the AI."""
     hints = {}
@@ -136,7 +143,7 @@ def _extract_hints(text):
         except ValueError:
             pass
 
-    # Deadline: "Closing: 15-Nov-2026" / "Bid end: 2026-11-15"
+    # Deadline
     for pat in (
         r"(?:closing|bid\s+end|deadline|last\s+date)[:\s]+(\d{1,2}[-/\s]\w{3,9}[-/\s]\d{2,4})",
         r"(?:closing|bid\s+end|deadline)[:\s]+(\d{4}-\d{2}-\d{2})",
