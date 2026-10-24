@@ -1060,10 +1060,23 @@ def give_up(sheet, lead_id, org, ref_url, tries):
 
 
 def _build_phone_shim(org, ref_url, research_text, primary):
-    """Build a StandardLead shim for the phone extractor."""
+    """Build a StandardLead shim for the phone extractor.
+
+    Category is inferred from URL so Stage 2 (PDF deep-read) fires for
+    tender/PDF sources where it's the highest-value phone source.
+    """
+    url_low = (ref_url or "").lower()
+    if any(k in url_low for k in (
+        "/tender", "tenderdetail", "firsttender", "eprocure",
+        "gem.gov", "etenders", ".pdf", "bid"
+    )):
+        category = "tender"
+    else:
+        category = "news"
+
     return StandardLead(
         source="enrichment",
-        category="news",
+        category=category,
         url=ref_url,
         dm_name=(primary.get("name") if primary else "") or "",
         dm_title=(primary.get("title") if primary else "") or "",
