@@ -1,10 +1,9 @@
 """adapters/tenderdetail.py - TenderDetail.com specialized adapter.
 
-TenderDetail.com aggregates Indian government + PSU tenders. Similar to
-FirstTender but with different inventory — often catches state-level tenders
-and PSU procurement that FirstTender misses.
-
-Surfaced the "State Govt empanelment" lead in an earlier run.
+Deploy 1.1 changes:
+  - Removed `site:` operator from queries (was stripped by SearchEngine
+    → returning 0 leads).
+  - Added pre-check against CompanyDedup.
 """
 import re
 
@@ -37,18 +36,21 @@ class TenderDetailAdapter(SourceAdapter):
         targets = settings.get("targets") or []
         states = settings.get("states") or []
         protected = settings.get("protected") or []
+        company_dedup = settings.get("company_dedup")
 
         if not targets:
             return []
 
+        # Deploy 1.1: removed `site:` operator
         queries = []
         for target in targets[:5]:
-            queries.append(f"site:{DOMAIN} {target} tender")
+            queries.append(f"{DOMAIN} {target} tender")
         if states:
-            queries.append(f"site:{DOMAIN} empanelment {states[0]}")
+            queries.append(f"{DOMAIN} empanelment {states[0]}")
 
         leads = []
         seen_urls = set()
+        precheck_dupes = 0
 
         for q in queries:
             try:
@@ -65,6 +67,15 @@ class TenderDetailAdapter(SourceAdapter):
                 if not c or c in seen_urls:
                     continue
                 seen_urls.add(c)
+
+                if company_dedup:
+                    match = company_dedup.find_in(
+                        res.get("title") or "", res.get("snippet") or ""
+                    )
+                    if match:
+                        log.info(f"[tenderdetail] pre-check skip {match!r}: {raw[:70]}")
+                        precheck_dupes += 1
+                        continue
 
                 try:
                     content = fetch_page(raw, protected_domains=protected)
@@ -99,12 +110,13 @@ class TenderDetailAdapter(SourceAdapter):
                 )
                 leads.append(lead)
 
-        log.info(f"[tenderdetail] {len(leads)} lead(s) collected")
+        log.info(f"[tenderdetail] {len(leads)} lead(s) collected, "
+                 f"{precheck_dupes} pre-check dupes skipped")
         return leads
 
 
 def _extract_hints(text):
-    """Same hint extractor as firsttender — see firsttender.py for rationale."""
+    """Same hint extractor as firsttender.py."""
     hints = {}
     if not text:
         return hints
