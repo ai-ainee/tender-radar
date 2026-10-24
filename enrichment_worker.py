@@ -29,7 +29,7 @@ from urllib.parse import quote, quote_plus, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram, env_int, extract_emails, extract_phones,
-                    is_safe_url, log, tg_escape)
+                    inject_api_keys_from_settings, is_safe_url, log, tg_escape)
 
 from standard_lead import StandardLead
 from phone_extractor import find_dm_phone, find_company_phone
@@ -1143,20 +1143,32 @@ def identify_org(llm, ref_url):
     low = page.lower()
     return name if all(t in low for t in toks) else ""
 
+_SETTINGS_LOADED = False
+_LAST_SETTINGS = {}
+
+
 def apply_sheet_settings(sheet):
+    """Loads the Settings tab into module globals. Idempotent.
+
+    Returns the raw settings dict (or {} on failure) so the caller can
+    still feed api_keys to LLMRouter/SearchEngine.
+    """
     global SELLER_OFFER, TARGET_PRODUCTS_CACHE, SETTINGS_PERSONAS_CACHE
-    # Skip if already loaded (idempotent)
-    if SELLER_OFFER and TARGET_PRODUCTS_CACHE is not None:
-        return
+    global _SETTINGS_LOADED, _LAST_SETTINGS
+
+    if _SETTINGS_LOADED:
+        return _LAST_SETTINGS
+
     try:
         st = sheet.get("get_settings")
     except Exception as e:
         log.info(f"Settings not readable ({str(e)[:80]}) - pitch stays generic unless SELLER_OFFER is set.")
-        return
+        _SETTINGS_LOADED = True
+        return {}
     if not isinstance(st, dict):
-        return
+        _SETTINGS_LOADED = True
+        return {}
 
-    # Target products
     raw = st.get("target_products")
     items = raw if isinstance(raw, list) else re.split(r"[\n,]", str(raw or ""))
     items = [clean(x, 80) for x in items if clean(x, 80)]
@@ -1165,7 +1177,6 @@ def apply_sheet_settings(sheet):
         log.info(f"Using Target Products from Settings as the seller offer: {SELLER_OFFER}")
     TARGET_PRODUCTS_CACHE = items[:15]
 
-    # NEW: Buyer Personas (optional Settings override)
     personas_raw = st.get("buyer_personas")
     if isinstance(personas_raw, list):
         personas = [clean(x, 80) for x in personas_raw if clean(x, 80)]
@@ -1174,6 +1185,10 @@ def apply_sheet_settings(sheet):
     SETTINGS_PERSONAS_CACHE = personas[:25]
     if personas:
         log.info(f"Buyer Personas override from Settings: {len(personas)} title(s)")
+
+    _SETTINGS_LOADED = True
+    _LAST_SETTINGS = st
+    return st
 
 def save_unidentified(sheet, lead_id, sheet_org, ref_url):
     dossier = (f"### 🏢 Executive Profile & Operations\n{sheet_org}\n\n"
@@ -1185,7 +1200,7 @@ def save_unidentified(sheet, lead_id, sheet_org, ref_url):
                              "website": "", "linkedin_url": ""})
     except SheetError as e:
         log.error(f"   could not save placeholder dossier: {e}")
-        return False
+        return None
     token = _name_hash_token(sheet_org)
     buttons = [[
         {"text": "💼 Move to Pipeline", "callback_data": f"pipeline::{token}"},
@@ -1576,12 +1591,16 @@ def main():
         log.info("No leads waiting for enrichment.")
         return 0
 
+    # Load Settings + API keys BEFORE creating LLMRouter/SearchEngine, otherwise
+    # keys that only exist in the Settings tab never reach the clients.
+    cfg = apply_sheet_settings(sheet)
+    inject_api_keys_from_settings(cfg.get("api_keys") if isinstance(cfg, dict) else None)
+
     llm = LLMRouter()
     if not llm.available():
         tg.send("🚨 <b>Enrichment halted</b>: no LLM API key configured.")
         return 1
     search = SearchEngine()
-    apply_sheet_settings(sheet)
     index, index_ok = load_contact_index(sheet)
     max_runtime = env_int("MAX_RUNTIME_MIN", 25) * 60
     done = failed = 0
