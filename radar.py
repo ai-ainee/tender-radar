@@ -38,7 +38,8 @@ from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram,
 
 from standard_lead import StandardLead
 from adapters import (get_enabled, get_all, CompanyDedup,
-                      _is_vendor_domain, _is_content_page)
+                      _is_vendor_domain, _is_content_page,
+                      sync_vendor_domains_from_crm)
 
 try:
     from tender_utils import extract_tender_id, tender_id_from_url
@@ -870,6 +871,9 @@ def main():
     # ── CompanyDedup — pre-flight CRM check (NEW) ────────────────────
     company_dedup = CompanyDedup(sheet=sheet)
     cfg["company_dedup"] = company_dedup
+
+    # Sync vendor domains from Partners tab (once per run)
+    sync_vendor_domains_from_crm(sheet)
     # ────────────────────────────────────────────────────────────────
 
     all_countries = cfg["countries"]
