@@ -44,7 +44,7 @@ VENDOR_DOMAIN_KEYWORDS = (
     "rhino3d.com",
     "sketchup.com",
     "archicad.com",
-)
+  )
 
 # Content-page URL patterns — blog / article / resources etc.
 # These CAN contain useful signals but are never procurement notices.
@@ -377,7 +377,6 @@ def _auto_register():
         ("nse", "adapters.nse", "NSEAdapter"),
         ("search", "adapters.search", "SearchAdapter"),
         ("hiring", "adapters.hiring", "HiringAdapter"),
-    ]
     ]
     for slug, module_path, class_name in adapter_modules:
         try:
