@@ -435,7 +435,34 @@ def apply_quality_gates(lead, allowed_countries):
         flags.append(f"NOT GENUINE: {genuine}")
 
     return lead, flags
+  
+def _classify_gates(gate_flags):
+    """Split gate flags into soft (score-overridable) and hard (never).
 
+    Soft gates are "quality" caveats that high-scoring real buyers can
+    override:
+      - HIRING_SIGNAL: company is hiring for target-product roles —
+        strongest forward-looking buying signal, should not be Review-only.
+
+    Hard gates are structural disqualifiers that no score can override:
+      - FOREIGN URL, WRONG COUNTRY — wrong geography
+      - EXPIRED, COMPLETED — deadline passed
+
+    Any gate flag not in the known lists defaults to HARD (safer — unknown
+    gates fail closed, not open).
+    """
+    SOFT = ("HIRING_SIGNAL",)
+    HARD = ("FOREIGN URL", "WRONG COUNTRY", "EXPIRED", "COMPLETED")
+    soft, hard = [], []
+    for f in gate_flags or []:
+        f_up = str(f).upper()
+        if any(s in f_up for s in SOFT):
+            soft.append(f)
+        elif any(h in f_up for h in HARD):
+            hard.append(f)
+        else:
+            hard.append(f)   # unknown → hard
+    return soft, hard
 
 # ── Utilities ─────────────────────────────────────────────────────────
 def _as_list(value):
@@ -802,6 +829,35 @@ class Router:
 
         gate_ok = not gate_flags
         freshness = str(lead.signal_freshness or "RECENT").upper()
+
+        # Score-based soft-gate override.
+        # A strong hiring signal from a real buyer (score >= 85) is a valid
+        # buying signal, not "not genuine" noise. But we only override when:
+        #   - the ONLY gate flags are soft (HIRING_SIGNAL)
+        #   - no hard gate (foreign / expired) is present
+        #   - freshness is not STALE (deadline passed)
+        #   - score >= 85 (conservative — blocks Yrs Any at 80)
+        score_num = 0
+        try:
+            score_num = int(str(lead.lead_score or 0))
+        except (ValueError, TypeError):
+            score_num = 0
+        soft_gates, hard_gates = _classify_gates(gate_flags)
+        hiring_only_soft = (
+            bool(soft_gates)
+            and all("HIRING_SIGNAL" in str(s).upper() for s in soft_gates)
+        )
+        score_override = (
+            is_valid
+            and role not in ("SELLER", "IRRELEVANT")
+            and not hard_gates
+            and freshness != "STALE"
+            and hiring_only_soft
+            and score_num >= 85
+        )
+        if score_override:
+            log.info(f"[SCORE-OVERRIDE] {lead.buyer_org} score={score_num} — HIRING_SIGNAL with strong score → Inbox")
+
         reason = "valid_high"
         capture = datetime.now().strftime("%Y-%m-%d %H:%M")
         solution = str(lead.target_solution or default_target)
@@ -818,6 +874,13 @@ class Router:
         elif not is_valid:
             sheet_name, outcome, reason = SHEET_REVIEW, "REVIEW", "rejected"
             why = f"[AI REJECTED — {role}] " + why
+            row = [capture, lead.upcoming_events or "Unknown", role, industry,
+                   lead.state or "N/A", lead.city or "N/A",
+                   lead.buyer_org, solution, why, lead.url,
+                   lead.product_usage or "Unknown", "", lead_id]
+        elif score_override:
+            sheet_name, outcome, reason = SHEET_INBOX, "INBOX", "score_override"
+            why = f"[SOFT-OVERRIDE: HIRING_SIGNAL @ {score_num}/100] " + why
             row = [capture, lead.upcoming_events or "Unknown", role, industry,
                    lead.state or "N/A", lead.city or "N/A",
                    lead.buyer_org, solution, why, lead.url,
