@@ -466,3 +466,22 @@ news|aecdaily|||2026-10|
 membership|lotnetwork|||2026-10|
 capex|stahmannfarms|||2026-10|
 rfq|cityofindianharbourbeach|||2026-06|
+reseller_listing|techzoidtechnologiesprivatelimited|Autodesk licensing partner|partner|2026-10|delhi
+empty_page|indianoilcorporationlimited|redirected|status|2026-10|india
+article_publication|indianinstituteofsolarenergy|solar epc guide|article|2026-01|india
+tender_aggregation|tenderdetail|264 tenders|tenders|2026-10|india
+tender_aggregation|tendernews|DPR Tenders|tenders|2026-10|india
+vendor_documentation|autodesk|Fusion 360 license guide|support article|2026-10|global
+internship|nextvisioninfotech|449|inr|2026-10|kochi
+mcq_page|testbook|||2026-10|
+product_listing|scubesystems|450000|inr|2026-10|pune
+tender|indianhealthservice|||2026-10|
+blog_post|aasaan|||2026-08|
+rfq|undp|UNDP-IND-00844|tender id|2026-10|northgoa_goa_india
+seller_marketing|panachedigilife|||2026-10|
+aggregator_listing|classictenderspvt.ltd.|||2026-10|
+vendor_marketing|autodesk|||2025-07|
+product_release|autodesk|AutoCAD 2026|version|2025-04|india
+capex|airindiagroup|||2024-09|
+capex|gsasmicrosystemspvt.ltd.|||2026-09|
+hiring|premiumcad|7|openings|2026-10|noida_india
