@@ -55,14 +55,44 @@ CONTENT_URL_RE = re.compile(
 )
 
 
+# ── Learned vendor domains (synced from Partners tab at startup) ──────
+# Populated by sync_vendor_domains_from_crm() — see radar.py main().
+# Contains every domain previously classified as SELLER and inserted into
+# the Partners & Suppliers tab. Partners tab is the source of truth.
+_LEARNED_VENDORS = set()
+
+
+def sync_vendor_domains_from_crm(sheet):
+    """Load vendor domains from the Partners & Suppliers tab.
+
+    Called once at startup from radar.py main(). Populates _LEARNED_VENDORS
+    from the CRM's Partners tab so _is_vendor_domain() can catch those URLs
+    on subsequent runs without AI.
+    """
+    global _LEARNED_VENDORS
+    try:
+        data = sheet.get("get_vendor_domains")
+        domains = data.get("domains") or []
+        for d in domains:
+            if isinstance(d, str) and d.strip():
+                _LEARNED_VENDORS.add(d.strip().lower().replace("www.", ""))
+        log.info(f"Vendor domains synced from Partners tab: {len(_LEARNED_VENDORS)}")
+    except Exception as e:
+        log.info(f"Vendor domain sync unavailable ({str(e)[:80]}) — using static list only")
+
+
 def _is_vendor_domain(url):
-    """True if URL's hostname is a known vendor of a target product."""
+    """True if URL's hostname is a vendor (static seed OR Partners tab)."""
     try:
         host = urlparse(url or "").netloc.lower().split(":")[0]
         if not host:
             return False
+        host = host.replace("www.", "")
         for kw in VENDOR_DOMAIN_KEYWORDS:
             if host == kw or host.endswith("." + kw):
+                return True
+        for d in _LEARNED_VENDORS:
+            if host == d or host.endswith("." + d):
                 return True
     except Exception:
         pass
@@ -341,8 +371,13 @@ def _auto_register():
     adapter_modules = [
         ("firsttender", "adapters.firsttender", "FirstTenderAdapter"),
         ("tenderdetail", "adapters.tenderdetail", "TenderDetailAdapter"),
+        ("gem", "adapters.gem", "GeMAdapter"),
+        ("cppp", "adapters.cppp", "CPPPAdapter"),
+        ("bse", "adapters.bse", "BSEAdapter"),
+        ("nse", "adapters.nse", "NSEAdapter"),
         ("search", "adapters.search", "SearchAdapter"),
         ("hiring", "adapters.hiring", "HiringAdapter"),
+    ]
     ]
     for slug, module_path, class_name in adapter_modules:
         try:
