@@ -285,7 +285,53 @@ def country_from_url(url):
         if host.endswith(tld):
             return tlds[tld]
     return ""
+  
+def _is_foreign_url(url, allowed_countries):
+    """Hard-reject URLs whose TLD or gov structure is unambiguously foreign.
 
+    Called BEFORE trusting AI's country claim. AI sometimes hallucinates
+    "India" because the search query mentions it, even when the URL is
+    a US/UK/AU/SG/GY government site or a foreign corporate domain.
+
+    Rules:
+      - .gov / .mil (bare, no country code) → US federal → reject unless
+        USA is in allowed_countries
+      - .gov.XX → country XX's government → reject unless XX's country
+        is in allowed_countries
+      - All other URLs pass (ambiguous TLDs like .com/.org/.net need AI
+        judgment, which works most of the time — see the Belt Railway
+        note in the docstring)
+    """
+    host = urlparse(url or "").netloc.lower().replace("www.", "")
+    if not host:
+        return False
+
+    # Country-code → canonical name map (small, common cases only)
+    CC_TO_COUNTRY = {
+        "in": "india",
+        "us": "united states",
+        "uk": "united kingdom", "gb": "united kingdom",
+        "au": "australia", "ca": "canada", "sg": "singapore",
+        "za": "south africa", "gy": "guyana", "hk": "hong kong",
+        "ng": "nigeria", "ke": "kenya", "ae": "uae",
+    }
+
+    allowed_norm = {(c or "").lower().strip() for c in (allowed_countries or []) if c}
+
+    # Rule 1: bare .gov or .mil = US federal (no other country uses bare .gov)
+    if host.endswith(".gov") or host.endswith(".mil"):
+        if not ({"united states", "usa", "us"} & allowed_norm):
+            return True
+
+    # Rule 2: .gov.XX = specific country's government
+    m = re.search(r"\.gov\.([a-z]{2})$", host)
+    if m:
+        cc = m.group(1)
+        country = CC_TO_COUNTRY.get(cc, cc)
+        if country not in allowed_norm and cc not in allowed_norm:
+            return True
+
+    return False
 
 PORTAL_COUNTRY = {
     "CORP::BSE": "india",
@@ -348,6 +394,15 @@ def likely_in_target(url, snippet, target_countries, target_states, target_citie
 def apply_quality_gates(lead, allowed_countries):
     """Operates on StandardLead; returns (lead, flags)."""
     flags = []
+
+    # Hard-reject unambiguously foreign URLs BEFORE trusting AI's country
+    # claim. AI hallucinates "India" when the search query mentions it,
+    # even when the URL is a US/UK/AU/GY government site. URL evidence wins.
+    if allowed_countries and _is_foreign_url(lead.url, allowed_countries):
+        host = urlparse(lead.url).netloc.lower().replace("www.", "")
+        flags.append(f"FOREIGN URL: {host}")
+        lead.country = "Unknown (foreign URL)"
+        return lead, flags
 
     if allowed_countries:
         source_country = ""
