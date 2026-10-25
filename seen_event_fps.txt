@@ -414,3 +414,27 @@ student_blog|assignmenthelppro|50|projects|2026-03|india
 infrastructure_capex|tataconsultingengineers|||2026-08|
 marketing_article|steelbuildinfraprojectsltd|||2026-04|
 hiring civil design manager|thyssenkruppnuceraindiaprivatelimited|||2024-10|
+hiring|shapoorjipallonji|Senior BIM Engineer (Revit)|role|2026-10|india
+hiring|hitechdigital|Senior BIM Engineer (Revit)|role|2026-10|india
+hiring|yrsany|CAD / BIM Application Support Engineer|role|2026-10|india
+hiring|arup|Senior Mechanical Engineer - Data Centre|role|2026-10|mumbai
+hiring|assystem|Senior Telecom Engineer|position|2026-10|saudiarabia
+marketing|vaggroup|||2026-10|
+thought_leadership|deoredhamnearchitects|BIM Adoption in India|article|2026-10|india
+article_publication|hitechcaddservices|Top Architectural BIM Companies|article|2026-07|india
+service_catalog|p.m.gajeralwar|Commercial Design Services using AutoCAD & Revit|listing|2026-10|mumbai
+vendor_catalog|grammycommunicationspvt.ltd.|||2026-10|
+hiring|omnea|||2026-10|
+hiring|newmexicolandconservancy|||2026-10|
+rfp|thebeltrailwaycompany|||2026-10|
+tender|airportscompanysouthafrica(acsa)|||2026-10|
+vendor_content|autodesk|||2021-06|
+vendor_content|autodesk|||2026-10|
+training|nobledesktop|||2025-06|
+vendor_page|corengg|||2026-04|
+training_course|caddesk|||2026-10|
+forum_discussion|autodesk|||2020-01|
+capex_expansion|tataprojects|||2026-05|
+hiring|aristanetworks|||2026-10|
+vendor_page|arkance|||2026-10|
+training_course|nettechindia|||2026-10|
