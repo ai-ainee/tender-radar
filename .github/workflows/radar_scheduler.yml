@@ -50,6 +50,8 @@ jobs:
       BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
       JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}   # leave the secret unset to stay 100% free
+      COUNTRY_CONTEXT_SKIP_LLM: ${{ secrets.COUNTRY_CONTEXT_SKIP_LLM }}
+      MAX_RUNTIME_MIN: ${{ secrets.MAX_RUNTIME_MIN }}
       EXTRA_LLM_BASE_URL: ${{ secrets.EXTRA_LLM_BASE_URL }}
       EXTRA_LLM_API_KEYS: ${{ secrets.EXTRA_LLM_API_KEYS }}
       EXTRA_LLM_MODELS: ${{ secrets.EXTRA_LLM_MODELS }}
