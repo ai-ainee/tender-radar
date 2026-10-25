@@ -130,6 +130,27 @@ class CompanyDedup:
         "ltd", "limited", "pvt", "private", "inc", "corp",
         "corporation", "llp", "company", "the", "and", "of",
     }
+    STRUCTURAL_WORDS = {
+        # Org-structure descriptors that appear in hundreds of government
+        # and corporate names. Stripping them prevents long government names
+        # from matching generic pages that just happen to contain 2-3 of
+        # their common words.
+        # Example: without this, "Civil Aviation Department Government Of
+        # Haryana" matches any URL containing "civil"+"department"+
+        # "government" — i.e. every job board and tender aggregator.
+        "government", "department", "authority", "ministry", "bureau",
+        "office", "administration", "directorate", "commission",
+        "council", "board", "committee",
+    }
+
+    SAFE_3LETTER_ACRONYMS = {
+        # 3-letter acronyms that legitimately appear as shortcuts in
+        # tender/job/procurement text. All other 3-letter acronyms are
+        # blocked to prevent collisions — e.g., "EPC" from
+        # "Export Promotion Council" matching Engineering-Procurement-
+        # Construction text on construction-company pages.
+        "IIT", "IIM", "NIT", "IISc", "HAL", "BEL", "DRDO",
+    }
 
     def __init__(self, sheet=None, cache_file="seen_companies.txt"):
         self.known = set()          # normalized names
@@ -264,20 +285,32 @@ class CompanyDedup:
             if len(norm) >= 12 and norm in text_norm:
                 return self.originals.get(norm, norm)
 
-        # Word-overlap match — strict: 3+ shared words AND 60%+ of company
+        # Word-overlap match — strict dynamic threshold.
+        # Strips SUFFIX_WORDS + STRUCTURAL_WORDS before counting.
+        # Requires max(3, n-1) overlap where n = meaningful word count:
+        #   2 words → 3 required (impossible — skips short names)
+        #   3 words → 3 required (all must match)
+        #   4 words → 3 required (3 of 4)
+        #   5 words → 4 required (4 of 5 — kills long-name false positives)
+        #   6+ words → (n-1) required (all-but-one must match)
         text_words = set(w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", combined))
         if text_words:
             for norm, orig in self.originals.items():
                 orig_words = [w.lower() for w in re.findall(r"\b[a-zA-Z]+\b", orig)]
                 meaningful = [w for w in orig_words
-                              if w not in self.SUFFIX_WORDS and len(w) >= 4]
+                              if w not in self.SUFFIX_WORDS
+                              and w not in self.STRUCTURAL_WORDS
+                              and len(w) >= 4]
                 if len(meaningful) < 3:
                     continue
                 overlap = set(meaningful) & text_words
-                if len(overlap) >= 3 and len(overlap) / len(meaningful) >= 0.6:
+                required = max(3, len(meaningful) - 1)
+                if len(overlap) >= required:
                     return orig
 
-        # Acronym match (CPWD ↔ Central Public Works Department) — unchanged
+        # Acronym match (CPWD ↔ Central Public Works Department)
+        # 3-letter acronyms must be on the SAFE_3LETTER_ACRONYMS whitelist.
+        # 4+ letter acronyms match without restriction (they rarely collide).
         text_upper = combined.upper()
         for norm, orig in self.originals.items():
             caps_words = re.findall(r"\b[A-Z][A-Za-z]{2,}\b", orig)
@@ -289,6 +322,8 @@ class CompanyDedup:
                 continue
             for n in range(3, len(full_acronym) + 1):
                 acr = full_acronym[:n]
+                if n == 3 and acr not in self.SAFE_3LETTER_ACRONYMS:
+                    continue
                 if re.search(rf"\b{acr}\b", text_upper):
                     return orig
 
