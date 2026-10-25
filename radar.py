@@ -169,6 +169,8 @@ _TLD_FLOOR = {
     "india": [
         (".gov.in", "India"), (".nic.in", "India"), (".co.in", "India"),
         (".org.in", "India"), (".ac.in", "India"), (".net.in", "India"),
+        (".firm.in", "India"), (".gen.in", "India"), (".res.in", "India"),
+        (".ind.in", "India"),
         (".in", "India"),
     ],
     "uae": [
@@ -211,7 +213,15 @@ def generate_country_context(llm, countries):
     cache_key = "|".join(sorted(str(c).lower() for c in countries if c))
     if _COUNTRY_CTX.get("cache_key") == cache_key:
         return
-
+      
+    if os.getenv("COUNTRY_CONTEXT_SKIP_LLM", "0").strip() == "1":
+        log.info("country_context: LLM skipped (COUNTRY_CONTEXT_SKIP_LLM=1), using floor TLDs")
+        _COUNTRY_CTX["aliases"] = {str(c).lower(): {str(c).lower()} for c in countries if c}
+        _COUNTRY_CTX["tlds"] = {}
+        _COUNTRY_CTX["cache_key"] = cache_key
+        _add_floor_tlds(countries)
+        return
+  
     country_list = "\n".join(f"- {c}" for c in countries if c)
     prompt = f"""For each country below return aliases and TLDs.
 Countries:
@@ -407,7 +417,37 @@ def load_settings(sheet):
         "job_portals": [k.lower().strip() for k in _as_list(s.get("job_portals"))],
         "api_keys": s.get("api_keys") or {},
     }
+  
+# ── Vendor self-reference check ───────────────────────────────────────
+def _is_vendor_self_reference(org, url):
+    """True when the extracted org name matches the URL host's brand.
 
+    Used to distinguish two cases on a vendor-domain URL:
+      - Self-reference (autodesk.com/... extracted as "Autodesk") -> SELLER
+      - Case study (autodesk.com/... extracted as "Shapoorji Pallonji") -> BUYER
+
+    The brand is taken from the second-to-last hostname label, so
+    "www.autodesk.com" -> "autodesk", "www.imaginit.com" -> "imaginit",
+    "autodesk-university.autodesk.com" -> "autodesk".
+
+    The org name is flattened (lowercase, no spaces/punctuation) before
+    comparison so "BIM Arcavion", "bim arcavion", and "Bim-Arcavion" all
+    match the "arcavion" brand from "bim-arcavion.com".
+    """
+    if not org or not url:
+        return False
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    host = host.replace("www.", "")
+    parts = host.split(".")
+    if len(parts) < 2:
+        return False
+    brand = parts[-2].lower()
+    org_flat = re.sub(r"[^a-z0-9]", "", org.lower())
+    return bool(brand) and brand in org_flat
+  
 # ── AI Evaluator ──────────────────────────────────────────────────────
 def _valid_verdicts(d):
     if isinstance(d, list):
@@ -429,8 +469,9 @@ def map_verdicts(verdicts, n):
         if idx is None or not 0 <= idx < n or idx in out:
             continue
         out[idx] = v
+    if len(out) < n:
+        log.warning(f"[ai-partial] AI returned {len(out)} verdict(s) for {n} lead(s) — {n - len(out)} will be silently dropped")
     return out
-
 
 def _format_lead(lead, idx, max_chars=3000):
     parts = [f"--- ITEM {idx} ---"]
@@ -639,17 +680,25 @@ class Router:
             lead.why_engage_now = "[AGGREGATE/REPORT] " + str(lead.why_engage_now or "")
             is_valid = False
 
-        # ── NEW: Vendor domain detection ────────────────────────────────
-        # If URL is on a vendor's own domain, force SELLER role → Partners.
+        # ── Vendor domain detection (with case-study exception) ─────────
+        # If URL is on a vendor's own domain, force SELLER role → Partners,
+        # UNLESS the extracted org is not the vendor itself. Vendor case
+        # studies (autodesk.com/customer-stories/shapoorji) mention real
+        # buyers and must not be lost.
         vendor_hit = _is_vendor_domain(lead.url)
         if vendor_hit:
-            log.info(f"[VENDOR-DEMOTE] {lead.url[:70]} → Partners")
-            lead.entity_role = "SELLER"
-            lead.genuineness = "RESELLER"
-            lead.is_valid = True
-            is_valid = True
-            role = "SELLER"
-            confidence = "LOW"
+            if _is_vendor_self_reference(lead.buyer_org, lead.url):
+                log.info(f"[VENDOR-DEMOTE] {lead.url[:70]} → Partners (self-reference)")
+                lead.entity_role = "SELLER"
+                lead.genuineness = "RESELLER"
+                lead.is_valid = True
+                is_valid = True
+                role = "SELLER"
+                confidence = "LOW"
+            else:
+                log.info(f"[VENDOR-CASE-STUDY] {lead.url[:60]} — buyer '{lead.buyer_org}' is not the vendor; preserving AI role")
+                # Buyer survives — AI's entity_role, genuineness and
+                # confidence stay exactly as the evaluator returned them.
 
         # ── NEW: Content page detection ─────────────────────────────────
         # If URL is a blog/article/resources page, downgrade confidence
@@ -789,6 +838,7 @@ def main():
     t0 = datetime.now()
     tg = Telegram()
     log.info("=== Radar Scout V3 starting ===" + (" (DRY RUN)" if DRY_RUN else ""))
+    max_runtime = env_int("MAX_RUNTIME_MIN", 60) * 60
 
     try:
         sheet = SheetAPI()
@@ -861,7 +911,7 @@ def main():
         "gate_budget": 0,
         "evaluated": 0,
         "inbox": 0, "review": 0, "partners": 0, "dupes": 0, "failed": 0,
-        "ai_rejected": 0,
+        "ai_rejected": 0, "ai_skipped": 0,
     }
 
     for lead in all_leads:
@@ -903,6 +953,11 @@ def main():
     ai_failures = 0
 
     for i in range(0, len(filtered), AI_BATCH):
+        if time.time() - started > max_runtime:
+            remaining = len(filtered) - i
+            stats["ai_skipped"] = remaining
+            log.warning(f"[ai-budget] Time budget of {max_runtime // 60}min reached — skipping remaining {remaining} lead(s); will be picked up next run")
+            break
         batch = filtered[i:i+AI_BATCH]
         all_targets = " OR ".join(cfg["targets"]) if cfg["targets"] else "Any Commercial Software"
         all_directives = " OR ".join(cfg["directives"]) if cfg["directives"] else ""
@@ -928,6 +983,7 @@ def main():
         for idx, lead in enumerate(batch):
             verdict = vmap.get(idx)
             if verdict is None:
+                log.info(f"[ai-drop] no verdict for {lead.url[:80]} (buyer={lead.buyer_org or '?'})")
                 mark_seen(seen, lead.url)
                 mark_fp(fps, _fingerprint(lead.raw_text))
                 continue
@@ -974,6 +1030,8 @@ def main():
         f"• Duplicates: {stats['dupes']} • AI rejected: {stats['ai_rejected']}",
         f"• Duration: <code>{duration}</code>",
     ]
+    if stats.get("ai_skipped"):
+        lines.append(f"• ⏱ Skipped by time budget: {stats['ai_skipped']} lead(s)")
     tg.send("\n".join(lines))
     return 0
 
