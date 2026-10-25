@@ -438,3 +438,31 @@ capex_expansion|tataprojects|||2026-05|
 hiring|aristanetworks|||2026-10|
 vendor_page|arkance|||2026-10|
 training_course|nettechindia|||2026-10|
+hiring|technologiespvt|Revit Modeler / Draughtsman|role|2026-10|india
+hiring|faridabadlambdabuildtechprivate|AutoCAD Designer|role|2026-10|faridabad
+hiring|softwareassetmanager|Software Asset Manager|role|2026-10|india
+hiring|envisiontechnology|Software Asset Manager|role|2026-10|india
+hiring|xldynamicsindiapvt|Autodesk Application Support Engineer|role|2026-10|india
+vendor_marketing|autodesk|||2026-10|
+service_offering|kanishdesignstudio|||2026-10|
+service_offering|axisedgeengineers|||2026-10|
+blog_article|fibrox3d|||2026-10|
+vendor_listing|foxrunadvisorsprivatelimited|||2026-10|
+hiring|accenture|Technology Architect|job_role|2026-10|bengaluru,karnataka,india
+capex|crownworldwidegroup|135000|sq_ft|2026-10|siwari,haryana,india
+content_marketing|autodesk|||2021-01|
+blog_post|virtualbuildingstudioinc.|||2023-10|
+marketing_page|riseinfraventures|||2026-10|
+hiring|josephengineeringservices|Senior Manager BIM Modeler|position|2026-08|hyderabad_telangana_india
+hiring|black&greyhr|5-10 years|experience|2026-04|bengaluru
+terms|trimble|||2026-10|
+vendor_page|tankarsolutions|||2026-10|
+tender|indianinstituteofinformationtechnologydesignandmanufacturing|2026_IITDM_925420_1|tender|2026-10|kanchipuram
+marketplace|indiamart|||2026-10|
+webinar|cad+tsolutions|||2026-11|
+documentation|autodesk|||2026-10|
+capex|ahtanumirrigationdistrict|||2026-10|
+news|aecdaily|||2026-10|
+membership|lotnetwork|||2026-10|
+capex|stahmannfarms|||2026-10|
+rfq|cityofindianharbourbeach|||2026-06|
