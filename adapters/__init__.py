@@ -359,14 +359,13 @@ def reset():
 
 def _auto_register():
     adapter_modules = [
-        ("firsttender", "adapters.firsttender", "FirstTenderAdapter"),
-        ("tenderdetail", "adapters.tenderdetail", "TenderDetailAdapter"),
-        ("gem", "adapters.gem", "GeMAdapter"),
-        ("cppp", "adapters.cppp", "CPPPAdapter"),
-        ("bse", "adapters.bse", "BSEAdapter"),
-        ("nse", "adapters.nse", "NSEAdapter"),
-        ("search", "adapters.search", "SearchAdapter"),
-        ("hiring", "adapters.hiring", "HiringAdapter"),
+        ("discovery", "adapters.discovery", "DiscoveryAdapter"),
+        ("hiring",    "adapters.hiring",    "HiringAdapter"),
+        # Future category adapters:
+        # ("tenders", "adapters.tenders", "TendersAdapter"),
+        # ("filings", "adapters.filings", "FilingsAdapter"),
+        # ("news",    "adapters.news",    "NewsAdapter"),
+        # ("company", "adapters.company", "CompanyAdapter"),
     ]
     for slug, module_path, class_name in adapter_modules:
         try:
