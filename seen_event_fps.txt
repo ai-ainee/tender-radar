@@ -546,3 +546,27 @@ hiring|tataconsultingengineerslimited|||2026-10|
 hiring|tataconsultingengineerslimited|1,200,000 - 2,100,000|inr|2026-10|pune
 hiring|bain&company|||2026-10|
 hiring|capgemini|||2026-10|
+hiring|mnrsolutionspvt.ltd.|Sales Specialist - CAD/CAM|job_role|2026-10|hyderabad
+taxonomy_listing|o*netonline|CAD software skills classification|database|2026-10|us
+hiring|nerdery|Principal Software Engineer|job_role|2026-10|us
+service_offering|gomeasure3d|3D scanning and reverse engineering services|services|2026-10|us
+tender|irrigationandcaddepartment,governmentoftelangana|Irrigation department tender|tender|2026-10|telangana
+blog_post|engineriotechnologysolutions|||2026-10|
+vendor_blog_post|actcad|||2026-10|
+job_hiring|schneiderelectric|||2026-10|
+vendor_site|sravaniinfotech|||2026-10|
+hiring_agency|antalinternational|||2026-10|
+hiring|siemensenergyindustrialturbomachineryindiaprivatelimited|304599|position|2026-10|ahmedabad
+training_course|caddeskindia|||2026-10|
+tender|governmentdepartmentschhattisgarh|57989518|tender|2026-10|chhattisgarh
+training_reseller|khodiyarcadcenter|||2026-10|
+training_course|cantercadd|||2026-10|
+blog_post|caddex_india|||2026-09|
+course_offering|cadd_centre|||2026-10|
+content_marketing|nuberg_epc|||2026-10|
+blog_post|ace_renewtech|||2025-11|
+blog_post|shrimangal_buildcon|||2026-10|
+market_report|efc_india|||2026-07|
+hiring|seniorai|Senior CAD Design Engineer|role|2026-10|india
+hiring|speedengineering|Senior CAD Design Engineer|role|2026-10|india
+hiring|dataarchitecture|Senior CAD Design Engineer|role|2026-10|india
