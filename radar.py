@@ -465,6 +465,43 @@ def _classify_gates(gate_flags):
     return soft, hard
 
 # ── Utilities ─────────────────────────────────────────────────────────
+HALLUCINATED_COMPANY_PATTERNS = (
+    # Job-board filler text that AI sometimes extracts as company names.
+    # These appear in naukri.com titles like "Senior BIM Engineer - Yrs Any"
+    # where "Yrs Any" is the years-of-experience field, not a company.
+    "yrs any", "yrs: any", "yrs-any", "yrs. any",
+    "years any", "years: any", "years-any",
+    "any experience", "experience any",
+    "not disclosed", "not disclosed.", "not disclosed;",
+    "company name", "company confidential", "company: confidential",
+    "mnc", "mnc client", "mnc company", "reputed mnc",
+    "reputed company", "leading company", "leading client",
+    "client of", "for client", "for a client",
+    # Aggregate labels that keep slipping through
+    "various companies", "multiple companies", "multiple firms",
+    "various firms", "various clients", "multiple clients",
+    # Known persistent hallucinations
+    "3d concept analysis", "yrs",  # bare "yrs" as last resort
+    # Placeholders
+    "unknown", "unknown company", "unidentified",
+)
+
+def _is_hallucinated_company(*texts):
+    """Return True if any text matches a known hallucination pattern.
+
+    Called before AI evaluation to short-circuit leads whose title or
+    raw_text contains obvious non-company strings. Saves AI quota and
+    prevents these leads from reaching the routing layer.
+    """
+    for t in texts:
+        if not t:
+            continue
+        low = str(t).lower()
+        for pattern in HALLUCINATED_COMPANY_PATTERNS:
+            if pattern in low:
+                return True
+    return False
+
 def _as_list(value):
     if value is None:
         return []
@@ -714,6 +751,53 @@ BATCH:
             data = data.get("leads") if isinstance(data.get("leads"), list) else [data]
         return data
 
+    def evaluate_with_retry(self, batch, targets_str, directives_str, industries_str,
+                            country, states, geo_rule, ban_rule, special="",
+                            max_retries=2):
+        """Run evaluate(); if AI returns partial verdicts, retry only the
+        missing indices. Returns a dict {batch_index: verdict} that covers
+        every lead in `batch` — or as many as retries could recover.
+
+        Recovers leads silently lost when the LLM truncates its JSON array
+        or returns fewer items than requested (see [ai-partial] warnings).
+        """
+        n = len(batch)
+        recovered = {}
+        pending_indices = list(range(n))
+
+        for attempt in range(max_retries + 1):
+            if not pending_indices:
+                break
+
+            if attempt == 0:
+                sub_batch = batch
+                original_indices = list(range(n))
+            else:
+                sub_batch = [batch[i] for i in pending_indices]
+                original_indices = list(pending_indices)
+
+            verdicts = self.evaluate(
+                sub_batch, targets_str, directives_str, industries_str,
+                country, states, geo_rule, ban_rule, special,
+            )
+
+            if verdicts is None:
+                if attempt < max_retries:
+                    log.info(f"[ai-retry {attempt + 1}/{max_retries}] all providers failed; retrying {len(pending_indices)} lead(s)")
+                    continue
+                break
+
+            partial = map_verdicts(verdicts, len(sub_batch))
+            for local_idx, v in partial.items():
+                global_idx = original_indices[local_idx]
+                recovered[global_idx] = v
+
+            still_missing = [i for i in pending_indices if i not in recovered]
+            if still_missing and attempt < max_retries:
+                log.info(f"[ai-retry {attempt + 1}/{max_retries}] {len(still_missing)} verdict(s) still missing; retrying")
+            pending_indices = still_missing
+
+        return recovered
 
 # ── Router ────────────────────────────────────────────────────────────
 class Router:
@@ -857,6 +941,23 @@ class Router:
         )
         if score_override:
             log.info(f"[SCORE-OVERRIDE] {lead.buyer_org} score={score_num} — HIRING_SIGNAL with strong score → Inbox")
+        # Confidence override — LOW confidence is not the same as "reject".
+        # A real buyer with a real signal and score >= 70 deserves Inbox even
+        # when the AI wasn't fully certain. Example: GSAS Micro Systems at
+        # 70/100 with a manufacturing facility inauguration signal went to
+        # Review only because AI tagged confidence=LOW. Blocks: role != buyer,
+        # any gate flag (gates get priority), stale freshness, score < 70.
+        confidence_override = (
+            is_valid
+            and role in ("BUYER", "PROJECT_BUYER")
+            and confidence == "LOW"
+            and gate_ok                     # no gate flags at all
+            and freshness != "STALE"
+            and score_num >= 70
+            and not score_override          # Group D would already handle this
+        )
+        if confidence_override:
+            log.info(f"[CONFIDENCE-OVERRIDE] {lead.buyer_org} score={score_num} — LOW confidence but clean pass → Inbox")
 
         reason = "valid_high"
         capture = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -881,6 +982,13 @@ class Router:
         elif score_override:
             sheet_name, outcome, reason = SHEET_INBOX, "INBOX", "score_override"
             why = f"[SOFT-OVERRIDE: HIRING_SIGNAL @ {score_num}/100] " + why
+            row = [capture, lead.upcoming_events or "Unknown", role, industry,
+                   lead.state or "N/A", lead.city or "N/A",
+                   lead.buyer_org, solution, why, lead.url,
+                   lead.product_usage or "Unknown", "", lead_id]
+        elif confidence_override:
+            sheet_name, outcome, reason = SHEET_INBOX, "INBOX", "confidence_override"
+            why = f"[CONFIDENCE-OVERRIDE: LOW @ {score_num}/100] " + why
             row = [capture, lead.upcoming_events or "Unknown", role, industry,
                    lead.state or "N/A", lead.city or "N/A",
                    lead.buyer_org, solution, why, lead.url,
@@ -1030,7 +1138,7 @@ def main():
         "gate_tender_dupe": 0,
         "gate_url_seen": 0,
         "gate_fp_dupe": 0,
-        "gate_budget": 0,
+        "gate_budget": 0, "gate_hallucination": 0,
         "evaluated": 0,
         "inbox": 0, "review": 0, "partners": 0, "dupes": 0, "failed": 0,
         "ai_rejected": 0, "ai_skipped": 0,
@@ -1039,6 +1147,11 @@ def main():
     for lead in all_leads:
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
+            continue
+        # Hallucination filter — runs BEFORE AI eval to save quota
+        if _is_hallucinated_company(lead.title or "", lead.raw_text or ""):
+            stats["gate_hallucination"] = stats.get("gate_hallucination", 0) + 1
+            log.info(f"[PRECHECK-HALLUC] {lead.url[:80]} — title/snippet contains known filler")
             continue
         if lead.tender_id and lead.tender_id.upper() in tender_ids:
             stats["gate_tender_dupe"] += 1
@@ -1086,13 +1199,15 @@ def main():
         all_industries = " OR ".join(cfg["industries"]) if cfg["industries"] else ""
 
         log.info(f"[ai] Evaluating batch {i//AI_BATCH + 1} ({len(batch)} leads)")
-        verdicts = evaluator.evaluate(batch, all_targets, all_directives,
-                                       all_industries, country, states,
-                                       geo_rule, ban_rule, special)
+        vmap = evaluator.evaluate_with_retry(
+            batch, all_targets, all_directives,
+            all_industries, country, states,
+            geo_rule, ban_rule, special,
+        )
 
-        if verdicts is None:
+        if not vmap:
             ai_failures += 1
-            log.warning(f"[ai] batch failed (attempt {ai_failures})")
+            log.warning(f"[ai] batch failed completely (attempt {ai_failures})")
             for lead in batch:
                 mark_seen(seen, lead.url)
             if ai_failures >= 4:
@@ -1101,7 +1216,6 @@ def main():
             continue
 
         ai_failures = 0
-        vmap = map_verdicts(verdicts, len(batch))
         for idx, lead in enumerate(batch):
             verdict = vmap.get(idx)
             if verdict is None:
