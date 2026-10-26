@@ -76,10 +76,29 @@ def _extract_companies_from_text(text, role, max_companies=8):
         for m in re.finditer(pat, text, re.I | re.M):
             name = m.group(1).strip()
             name = re.sub(r"\s+", " ", name)[:80]
-            bad = {"the", "a", "an", "this", "that", "we", "our", "your", "apply",
-                   "job", "role", "position", "hiring", "company", "employer"}
-            if (name and len(name) >= 4 and name.lower() not in bad
-                    and not name.lower().startswith(("apply", "click", "view", "read"))):
+            bad = {
+                "the", "a", "an", "this", "that", "we", "our", "your", "apply",
+                "job", "role", "position", "hiring", "company", "employer",
+                # Navigation / cookie-consent artifacts (from real runs):
+                "login", "info", "enterprise", "read", "click", "view",
+                "cookies", "privacy", "terms", "policy", "menu", "search",
+                "submit", "cancel", "close", "next", "previous",
+                # Placeholder extraction artifacts:
+                "we can remember you", "understand how you interact",
+                "are currently hidden", "currently hidden", "hidden",
+                "you need to have", "are prevalent", "prevalent in the industry",
+            }
+            BAD_PHRASES = (
+                "we can remember", "understand how you interact",
+                "are currently hidden", "you need to have",
+                "are prevalent", "cookie", "privacy policy",
+                "terms and conditions", "sign in", "sign up",
+            )
+            name_low = name.lower()
+            if (name and len(name) >= 4 and name_low not in bad
+                    and not name_low.startswith(("apply", "click", "view", "read", "login", "sign"))
+                    and not any(p in name_low for p in BAD_PHRASES)
+                    and len(name.split()) >= 1):
                 companies.add(name)
             if len(companies) >= max_companies:
                 break
@@ -191,7 +210,7 @@ class HiringAdapter(SourceAdapter):
     def _fetch_indeed(self, role_pairs, settings):
         leads = []
         for role, product in role_pairs:
-            url = f"https://rss.indeed.com/rss?q={quote_plus(role)}&l=India"
+            url = f"https://www.indeed.co.in/rss?q={quote_plus(role)}&l=India"
             body = _http_get(url, timeout=20)
             if not body or "<item>" not in body:
                 continue
@@ -312,34 +331,10 @@ class HiringAdapter(SourceAdapter):
 
     # ── Foundit (HTML scrape — best-effort) ──────────────────────────
     def _fetch_foundit(self, role_pairs, settings):
-        leads = []
-        for role, product in role_pairs:
-            url = f"https://www.foundit.in/srp/results?query={quote_plus(role)}&locations=India"
-            try:
-                content = fetch_page(url, max_chars=12000)
-            except Exception:
-                continue
-            if not content or len(content) < 200:
-                continue
-            companies = _extract_companies_from_text(content, role, 8)
-            for company in companies:
-                leads.append(StandardLead(
-                    source="hiring",
-                    category="hiring",
-                    url=url,
-                    title=role,
-                    raw_text=f"{role} hiring at {company}",
-                    buyer_org=company[:200],
-                    country="India",
-                    metadata={
-                        "internal_source": "foundit",
-                        "role": role,
-                        "target_product": product,
-                        "is_job_url": True,
-                        "fetch_method": "html_scrape",
-                    },
-                ))
-        return leads
+        """Disabled — Foundit search pages return pure navigation/cookie text.
+        Extractor produced junk ('Login', 'Info', 'We Can Remember You').
+        Re-enable only if you find a reliable structured endpoint."""
+        return []
 
     # ── LinkedIn (stub — needs paid API or RSSHub proxy) ─────────────
     def _fetch_linkedin(self, role_pairs, settings):
