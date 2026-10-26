@@ -361,8 +361,8 @@ def _auto_register():
     adapter_modules = [
         ("discovery", "adapters.discovery", "DiscoveryAdapter"),
         ("hiring",    "adapters.hiring",    "HiringAdapter"),
+        ("tenders", "adapters.tenders", "TendersAdapter"),
         # Future category adapters:
-        # ("tenders", "adapters.tenders", "TendersAdapter"),
         # ("filings", "adapters.filings", "FilingsAdapter"),
         # ("news",    "adapters.news",    "NewsAdapter"),
         # ("company", "adapters.company", "CompanyAdapter"),
