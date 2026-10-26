@@ -176,35 +176,18 @@ class HiringAdapter(SourceAdapter):
 
     # ── Naukri (existing scraper — working) ──────────────────────────
     def _fetch_naukri(self, role_pairs, settings):
-        if not _HAS_NAUKRI:
-            return self._stub("naukri", "hiring_signals not importable")
-        leads = []
-        for role, product in role_pairs:
-            try:
-                companies = search_naukri(role, max_results=8)
-            except Exception as e:
-                log.debug(f"[hiring:naukri] '{role}': {str(e)[:80]}")
-                continue
-            slug = _slug(role)
-            for company in companies or []:
-                if not isinstance(company, str) or len(company) < 4:
-                    continue
-                leads.append(StandardLead(
-                    source="hiring",
-                    category="hiring",
-                    url=f"https://www.naukri.com/{slug}-jobs",
-                    title=role,
-                    raw_text=f"{role} hiring at {company}",
-                    buyer_org=company[:200],
-                    country="India",
-                    metadata={
-                        "internal_source": "naukri",
-                        "role": role,
-                        "target_product": product,
-                        "is_job_url": True,
-                    },
-                ))
-        return leads
+        """Disabled — Naukri search pages are React SPA and JS-rendered.
+        Raw HTML from fetch_page has no company names → returns 0 leads.
+
+        Naukri production requires Playwright (we removed it to save 15 min/run)
+        or the unofficial JSON API (jobapi/v3/search — untested, may be blocked).
+
+        Current state: 0 leads from 30-60s of runtime per run = pure waste.
+        Re-enable only if:
+          • Playwright is added back AND cached (see portal_crawler.py notes)
+          • OR you verify the JSON API endpoint works from a datacenter IP
+        """
+        return []
 
     # ── Indeed India (RSS — genuine free, structured) ────────────────
     def _fetch_indeed(self, role_pairs, settings):
