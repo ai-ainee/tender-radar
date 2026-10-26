@@ -117,7 +117,7 @@ jobs:
           git config user.name "Radar Scout Bot"
           git config user.email "bot@radarscout.local"
           # add only the files that exist (one missing path would make `git add` stage nothing)
-          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt seen_companies.txt enrich_attempts.json; do
+          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt enrich_attempts.json; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
           if git diff --cached --quiet; then
