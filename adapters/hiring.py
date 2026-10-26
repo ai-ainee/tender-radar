@@ -61,47 +61,70 @@ def _slug(s):
 
 
 def _extract_companies_from_text(text, role, max_companies=8):
-    """Extract company names from job listing text using regex patterns."""
+    """Extract company names from job listing text.
+
+    Balanced filter — rejects obvious junk (cookie text, nav links,
+    single-word artifacts) without over-filtering legitimate company
+    names that contain words like 'enterprise', 'info', or 'systems'.
+    """
     if not text:
         return []
     companies = set()
-    role_esc = re.escape(role.lower()[:40])
 
     patterns = [
         r"(?:at|@)\s+([A-Z][A-Za-z0-9&.\s]{2,50}(?:Ltd|Limited|Pvt|Private|Inc|Corp|LLP|Technologies|Solutions|Systems|Engineering|Group|Enterprises)?)",
         r"([A-Z][A-Za-z0-9&.\s]{2,50}(?:Ltd|Limited|Pvt|Private|Inc|Corp|LLP|Technologies|Solutions|Systems|Engineering|Group|Enterprises))\s+(?:is\s+)?hiring",
         r"(?:Company|Employer|Organization)[:\s]+([A-Z][A-Za-z0-9&.\s]{3,50})",
     ]
+
+    # Single-word-only junk. Only rejects names that are EXACTLY these words
+    # (not names that contain them). "Enterprise" alone is rejected but
+    # "Enterprise Holdings" passes.
+    SINGLE_WORD_JUNK = {
+        "the", "a", "an", "this", "that", "we", "our", "your",
+        "apply", "job", "role", "position", "hiring", "company", "employer",
+        "login", "info", "home", "menu", "search", "next", "previous",
+        "view", "read", "click", "submit", "cancel", "close", "enterprise",
+    }
+
+    # Multi-word phrases indicating cookie/nav text (not a company).
+    # These are so distinctive that any occurrence disqualifies the match.
+    NAV_PHRASES = (
+        "we can remember you",
+        "understand how you interact",
+        "are currently hidden",
+        "you need to have",
+        "are prevalent in the industry",
+    )
+
     for pat in patterns:
         for m in re.finditer(pat, text, re.I | re.M):
             name = m.group(1).strip()
             name = re.sub(r"\s+", " ", name)[:80]
-            bad = {
-                "the", "a", "an", "this", "that", "we", "our", "your", "apply",
-                "job", "role", "position", "hiring", "company", "employer",
-                # Navigation / cookie-consent artifacts (from real runs):
-                "login", "info", "enterprise", "read", "click", "view",
-                "cookies", "privacy", "terms", "policy", "menu", "search",
-                "submit", "cancel", "close", "next", "previous",
-                # Placeholder extraction artifacts:
-                "we can remember you", "understand how you interact",
-                "are currently hidden", "currently hidden", "hidden",
-                "you need to have", "are prevalent", "prevalent in the industry",
-            }
-            BAD_PHRASES = (
-                "we can remember", "understand how you interact",
-                "are currently hidden", "you need to have",
-                "are prevalent", "cookie", "privacy policy",
-                "terms and conditions", "sign in", "sign up",
-            )
-            name_low = name.lower()
-            if (name and len(name) >= 4 and name_low not in bad
-                    and not name_low.startswith(("apply", "click", "view", "read", "login", "sign"))
-                    and not any(p in name_low for p in BAD_PHRASES)
-                    and len(name.split()) >= 1):
-                companies.add(name)
+            if not name or len(name) < 4:
+                continue
+            name_low = name.lower().strip()
+
+            # Reject single-word junk (exact match only)
+            if name_low in SINGLE_WORD_JUNK:
+                continue
+
+            # Reject distinctive cookie/nav phrases
+            if any(p in name_low for p in NAV_PHRASES):
+                continue
+
+            # Reject names starting with nav-style verbs
+            if name_low.startswith(("apply now", "read more", "click here",
+                                   "view details", "login to", "sign in",
+                                   "submit application", "send message")):
+                continue
+
+            companies.add(name)
             if len(companies) >= max_companies:
                 break
+        if len(companies) >= max_companies:
+            break
+
     return list(companies)[:max_companies]
 
 
