@@ -603,3 +603,25 @@ content|autodesk|||2023-12|
 hiring|jll|||2026-10|
 hiring|alghanimindustries|||2026-10|
 hiring|exchanger|||2026-10|
+order_win|southeasterncoalfieldslimited|151.56|cr inr|2026-10|chhattisgarh
+article|gdipartners|||2026-10|
+vendor_page|rites|||2026-10|
+rfq|soulvision|50|users|2023-01|bangalore
+tender|unops|||2024-08|
+vendor empanelment|nationalresearchdevelopmentcorporation|||2026-10|
+service_provider|rcadindia|||2026-10|
+blog_post|autodesk|||2024-12|
+blog_post|esri|||2025-11|
+blog_post|autodesk|||2023-11|
+blog_post|autodesk|||2023-07|
+blog_post|autodesk|||2024-07|
+blog_post|autodesk|||2019-02|
+vendor content|autodesk|||2021-08|
+vendor content|autodesk|||2022-03|
+vendor content|autodesk|||2018-08|
+vendor content|autodesk|||2020-11|
+vendor content|autodesk|||2024-12|
+vendor content|autodesk|||2021-03|
+marketing|autodesk|||2024-12|
+marketing|autodesk|||2021-04|
+marketing|autodesk|||2018-11|
