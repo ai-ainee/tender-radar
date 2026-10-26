@@ -540,3 +540,9 @@ training_institute|cadcenter||||
 hiring|reciengineering|Structural engineer|vacancy|2024-01|navimumbai
 service_marketing|hireandbuild|||2026-09|
 hiring|reciengineeringpvtltd|Associate Structural Engineer|position|2026-10|navimumbai
+rfp|indianinstituteoftechnologybhilai|300000|inr|2026-10|durg,chhattisgarh
+hiring|schneiderelectric|||2026-10|
+hiring|tataconsultingengineerslimited|||2026-10|
+hiring|tataconsultingengineerslimited|1,200,000 - 2,100,000|inr|2026-10|pune
+hiring|bain&company|||2026-10|
+hiring|capgemini|||2026-10|
