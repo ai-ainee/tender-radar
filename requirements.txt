@@ -13,4 +13,3 @@ dnspython
 ddgs
 aiohttp
 duckduckgo-search>=6.3.0
-playwright
