@@ -1,6 +1,5 @@
 """adapters/discovery.py — Search + aggregator sources, self-contained.
 
-
 Consolidates all free discovery sources into one category adapter:
 
   • firsttender.com      (aggregator, search + page fetch)
@@ -8,19 +7,10 @@ Consolidates all free discovery sources into one category adapter:
   • serper               (4-track query generator; SearchEngine internally
                           tries Serper → Brave → DuckDuckGo automatically)
   • google_news_rss      (Google News search RSS — unlimited free)
-  • bing_news_rss        (Bing News search RSS — unlimited free)
+  • bing_news_rss        (DISABLED — returned 0, feed unreliable)
 
-The registry sees ONE adapter: DiscoveryAdapter. Internally it runs the
-five sources sequentially, each in its own try/except so one failure does
-not kill the others.
-
-Search API coverage (all used internally by SearchEngine, no extra code):
-  - Serper  (2,500 lifetime queries — scarce)
-  - Brave   (2,000/month — reliable)
-  - DDGS    (unlimited, fragile — free fallback)
-
-The two RSS sources do NOT consume any search API quota. They're pure
-HTTP GETs against public news RSS feeds and can run at any volume.
+All queries and filters are product-agnostic — driven entirely by
+`target_products` from Settings. No hardcoded industry names anywhere.
 """
 import hashlib
 import os
@@ -34,7 +24,6 @@ from common import (SearchEngine, clean_url, env_int, fetch_page, log)
 from standard_lead import StandardLead
 from adapters import SourceAdapter, register, normalize_company_name
 
-# ── Tender ID extraction (optional — graceful if tender_utils missing) ──
 try:
     from tender_utils import extract_tender_id, tender_id_from_url
     _HAS_TENDER_UTILS = True
@@ -52,7 +41,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# RSS helpers (used by google_news + bing_news)
+# RSS helpers
 # ═══════════════════════════════════════════════════════════════════════
 def _http_get(url, timeout=15, max_bytes=1_500_000):
     """Plain HTTP GET with UA. Returns text or '' on any error."""
@@ -99,8 +88,47 @@ def _parse_rss_items(xml_text, keywords, source_name):
     return out
 
 
+def _looks_like_vendor_announcement(title, target_products):
+    """Product-agnostic check for vendor press releases.
+
+    Detects:
+      1. Title STARTS with a target product name
+         "Revit 2027 release notes" → vendor
+         "Autodesk announces Q3 results" → vendor
+
+      2. Title contains vendor-announcement verbs near the start
+         "release notes", "unveils", "what's new in", "webinar:", etc.
+
+    Works for ANY industry — driven entirely by target_products from
+    Settings. Change target_products to "SAP ERP" and the filter
+    automatically starts detecting SAP press releases instead.
+    """
+    title_low = (title or "").lower().strip()
+    for t in target_products:
+        t_low = str(t).lower().strip()
+        if not t_low:
+            continue
+        if title_low.startswith(t_low + " ") or title_low.startswith(t_low + ":"):
+            return True
+        first = t_low.split()[0]
+        if len(first) >= 4 and (title_low.startswith(first + " ") or title_low.startswith(first + ":")):
+            return True
+
+    VENDOR_VERBS = (
+        "release notes", "announces", "now available", "product update",
+        "version ", "launches new", "unveils", "general availability",
+        "what's new in", "release:", "webinar:", "tutorial:",
+        "how to use", "getting started with", "tutorial for",
+        "case study:", "success story:", "whitepaper:",
+    )
+    head = title_low[:120]
+    if any(verb in head for verb in VENDOR_VERBS):
+        return True
+    return False
+
+
 # ═══════════════════════════════════════════════════════════════════════
-# Query generator (unchanged)
+# Query generator
 # ═══════════════════════════════════════════════════════════════════════
 class QueryGenerator:
     def __init__(self, target, industry, country, states, llm,
@@ -214,7 +242,7 @@ Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Aggregator hint extraction (unchanged)
+# Aggregator hint extraction
 # ═══════════════════════════════════════════════════════════════════════
 def _extract_hints(text):
     hints = {}
@@ -256,7 +284,7 @@ def _extract_hints(text):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Filters (unchanged)
+# Filters
 # ═══════════════════════════════════════════════════════════════════════
 BLOCKED_HOSTS_PERMANENT = (
     "gem.gov.in", "bidplus.gem.gov.in", "mkp.gem.gov.in",
@@ -343,8 +371,8 @@ class DiscoveryAdapter(SourceAdapter):
             ("firsttender",    self._fetch_firsttender),
             ("tenderdetail",   self._fetch_tenderdetail),
             ("serper",         self._fetch_serper),
-            ("google_news",    self._fetch_google_news),   # NEW
-            ("bing_news",      self._fetch_bing_news),     # NEW
+            ("google_news",    self._fetch_google_news),
+            ("bing_news",      self._fetch_bing_news),
         ]:
             try:
                 results = fetcher(settings)
@@ -354,7 +382,7 @@ class DiscoveryAdapter(SourceAdapter):
                 log.warning(f"[discovery] {source_name}: ERROR {str(e)[:120]}")
         return leads
 
-    # ── Aggregator fetchers (unchanged) ──────────────────────────────
+    # ── Aggregator fetchers ──────────────────────────────────────────
     def _fetch_aggregator(self, settings, domain, source_name):
         targets = settings.get("targets") or []
         states = settings.get("states") or []
@@ -432,7 +460,7 @@ class DiscoveryAdapter(SourceAdapter):
     def _fetch_tenderdetail(self, settings):
         return self._fetch_aggregator(settings, "tenderdetail.com", "tenderdetail")
 
-    # ── Serper (unchanged) ──────────────────────────────────────────
+    # ── Serper ──────────────────────────────────────────────────────
     def _fetch_serper(self, settings):
         cfg = settings
         special = cfg.get("special_prompt") or ""
@@ -612,37 +640,35 @@ class DiscoveryAdapter(SourceAdapter):
                  f"{tender_id_hits} tender ID(s) extracted")
         return leads
 
-    # ── NEW: Google News RSS ────────────────────────────────────────
+    # ── Google News RSS (Fix B applied) ─────────────────────────────
     def _fetch_google_news(self, settings):
-        """Google News search RSS — free, unlimited, no API key.
-
-        Filter matches ANY meaningful word from target (not the full
-        phrase) — previously rejected most results because titles rarely
-        contain the exact target string. AI evaluator filters noise
-        downstream, so loose is better here.
-        """
         targets = (settings.get("targets") or [])[:3]
         if not targets:
             return []
+        INTENT_TERMS = (
+            "tender", "procurement", "RFP", "RFQ", "empanelment",
+            "expansion", "capex", "new facility", "manufacturing plant",
+        )
+        intent_group = " OR ".join(INTENT_TERMS)
         leads = []
         for target in targets:
-            target_words = [w.lower() for w in str(target).split()
-                            if len(w) > 3 and w.lower() not in
-                            ("autodesk", "the", "and", "with")]
-            q = quote_plus(f'"{target}" tender OR procurement OR project')
+            q = quote_plus(f'"{target}" ({intent_group})')
             url = (f"https://news.google.com/rss/search"
                    f"?q={q}&hl=en-IN&gl=IN&ceid=IN:en")
             body = _http_get(url, timeout=15)
-            for r in _parse_rss_items(body, target_words, "google_news")[:20]:
+            for r in _parse_rss_items(body, [], "google_news")[:25]:
+                if _looks_like_vendor_announcement(r.get("title", ""), targets):
+                    continue
                 leads.append(_dict_to_lead("google_news", r))
         log.info(f"[discovery:google_news] {len(leads)} lead(s) collected")
-        return leads[:60]
+        return leads[:75]
 
-    # ── NEW: Bing News RSS ──────────────────────────────────────────
+    # ── Bing News (disabled — returns 0) ────────────────────────────
     def _fetch_bing_news(self, settings):
-        """Disabled — Bing News RSS returned 0 leads with no HTTP error
-        (feed empty or deprecated). Google News RSS covers the same ground
-        with better reliability. Re-enable only if Bing RSS is fixed."""
+        """Disabled — Bing News RSS returns 0 leads with no HTTP error
+        (feed empty or deprecated). Google News RSS covers the same
+        ground with better reliability. Re-enable only if Bing fixes
+        their RSS endpoint."""
         return []
 
 
