@@ -1,27 +1,33 @@
 """adapters/discovery.py — Search + aggregator sources, self-contained.
 
-Consolidates three previously separate adapters into one category adapter:
+Consolidates all free discovery sources into one category adapter:
 
-  • firsttender.com   (aggregator, search + page fetch)
-  • tenderdetail.com  (aggregator, search + page fetch)
-  • serper / search   (4-track query generator + discovery)
+  • firsttender.com      (aggregator, search + page fetch)
+  • tenderdetail.com     (aggregator, search + page fetch)
+  • serper               (4-track query generator; SearchEngine internally
+                          tries Serper → Brave → DuckDuckGo automatically)
+  • google_news_rss      (Google News search RSS — unlimited free)
+  • bing_news_rss        (Bing News search RSS — unlimited free)
 
 The registry sees ONE adapter: DiscoveryAdapter. Internally it runs the
-three sources sequentially, each in its own try/except so one failure
-does not kill the others.
+five sources sequentially, each in its own try/except so one failure does
+not kill the others.
 
-Behaviour is byte-identical to the previous 3-adapter setup — same queries,
-same filters, same tender-ID extraction, same job-URL detection, same
-PRECHECK hook (currently a no-op after C4, kept for future re-enable).
+Search API coverage (all used internally by SearchEngine, no extra code):
+  - Serper  (2,500 lifetime queries — scarce)
+  - Brave   (2,000/month — reliable)
+  - DDGS    (unlimited, fragile — free fallback)
 
-To add a new discovery source in future: add a `_fetch_<name>(self, settings)`
-method and register it in `_sources`. No new files, no registry changes.
+The two RSS sources do NOT consume any search API quota. They're pure
+HTTP GETs against public news RSS feeds and can run at any volume.
 """
 import hashlib
 import os
 import re
+import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 
 from common import (SearchEngine, clean_url, env_int, fetch_page, log)
 from standard_lead import StandardLead
@@ -40,9 +46,60 @@ except ImportError:
 TRACK_KEYS = ["TRACK_1_PUBLIC_TENDERS", "TRACK_2_CORPORATE_PROCUREMENT",
               "TRACK_3_BUSINESS_EXPANSION", "TRACK_4_COMMERCIAL_HIRING"]
 
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
 
 # ═══════════════════════════════════════════════════════════════════════
-# Query generator (from search.py — unchanged)
+# RSS helpers (used by google_news + bing_news)
+# ═══════════════════════════════════════════════════════════════════════
+def _http_get(url, timeout=15, max_bytes=1_500_000):
+    """Plain HTTP GET with UA. Returns text or '' on any error."""
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": UA,
+            "Accept": "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-IN,en;q=0.9",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read(max_bytes).decode("utf-8", errors="replace")
+    except Exception as e:
+        log.debug(f"[discovery] RSS HTTP error {url[:60]}: {str(e)[:80]}")
+        return ""
+
+
+def _parse_rss_items(xml_text, keywords, source_name):
+    """Parse RSS → list of {title, url, snippet, date}. Filters by keywords."""
+    if not xml_text:
+        return []
+    kw_lower = [str(k).lower() for k in (keywords or []) if k]
+    out = []
+    try:
+        root = ET.fromstring(xml_text)
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            desc = (item.findtext("description") or "").strip()
+            date = (item.findtext("pubDate") or "").strip()
+            if not title or not link:
+                continue
+            if kw_lower:
+                hay = (title + " " + desc).lower()
+                if not any(k in hay for k in kw_lower):
+                    continue
+            out.append({
+                "title": title[:300],
+                "url": link,
+                "snippet": re.sub(r"<[^>]+>", " ", desc)[:500],
+                "date": date[:30],
+            })
+    except Exception as e:
+        log.debug(f"[discovery:{source_name}] RSS parse error: {str(e)[:80]}")
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Query generator (unchanged)
 # ═══════════════════════════════════════════════════════════════════════
 class QueryGenerator:
     def __init__(self, target, industry, country, states, llm,
@@ -156,10 +213,9 @@ Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Aggregator hint extraction (shared by firsttender + tenderdetail)
+# Aggregator hint extraction (unchanged)
 # ═══════════════════════════════════════════════════════════════════════
 def _extract_hints(text):
-    """Extract tender hints via regex. Not exhaustive — just aids the AI."""
     hints = {}
     if not text:
         return hints
@@ -199,7 +255,7 @@ def _extract_hints(text):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Filters (from search.py)
+# Filters (unchanged)
 # ═══════════════════════════════════════════════════════════════════════
 BLOCKED_HOSTS_PERMANENT = (
     "gem.gov.in", "bidplus.gem.gov.in", "mkp.gem.gov.in",
@@ -252,7 +308,7 @@ def _guess_category(track_name):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# DiscoveryAdapter — the single category adapter
+# DiscoveryAdapter
 # ═══════════════════════════════════════════════════════════════════════
 class DiscoveryAdapter(SourceAdapter):
     name = "discovery"
@@ -264,17 +320,14 @@ class DiscoveryAdapter(SourceAdapter):
         self._llm = None
 
     def is_enabled(self, settings):
-        # Discovery runs if ANY of its internal sources could produce leads:
-        #   - firsttender/tenderdetail: require targets AND india in countries
-        #   - serper: requires targets OR special_prompt
         has_targets = bool(settings.get("targets"))
         has_special = bool(settings.get("special_prompt"))
         countries = settings.get("countries") or []
         india_ok = (not countries) or any("india" in str(c).lower() for c in countries)
         if has_special:
-            return True                       # serper can run
+            return True
         if has_targets and india_ok:
-            return True                       # all 3 can run
+            return True
         return False
 
     def fetch(self, settings):
@@ -286,9 +339,11 @@ class DiscoveryAdapter(SourceAdapter):
 
         leads = []
         for source_name, fetcher in [
-            ("firsttender",  self._fetch_firsttender),
-            ("tenderdetail", self._fetch_tenderdetail),
-            ("serper",       self._fetch_serper),
+            ("firsttender",    self._fetch_firsttender),
+            ("tenderdetail",   self._fetch_tenderdetail),
+            ("serper",         self._fetch_serper),
+            ("google_news",    self._fetch_google_news),   # NEW
+            ("bing_news",      self._fetch_bing_news),     # NEW
         ]:
             try:
                 results = fetcher(settings)
@@ -298,7 +353,7 @@ class DiscoveryAdapter(SourceAdapter):
                 log.warning(f"[discovery] {source_name}: ERROR {str(e)[:120]}")
         return leads
 
-    # ── Source 1 & 2: shared aggregator logic ────────────────────────
+    # ── Aggregator fetchers (unchanged) ──────────────────────────────
     def _fetch_aggregator(self, settings, domain, source_name):
         targets = settings.get("targets") or []
         states = settings.get("states") or []
@@ -368,7 +423,6 @@ class DiscoveryAdapter(SourceAdapter):
                         "internal_source": source_name,
                     },
                 ))
-
         return leads
 
     def _fetch_firsttender(self, settings):
@@ -377,7 +431,7 @@ class DiscoveryAdapter(SourceAdapter):
     def _fetch_tenderdetail(self, settings):
         return self._fetch_aggregator(settings, "tenderdetail.com", "tenderdetail")
 
-    # ── Source 3: serper (4-track query generator) ───────────────────
+    # ── Serper (unchanged) ──────────────────────────────────────────
     def _fetch_serper(self, settings):
         cfg = settings
         special = cfg.get("special_prompt") or ""
@@ -398,7 +452,6 @@ class DiscoveryAdapter(SourceAdapter):
         max_links = env_int("MAX_LINKS_PER_RUN", 150)
         use_ai_queries = os.getenv("AI_QUERIES", "1").strip() != "0"
 
-        # Build campaigns
         campaigns = []
         if special:
             gen = QueryGenerator(special, "Special Campaign", country, states,
@@ -414,7 +467,6 @@ class DiscoveryAdapter(SourceAdapter):
                                      use_ai_queries, combo_offset=idx)
                 campaigns.append((t, i, gen))
 
-        # Import gate functions from main radar module (circular-import safe)
         try:
             from radar import likely_in_target
         except ImportError:
@@ -460,8 +512,6 @@ class DiscoveryAdapter(SourceAdapter):
                         low_url = raw.lower()
                         protected_hit = any(p in low_url for p in protected)
 
-                        # ── Pre-check against CRM (no-op after C4, kept for
-                        #    future re-enable of company-name dedup) ──────
                         if company_dedup:
                             match = company_dedup.find_in(title_raw, snippet_raw)
                             if match:
@@ -470,7 +520,6 @@ class DiscoveryAdapter(SourceAdapter):
                                 mark_precheck_url(pending_urls, c)
                                 continue
 
-                        # Pre-fetch gates
                         if not protected_hit:
                             if _is_gem_blocked(raw):
                                 mark_precheck_url(pending_urls, c)
@@ -491,7 +540,6 @@ class DiscoveryAdapter(SourceAdapter):
 
                         pending_urls.add(c)
 
-                        # Fetch content
                         content = None
                         try:
                             content = fetch_page(raw, protected_domains=protected)
@@ -500,7 +548,6 @@ class DiscoveryAdapter(SourceAdapter):
 
                         is_job = _is_job_url(raw)
 
-                        # Tender ID extraction
                         tid = ""
                         if _HAS_TENDER_UTILS:
                             tid = (extract_tender_id(title_raw)
@@ -563,6 +610,56 @@ class DiscoveryAdapter(SourceAdapter):
                  f"{precheck_dupes} pre-check dupes skipped, "
                  f"{tender_id_hits} tender ID(s) extracted")
         return leads
+
+    # ── NEW: Google News RSS ────────────────────────────────────────
+    def _fetch_google_news(self, settings):
+        """Google News search RSS — free, unlimited, no API key."""
+        targets = (settings.get("targets") or [])[:3]
+        if not targets:
+            return []
+        leads = []
+        for target in targets:
+            q = quote_plus(f'"{target}" tender OR procurement')
+            url = (f"https://news.google.com/rss/search"
+                   f"?q={q}&hl=en-IN&gl=IN&ceid=IN:en")
+            body = _http_get(url, timeout=15)
+            for r in _parse_rss_items(body, [target.lower()], "google_news")[:15]:
+                leads.append(_dict_to_lead("google_news", r))
+        log.info(f"[discovery:google_news] {len(leads)} lead(s) collected")
+        return leads[:50]
+
+    # ── NEW: Bing News RSS ──────────────────────────────────────────
+    def _fetch_bing_news(self, settings):
+        """Bing News search RSS — free, unlimited, no API key."""
+        targets = (settings.get("targets") or [])[:3]
+        if not targets:
+            return []
+        leads = []
+        for target in targets:
+            q = quote_plus(f'"{target}" tender OR procurement')
+            url = f"https://www.bing.com/news/search?q={q}&format=rss"
+            body = _http_get(url, timeout=15)
+            for r in _parse_rss_items(body, [target.lower()], "bing_news")[:15]:
+                leads.append(_dict_to_lead("bing_news", r))
+        log.info(f"[discovery:bing_news] {len(leads)} lead(s) collected")
+        return leads[:50]
+
+
+def _dict_to_lead(source_name, r):
+    """Convert an RSS dict to StandardLead."""
+    return StandardLead(
+        source="discovery",
+        category="news",
+        url=r.get("url", ""),
+        title=str(r.get("title", ""))[:300],
+        raw_text=str(r.get("snippet", ""))[:3000],
+        raw_published_at=str(r.get("date", "")),
+        country="India",
+        metadata={
+            "fetch_method": "rss",
+            "internal_source": source_name,
+        },
+    )
 
 
 register(DiscoveryAdapter())
