@@ -2,12 +2,10 @@ Technologies
 Mars Bim
 Intec Infra
 Hss Bim
-Yrs Any
 Xiphias Software
 Merritt Innovative
 Software Asset Manager
 Cad Bim
-Yrs Any
 Flair Network
 Isgec Heavy
 Habtoor Leighton
@@ -21,11 +19,8 @@ Boeing
 Linxon
 Wework India
 Office Of The Adjutant General Attn Division Of Facilities Engineering
-Autodesk
-Autodesk
 Society For Applied Microwave Electronics Engineering And Research
 Bapco Energies
-Autodesk
 Pace Bus
 Abb
 Vmi Group
@@ -40,13 +35,11 @@ Information And Broadcasting
 Cashify Manak Waste Management
 Boston Consulting
 Arko Techcrafts
-Yrs Any
 Inspiredge It
 Infinity Data
 Sakhatech Information
 Xylem Water
 Viraj Profiles
-Yrs Any
 Indian Army
 Rusavi Engineering
 Silverskills
@@ -91,11 +84,7 @@ Autodesk
 Zoho Corporation
 Econ Engineering
 One Click Lca
-Autodesk
-Yrs Any
-Autodesk
 Coreframe Cloud
-Autodesk
 Valcon
 Mmtc
 Auda Nepad
@@ -137,7 +126,6 @@ Panjetani Buildwell
 Thyssenkrupp Nucera India
 Shapoorji Pallonji
 Hitech Digital
-Yrs Any
 Arup
 Assystem
 Vag Group
@@ -153,12 +141,9 @@ Tejjy
 Dynamics Group
 Amoye Systems
 Airports Company South Africa Acsa
-Autodesk
-Autodesk
 Noble Desktop
 Corengg
 Cad Desk
-Autodesk
 Tata Projects
 Arista Networks
 Arkance
@@ -168,14 +153,12 @@ Faridabad Lambda Buildtech
 Software Asset Manager
 Envision Technology
 Xl Dynamics India
-Autodesk
 Kanish Design Studio
 Axisedge Engineers
 Fibrox 3D
 Foxrun Advisors
 Accenture
 Crown Worldwide Group
-Autodesk
 Virtual Building Studio
 Rise Infraventures
 Joseph Engineering Services
@@ -185,13 +168,11 @@ Tankar Solutions
 Indian Institute Of Information Technology Design And Manufacturing
 Indiamart Seller
 Cad T Solutions
-Autodesk
 World Intellectual Property Organization
 Ahtanum Irrigation District
 Aec Daily
 Lot Network
 Stahmann Farms
-Autodesk
 Ainee Impex
 City Of Indian Harbour Beach
 Techzoid Technologies
@@ -199,7 +180,6 @@ Indian Oil Corporation
 Indian Institute Of Solar Energy
 Tenderdetail
 Tendernews
-Autodesk
 Nextvision Infotech
 Testbook
 Scube Systems
@@ -208,8 +188,6 @@ Aasaan
 Undp
 Panache Digilife
 Classic Tenders
-Autodesk
-Autodesk
 Air India Group
 Gsas Micro Systems
 Premiumcad
