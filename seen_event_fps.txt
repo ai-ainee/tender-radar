@@ -521,3 +521,22 @@ capex|cpkukrejaarchitects|||2026-01|
 services|sunconengineers|||2025-06|
 services|dimensionindianetworkspvt.ltd.|||2026-10|
 hiring|pmgroup|1|position|2026-10|bangalore
+tender|biharroadsproject|||2026-10|
+tender|uttarpradeshcivilengineeringdepartments|144|tenders|2026-10|uttarpradeshindia
+hiring|servicenow|1|solution architect public sector india|2026-10|gurgaonharyanaindia
+rfp|cityofevanston|26-50|special ethics counsel|2026-10|evanstonilus
+tender|browardcounty|||2026-10|
+tender|royal_naval_air_station_yeovil|autocad_drawings|drawings|2026-10|united_kingdom
+rfp|nca_afghanistan|PC4529|rfp_id|2026-10|kabul_afghanistan
+hiring_search|volvo_group|no_jobs_found|search|2026-10|india
+blog_post|actcad|2d_cad_software_guide|post|2026-10|india
+documentation|aws|currency_cad|doc|2026-10|india
+hiring|comsol|Technical Sales Engineer|position|2026-10|india
+content|industrialmonitordirect|Automation software license handover|article|2026-10|india
+hiring|t-systemsictindiapvt.ltd.|Application Owner - AutoCAD & Autodesk Portfolio|position|2026-10|pune,maharashtra,india
+vendor_offering|modelcamtechnologies|CAD PLM AI deployment services|service|2026-10|pune,maharashtra,india
+tender|southcentralrailway|||2026-10|
+training_institute|cadcenter||||
+hiring|reciengineering|Structural engineer|vacancy|2024-01|navimumbai
+service_marketing|hireandbuild|||2026-09|
+hiring|reciengineeringpvtltd|Associate Structural Engineer|position|2026-10|navimumbai
