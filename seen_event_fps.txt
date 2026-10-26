@@ -570,3 +570,36 @@ market_report|efc_india|||2026-07|
 hiring|seniorai|Senior CAD Design Engineer|role|2026-10|india
 hiring|speedengineering|Senior CAD Design Engineer|role|2026-10|india
 hiring|dataarchitecture|Senior CAD Design Engineer|role|2026-10|india
+tender_notice|theenergyandresourcesinstitute|57.5 MW|mw|2026-10|newdelhi,delhi,india
+tender_notice|keralastateelectricityboardlimited|100 KVA|kva|2026-10|kannur,kerala,india
+contractor_profile|indianinfrastructure&project(i)pvt.ltd|||2026-10|
+tender|indianinstituteofmanagementlucknow|253.28|inr cr|2026-10|lucknowuttarpradesh
+hiring|nhidcltripura|||2026-08|
+hiring|bhavnagarmunicipalcorporation|||2026-03|
+product_specification|braithwaite&co(india)ltd|||2026-10|
+hiring|arjunrathidesign|Project Execution Manager|position|2026-10|mumbai
+vendor_marketing|yespcorporation|||2026-10|
+blog_article|zetwerk|||2026-10|
+hiring|opengov|Software Engineer III|position|2026-10|pune
+hiring|nike|Lead Technical Product Manager|position|2026-10|bengaluru
+hiring|equinix|senior_software_engineer_sam|job_requisition|2026-10|bengaluru_karnataka_india
+hiring|general_motors|senior_global_sourcing_manager|job_requisition|2026-10|warren_michigan_united_states
+hiring|siemens_limited|p_it_commodity_manager|job_requisition|2026-10|bengaluru_karnataka_india
+error_page|caterpillar|404_not_found|url|2026-10|bengaluru_karnataka_india
+hiring|amgen|||2026-10|
+hiring|ivalua|||2026-10|
+hiring|iconplc|||2026-10|
+procurement notice|worldbank|||2026-10|
+page not found|nike|||2026-10|
+hiring|ukg|Mgr. Strategic Sourcing|position|2026-10|india
+documentation|autodesk|India Country Kit 2015|release|2015-01|india
+blog_post|autodesk|Developer Blog Updates|articles|2026-10|india
+student_project|iamrahul8|Summer Training Project|assignment|2024-01|kanpur,india
+training_article|caddexindia|Blog Article|post|2026-10|india
+training_course|hightechnologiessolutions|AutoCAD Course|course|2026-10|delhi,india
+capex|octillionpowersystems|3|gwh|2026-08|gujarat,india
+hiring|oceaneering|1|position|2025-10|india
+content|autodesk|||2023-12|
+hiring|jll|||2026-10|
+hiring|alghanimindustries|||2026-10|
+hiring|exchanger|||2026-10|
