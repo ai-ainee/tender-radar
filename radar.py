@@ -540,33 +540,54 @@ def load_settings(sheet):
   
 # ── Vendor self-reference check ───────────────────────────────────────
 def _is_vendor_self_reference(org, url):
-    """True when the extracted org name matches the URL host's brand.
+    """True when extracted org IS the vendor (via URL brand or vendor name).
 
-    Used to distinguish two cases on a vendor-domain URL:
-      - Self-reference (autodesk.com/... extracted as "Autodesk") -> SELLER
-      - Case study (autodesk.com/... extracted as "Shapoorji Pallonji") -> BUYER
+    Distinguishes two cases on a vendor URL:
+      - Self-reference (org matches vendor) → SELLER → Partners
+      - Case study (org is a real buyer) → BUYER → preserved
 
-    The brand is taken from the second-to-last hostname label, so
-    "www.autodesk.com" -> "autodesk", "www.imaginit.com" -> "imaginit",
-    "autodesk-university.autodesk.com" -> "autodesk".
+    Handles both URL types:
+      1. Direct vendor URL: autodesk.com/... → brand "autodesk" matches org
+      2. Proxy URL: news.google.com/rss/... → brand "google" doesn't match,
+         but org "Autodesk" matches a known vendor keyword
 
-    The org name is flattened (lowercase, no spaces/punctuation) before
-    comparison so "BIM Arcavion", "bim arcavion", and "Bim-Arcavion" all
-    match the "arcavion" brand from "bim-arcavion.com".
+    Example behaviors:
+      ("Autodesk", "autodesk.com/blog/...")         → True
+      ("Autodesk", "news.google.com/rss/...")       → True  (Fix C — name match)
+      ("Shapoorji Pallonji", "autodesk.com/customer-stories/...") → False (real buyer)
+      ("Boston Consulting", "naukri.com/...")        → False (real buyer)
     """
     if not org or not url:
         return False
+
+    org_low = org.lower()
+    org_flat = re.sub(r"[^a-z0-9]", "", org_low)
+
+    # 1. URL brand match — direct vendor URL
     try:
-        host = urlparse(url).netloc.lower()
+        host = urlparse(url).netloc.lower().replace("www.", "")
+        parts = host.split(".")
+        if len(parts) >= 2:
+            brand = parts[-2].lower()
+            if brand and brand in org_flat:
+                return True
     except Exception:
-        return False
-    host = host.replace("www.", "")
-    parts = host.split(".")
-    if len(parts) < 2:
-        return False
-    brand = parts[-2].lower()
-    org_flat = re.sub(r"[^a-z0-9]", "", org.lower())
-    return bool(brand) and brand in org_flat
+        pass
+
+    # 2. Known vendor name match — proxy URL (news.google.com, linkedin.com, etc.)
+    #    When the extracted org matches a known vendor, it's self-reference
+    #    regardless of the URL host.
+    try:
+        from adapters import VENDOR_DOMAIN_KEYWORDS
+        for kw in VENDOR_DOMAIN_KEYWORDS:
+            # "autodesk.com" → "autodesk"
+            vendor_name = kw.split(".")[0].replace("-", " ").strip().lower()
+            if len(vendor_name) >= 4 and vendor_name in org_low:
+                return True
+    except Exception:
+        pass
+
+    return False
   
 # ── AI Evaluator ──────────────────────────────────────────────────────
 def _valid_verdicts(d):
