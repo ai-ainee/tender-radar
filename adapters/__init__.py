@@ -253,80 +253,35 @@ class CompanyDedup:
             pass
 
     def find_in(self, title, snippet=""):
-        """Return matching original name if a known company appears in title+snippet.
+        """DEPRECATED — always returns "".
 
-        Stricter matching than before:
-        - Require 12+ char substring match (was 6)
-        - Require 3+ word overlap with 60%+ ratio (was 2+ / 50%)
-        - Skip if title is very short (<15 chars) — likely a category page
-        - Skip if title's first word is a generic descriptor
+        Company-name-based dedup was blocking every new signal from any
+        company already in CRM, including legitimate new tenders, RFPs,
+        expansions, and hiring signals. In prior runs, this silently
+        dropped 40-60% of URLs before AI ever saw them.
+
+        Example (from a real run): a new State Bank of India tender was
+        skipped because SBI was already a known company — even though
+        the tender itself was brand new and about a specific software
+        procurement.
+
+        The correct dedup layer is main(), which handles:
+          - gate_url_seen: exact URL already processed
+          - gate_fp_dupe:  same event from a different URL (fingerprint)
+
+        Both are precise. Company-name matching is not.
+
+        This function is kept as a no-op so that any caller in the search
+        adapter or elsewhere that still invokes find_in() continues to
+        work — but now every URL passes through to main()'s gates, where
+        new signals from known companies reach the AI and get merged into
+        the existing CRM row by the Apps Script backend
+        (appendNoteToExistingDeal).
+
+        To restore the old behavior temporarily, change this to:
+            return super().find_in(title, snippet)
+        — but note that this will re-introduce the lost-leads problem.
         """
-        if not self.known:
-            return ""
-        text = (title or "").strip()
-        snippet_text = (snippet or "").strip()
-        combined = text + " " + snippet_text
-        if len(combined) < 15:
-            return ""
-
-        text_norm = normalize_company_name(combined)
-        if not text_norm:
-            return ""
-
-        # Skip pre-check entirely if title starts with a generic descriptor
-        GENERIC_STARTERS = {"various", "multiple", "several", "all", "any", "many",
-                            "top", "best", "list", "browse", "search"}
-        first_word = (text.split()[0].lower() if text.split() else "")
-        if first_word in GENERIC_STARTERS:
-            return ""
-
-        # Fast path: 12+ char substring match only
-        for norm in self.known:
-            if len(norm) >= 12 and norm in text_norm:
-                return self.originals.get(norm, norm)
-
-        # Word-overlap match — strict dynamic threshold.
-        # Strips SUFFIX_WORDS + STRUCTURAL_WORDS before counting.
-        # Requires max(3, n-1) overlap where n = meaningful word count:
-        #   2 words → 3 required (impossible — skips short names)
-        #   3 words → 3 required (all must match)
-        #   4 words → 3 required (3 of 4)
-        #   5 words → 4 required (4 of 5 — kills long-name false positives)
-        #   6+ words → (n-1) required (all-but-one must match)
-        text_words = set(w.lower() for w in re.findall(r"\b[a-zA-Z]{4,}\b", combined))
-        if text_words:
-            for norm, orig in self.originals.items():
-                orig_words = [w.lower() for w in re.findall(r"\b[a-zA-Z]+\b", orig)]
-                meaningful = [w for w in orig_words
-                              if w not in self.SUFFIX_WORDS
-                              and w not in self.STRUCTURAL_WORDS
-                              and len(w) >= 4]
-                if len(meaningful) < 3:
-                    continue
-                overlap = set(meaningful) & text_words
-                required = max(3, len(meaningful) - 1)
-                if len(overlap) >= required:
-                    return orig
-
-        # Acronym match (CPWD ↔ Central Public Works Department)
-        # 3-letter acronyms must be on the SAFE_3LETTER_ACRONYMS whitelist.
-        # 4+ letter acronyms match without restriction (they rarely collide).
-        text_upper = combined.upper()
-        for norm, orig in self.originals.items():
-            caps_words = re.findall(r"\b[A-Z][A-Za-z]{2,}\b", orig)
-            meaningful = [w for w in caps_words if w.lower() not in self.SUFFIX_WORDS]
-            if len(meaningful) < 3:
-                continue
-            full_acronym = "".join(w[0] for w in meaningful).upper()
-            if len(full_acronym) < 3:
-                continue
-            for n in range(3, len(full_acronym) + 1):
-                acr = full_acronym[:n]
-                if n == 3 and acr not in self.SAFE_3LETTER_ACRONYMS:
-                    continue
-                if re.search(rf"\b{acr}\b", text_upper):
-                    return orig
-
         return ""
 
     def __len__(self):
