@@ -1,5 +1,6 @@
 """adapters/discovery.py — Search + aggregator sources, self-contained.
 
+
 Consolidates all free discovery sources into one category adapter:
 
   • firsttender.com      (aggregator, search + page fetch)
@@ -613,36 +614,36 @@ class DiscoveryAdapter(SourceAdapter):
 
     # ── NEW: Google News RSS ────────────────────────────────────────
     def _fetch_google_news(self, settings):
-        """Google News search RSS — free, unlimited, no API key."""
+        """Google News search RSS — free, unlimited, no API key.
+
+        Filter matches ANY meaningful word from target (not the full
+        phrase) — previously rejected most results because titles rarely
+        contain the exact target string. AI evaluator filters noise
+        downstream, so loose is better here.
+        """
         targets = (settings.get("targets") or [])[:3]
         if not targets:
             return []
         leads = []
         for target in targets:
-            q = quote_plus(f'"{target}" tender OR procurement')
+            target_words = [w.lower() for w in str(target).split()
+                            if len(w) > 3 and w.lower() not in
+                            ("autodesk", "the", "and", "with")]
+            q = quote_plus(f'"{target}" tender OR procurement OR project')
             url = (f"https://news.google.com/rss/search"
                    f"?q={q}&hl=en-IN&gl=IN&ceid=IN:en")
             body = _http_get(url, timeout=15)
-            for r in _parse_rss_items(body, [target.lower()], "google_news")[:15]:
+            for r in _parse_rss_items(body, target_words, "google_news")[:20]:
                 leads.append(_dict_to_lead("google_news", r))
         log.info(f"[discovery:google_news] {len(leads)} lead(s) collected")
-        return leads[:50]
+        return leads[:60]
 
     # ── NEW: Bing News RSS ──────────────────────────────────────────
     def _fetch_bing_news(self, settings):
-        """Bing News search RSS — free, unlimited, no API key."""
-        targets = (settings.get("targets") or [])[:3]
-        if not targets:
-            return []
-        leads = []
-        for target in targets:
-            q = quote_plus(f'"{target}" tender OR procurement')
-            url = f"https://www.bing.com/news/search?q={q}&format=rss"
-            body = _http_get(url, timeout=15)
-            for r in _parse_rss_items(body, [target.lower()], "bing_news")[:15]:
-                leads.append(_dict_to_lead("bing_news", r))
-        log.info(f"[discovery:bing_news] {len(leads)} lead(s) collected")
-        return leads[:50]
+        """Disabled — Bing News RSS returned 0 leads with no HTTP error
+        (feed empty or deprecated). Google News RSS covers the same ground
+        with better reliability. Re-enable only if Bing RSS is fixed."""
+        return []
 
 
 def _dict_to_lead(source_name, r):
