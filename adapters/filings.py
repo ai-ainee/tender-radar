@@ -121,12 +121,20 @@ class FilingsAdapter(SourceAdapter):
         return leads
 
     def _keywords(self, settings):
+        """Filings never mention product names (Autocad, Revit). They mention
+        capex, expansion, order wins, acquisitions, facilities. Filter by
+        industry + universal business-intent signals, not by product name.
+        Product relevance is judged downstream by the AI evaluator."""
         industries = settings.get("industries") or []
-        base = [k for k in industries if k and k != "ALL_SECTORS"]
-        # Fallback generic signals that indicate a buying event in any industry
-        GENERIC = ["capex", "expansion", "order", "contract", "acquisition",
-                   "investment", "facility", "plant", "construction", "tender"]
-        return base + GENERIC
+        industry_kw = [k for k in industries if k and k != "ALL_SECTORS"]
+        # Universal business-event signals that indicate a buying event
+        intent_kw = [
+            "capex", "expansion", "order", "contract", "acquisition",
+            "investment", "facility", "plant", "construction", "tender",
+            "commissioning", "greenfield", "brownfield", "joint venture",
+            "subsidiary", "IPO", "rights issue", "fundraise",
+        ]
+        return industry_kw + intent_kw
 
     def _fetch_bse(self, settings):
         if not _HAS_BSE:
