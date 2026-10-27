@@ -113,7 +113,7 @@ def fetch_nse_filings(target_keywords, max_results=60):
 
     kw_lower = [str(k).lower() for k in (target_keywords or []) if k]
 
-    for item in data[:max_results]:
+    for item in data:
         if not isinstance(item, dict):
             continue
         subject = str(item.get("subject") or item.get("desc") or "").strip()
