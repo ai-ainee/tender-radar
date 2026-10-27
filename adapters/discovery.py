@@ -642,26 +642,40 @@ class DiscoveryAdapter(SourceAdapter):
 
     # ── Google News RSS (Fix B applied) ─────────────────────────────
     def _fetch_google_news(self, settings):
+        """Google News RSS — 3 intent groups per target for wider coverage.
+
+        Each product fires 3 separate RSS queries:
+          1. Procurement intents (tender, RFP, empanelment)
+          2. Expansion intents (capex, new facility, manufacturing plant)
+          3. Vendor registration intents (supplier registration, onboarding)
+
+        Zero API cost — pure HTTP GET against Google News RSS.
+        """
         targets = (settings.get("targets") or [])[:3]
         if not targets:
             return []
-        INTENT_TERMS = (
-            "tender", "procurement", "RFP", "RFQ", "empanelment",
-            "expansion", "capex", "new facility", "manufacturing plant",
+
+        INTENT_GROUPS = (
+            ("tender", "procurement", "RFP", "RFQ", "empanelment"),
+            ("expansion", "capex", "new facility", "manufacturing plant"),
+            ("vendor registration", "supplier registration", "vendor onboarding"),
         )
-        intent_group = " OR ".join(INTENT_TERMS)
+
         leads = []
         for target in targets:
-            q = quote_plus(f'"{target}" ({intent_group})')
-            url = (f"https://news.google.com/rss/search"
-                   f"?q={q}&hl=en-IN&gl=IN&ceid=IN:en")
-            body = _http_get(url, timeout=15)
-            for r in _parse_rss_items(body, [], "google_news")[:25]:
-                if _looks_like_vendor_announcement(r.get("title", ""), targets):
-                    continue
-                leads.append(_dict_to_lead("google_news", r))
+            for group in INTENT_GROUPS:
+                intent_str = " OR ".join(group)
+                q = quote_plus(f'"{target}" ({intent_str})')
+                url = (f"https://news.google.com/rss/search"
+                       f"?q={q}&hl=en-IN&gl=IN&ceid=IN:en")
+                body = _http_get(url, timeout=15)
+                for r in _parse_rss_items(body, [], "google_news")[:15]:
+                    if _looks_like_vendor_announcement(r.get("title", ""), targets):
+                        continue
+                    leads.append(_dict_to_lead("google_news", r))
+
         log.info(f"[discovery:google_news] {len(leads)} lead(s) collected")
-        return leads[:75]
+        return leads[:100]
 
     # ── Bing News (disabled — returns 0) ────────────────────────────
     def _fetch_bing_news(self, settings):
