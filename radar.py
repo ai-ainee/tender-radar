@@ -516,8 +516,16 @@ def _fingerprint(text):
 
 
 def safe_cell(v):
+    """Prefix dangerous cell values to prevent formula injection in Sheets.
+
+    Only '=' and '@' trigger formula interpretation. '+' is a common phone
+    prefix (+91...) and '-' is a common negative-number prefix — those are
+    legitimate data, not injections. Blanking them out would corrupt phones
+    and negatives. Google Sheets treats leading '+' or '-' in text as text
+    anyway when the value isn't a pure number.
+    """
     v = "" if v is None else str(v)
-    return " " + v if v[:1] in ("=", "+", "-", "@") else v
+    return " " + v if v[:1] in ("=", "@") else v
 
 
 def load_settings(sheet):
