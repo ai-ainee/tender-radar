@@ -122,6 +122,17 @@ class StandardLead:
         # Normalise buyer_type
         if self.buyer_type not in BUYER_TYPES:
             self.buyer_type = "Unknown"
+        # Cast numeric fields — AI sometimes returns None or strings
+        for f, cast, default in (
+            ("value_inr", float, 0.0),
+            ("fit_score", int, 0),
+            ("lead_score", int, 50),
+            ("dm_phone_score", int, 0),
+        ):
+            try:
+                setattr(self, f, cast(getattr(self, f) or default))
+            except (TypeError, ValueError):
+                setattr(self, f, default)
 
     # ── Serialisation ─────────────────────────────────────────────────
 
