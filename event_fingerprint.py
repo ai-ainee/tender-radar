@@ -30,7 +30,13 @@ def fingerprint_key(fp):
 
     event_type = str(fp.get("event_type") or "").lower().strip()
     actor      = str(fp.get("primary_actor") or "").lower().replace(" ", "")
-    value      = str(fp.get("key_value") or "").strip()
+    value      = str(fp.get("key_value") or "").strip().replace(",", "")
+    # Normalize numbers: "5000" and "5000.0" → "5000"
+    try:
+        if value:
+            value = f"{float(value):g}"
+    except ValueError:
+        pass
     unit       = str(fp.get("key_unit") or "").lower().strip()
     month      = str(fp.get("rough_date") or "")[:7]     # YYYY-MM
     location   = str(fp.get("location_key") or "").lower().replace(" ", "")
