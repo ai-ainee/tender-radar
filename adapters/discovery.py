@@ -713,7 +713,12 @@ class DiscoveryAdapter(SourceAdapter):
                        f"?q={q}&hl=en-IN&gl=IN&ceid=IN:en")
                 body = _http_get(url, timeout=15)
                 for r in _parse_rss_items(body, [], "google_news")[:15]:
+                    # Skip vendor announcements detected via title
                     if _looks_like_vendor_announcement(r.get("title", ""), targets):
+                        continue
+                    # Skip articles published by the vendor itself
+                    if _is_vendor_source_url(r.get("source_url", ""),
+                                              r.get("source_text", ""), targets):
                         continue
                     leads.append(_dict_to_lead("google_news", r))
 
