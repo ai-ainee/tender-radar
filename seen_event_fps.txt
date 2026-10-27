@@ -683,3 +683,35 @@ hiring|sunpharma|Junior CAD Engineer|role|2026-10|india
 hiring|sunpharmaceuticalindustriesltd|||2026-10|
 hiring|l&t|||2026-10|
 vendor_empanelment|reliance|||2026-10|
+order_win|marineelectricals(india)limited|||2026-10|
+market_report|reservebankofindia|||2026-10|
+bond_auction|governmentofindia|33000|inr crore|2026-10|india
+data_release|reservebankofindia|||2026-09|
+monetary_auction|reservebankofindia|150000|inr crore|2026-10|india
+market_operations|reservebankofindia|||2026-10|
+facility_inauguration|reservebankofindia|||2026-10|
+auction_notice|reservebankofindia|150000|inr crore|2026-10|india
+bond_auction|reservebankofindia|23300|inr crore|2026-10|india
+tender_listing|nationalhighwaysandinfrastructuredevelopmentcorporationlimited|||2026-10|
+rfp|governmentauthorityinbritishcolumbia|||2026-10|
+blog_post|affixcenter|||2026-10|
+thought_leadership_post|vinciengineering|||2026-10|
+tender|boardofregentsoftheuniversitysystemofgeorgia|||2026-11|
+vendor_page|contisofttechnologies|||2026-10|
+white_paper|usiofindia|||2026-09|
+tender|americanindiafoundationtrust(aif)|||2026-10|
+vendor_page|gembaconcepts|||2026-10|
+blog|primaverse|||2026-10|
+social_media_pin|rohit|||2018-10|
+government_announcement|governmentofindia|28602|inr crores|2024-08|india
+news_article|dpiit|||2024-08|
+news_summary|governmentofindia|130|usd billion|2023-11|india
+capex|interarchbuildingsolutionslimited|70|inr crores|2025-10|kheda,gujarat
+hiring|neilsoft|2-4|years|2026-10|pune
+partnership|autodesk|||2026-06|
+partnership|autodesk|||2025-06|
+partnership|architecturaldigest|||2025-05|
+partnership|autodesk|||2023-04|
+partnership|designworld|||2015-03|
+product_release|autodesk|||2018-04|
+article_publication|engineering.com|||2022-10|
