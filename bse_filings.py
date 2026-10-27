@@ -120,7 +120,7 @@ def fetch_bse_filings(target_keywords, max_days=3, max_results=60):
 
     kw_lower = [str(k).lower() for k in (target_keywords or []) if k]
 
-    for item in rows[:max_results]:
+    for item in rows:
         if not isinstance(item, dict):
             continue
         subject = str(item.get("NEWSSUB") or item.get("HEADLINE") or "").strip()
