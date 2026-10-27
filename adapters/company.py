@@ -144,22 +144,15 @@ class CompanyAdapter(SourceAdapter):
             return []
 
         leads = []
-        # Look for procurement category mentions
         for m in re.finditer(
             r"(?:Category|Commodity|Product)[:\s]+([A-Z][A-Za-z\s&.,]{3,80})",
             content, re.I,
         ):
             title = f"{company} vendor registration: {m.group(1).strip()}"
+            # Use the hardcoded company name (L&T, Reliance) not AI-extracted
             leads.append(_dict_to_lead(source_name, company, url, title, title))
             if len(leads) >= 5:
                 break
-
-        # Fallback: signal title extraction
-        if not leads:
-            titles = self._extract_signal_titles(content)
-            for title in titles[:3]:
-                leads.append(_dict_to_lead(source_name, company, url, title, title))
-
         return leads
 
 
