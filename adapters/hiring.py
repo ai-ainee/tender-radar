@@ -61,25 +61,17 @@ def _slug(s):
 
 
 def _extract_companies_from_text(text, role, max_companies=8):
-    """Extract company names from job listing text.
-
-    Balanced filter — rejects obvious junk (cookie text, nav links,
-    single-word artifacts) without over-filtering legitimate company
-    names that contain words like 'enterprise', 'info', or 'systems'.
-    """
+    """Extract company names from job listing text."""
     if not text:
         return []
     companies = set()
 
     patterns = [
-        r"(?:at|@)\s+([A-Z][A-Za-z0-9&.\s]{2,50}(?:Ltd|Limited|Pvt|Private|Inc|Corp|LLP|Technologies|Solutions|Systems|Engineering|Group|Enterprises)?)",
-        r"([A-Z][A-Za-z0-9&.\s]{2,50}(?:Ltd|Limited|Pvt|Private|Inc|Corp|LLP|Technologies|Solutions|Systems|Engineering|Group|Enterprises))\s+(?:is\s+)?hiring",
-        r"(?:Company|Employer|Organization)[:\s]+([A-Z][A-Za-z0-9&.\s]{3,50})",
+        r"(?:\b[Aa]t\b|@)\s*([A-Z][A-Za-z0-9&. ]{2,50}(?:Ltd|Limited|Pvt|Private|Inc|Corp|LLP|Technologies|Solutions|Systems|Engineering|Group|Enterprises)?)",
+        r"([A-Z][A-Za-z0-9&. ]{2,50}(?:Ltd|Limited|Pvt|Private|Inc|Corp|LLP|Technologies|Solutions|Systems|Engineering|Group|Enterprises))\s+(?:is\s+)?[Hh]iring",
+        r"(?:Company|Employer|Organization)[:\s]+([A-Z][A-Za-z0-9&. ]{3,50})",
     ]
 
-    # Single-word-only junk. Only rejects names that are EXACTLY these words
-    # (not names that contain them). "Enterprise" alone is rejected but
-    # "Enterprise Holdings" passes.
     SINGLE_WORD_JUNK = {
         "the", "a", "an", "this", "that", "we", "our", "your",
         "apply", "job", "role", "position", "hiring", "company", "employer",
@@ -87,8 +79,6 @@ def _extract_companies_from_text(text, role, max_companies=8):
         "view", "read", "click", "submit", "cancel", "close", "enterprise",
     }
 
-    # Multi-word phrases indicating cookie/nav text (not a company).
-    # These are so distinctive that any occurrence disqualifies the match.
     NAV_PHRASES = (
         "we can remember you",
         "understand how you interact",
@@ -98,22 +88,17 @@ def _extract_companies_from_text(text, role, max_companies=8):
     )
 
     for pat in patterns:
-        for m in re.finditer(pat, text, re.I | re.M):
+        for m in re.finditer(pat, text, re.M):    # NO re.I — was matching lowercase
             name = m.group(1).strip()
             name = re.sub(r"\s+", " ", name)[:80]
             if not name or len(name) < 4:
                 continue
             name_low = name.lower().strip()
 
-            # Reject single-word junk (exact match only)
             if name_low in SINGLE_WORD_JUNK:
                 continue
-
-            # Reject distinctive cookie/nav phrases
             if any(p in name_low for p in NAV_PHRASES):
                 continue
-
-            # Reject names starting with nav-style verbs
             if name_low.startswith(("apply now", "read more", "click here",
                                    "view details", "login to", "sign in",
                                    "submit application", "send message")):
@@ -126,7 +111,6 @@ def _extract_companies_from_text(text, role, max_companies=8):
             break
 
     return list(companies)[:max_companies]
-
 
 class HiringAdapter(SourceAdapter):
     name = "hiring"
@@ -287,7 +271,7 @@ class HiringAdapter(SourceAdapter):
                 leads.append(StandardLead(
                     source="hiring",
                     category="hiring",
-                    url=url,
+                    url=f"{url}#{_slug(company)}",
                     title=role,
                     raw_text=f"{role} hiring at {company}",
                     buyer_org=company[:200],
@@ -320,7 +304,7 @@ class HiringAdapter(SourceAdapter):
                 leads.append(StandardLead(
                     source="hiring",
                     category="hiring",
-                    url=url,
+                    url=f"{url}#{_slug(company)}",
                     title=role,
                     raw_text=f"{role} hiring at {company}",
                     buyer_org=company[:200],
