@@ -1,30 +1,19 @@
 """adapters/news.py — Business news category adapter.
 
-10 RSS sources, all free and unlimited. Merged from news + funding:
-  • 7 business news feeds (ET, BS, Mint, MC, PIB, BL, FE)
-  • 3 startup funding feeds (VCCircle, Inc42, Entrackr)
+10 RSS sources, all free. Filter by business-intent signals (tender, capex,
+expansion, contract) — NOT by product name. Product matching happens
+downstream in the AI evaluator.
 
-FILTERING PHILOSOPHY — critical:
-  Business news rarely mentions product names like "Autocad" or "Revit".
-  They say "L&T wins Mumbai Metro contract", "Interarch invests ₹70 cr in
-  new facility", "Sun Pharma expands R&D". None of these mention the
-  product — but ALL of them are buying signals.
-
-  Therefore this adapter filters by BUSINESS INTENT keywords only
-  (tender, capex, expansion, contract, order, etc.). Product-name matching
-  happens downstream in the AI evaluator, which sees the full article
-  and can judge relevance.
-
-  Product-agnostic. Industry-agnostic. If you change Settings.target_products
-  from Autodesk to SAP, this adapter still works — the AI evaluator does
-  the product-specific filtering.
-
-If a specific feed returns 0 for 2+ runs, disable it by commenting out its
-entry in the FEEDS list below.
+All fixes applied:
+  • Word-boundary regex (no more "order" matching "border")
+  • Case-insensitive intent matching (JV, MoU, M&A all work)
+  • No arbitrary lead cap (keeps all feeds, cuts per-feed items instead)
+  • ISO date format (RFC-822 → YYYY-MM-DD)
 """
 import re
 import urllib.request
 import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 
 from adapters import SourceAdapter, register
 from standard_lead import StandardLead
@@ -33,7 +22,6 @@ from common import log
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-# (source_name, feed_url) — all free, all RSS
 FEEDS = (
     ("et",                "https://economictimes.indiatimes.com/rssfeedstopstories.cms"),
     ("bs",                "https://www.business-standard.com/rss/home_page_top_stories.rss"),
@@ -47,21 +35,33 @@ FEEDS = (
     ("entrackr",          "https://entrackr.com/feed/"),
 )
 
-# Business-intent signals — product-agnostic. An article must contain at
-# least one of these to be considered a buying signal. These cover the
-# universal language of B2B procurement and corporate growth.
 BUSINESS_INTENT_HINTS = (
     "tender", "procurement", "expansion", "capex", "facility",
     "plant", "contract", "order", "project", "hiring", "investment",
     "acquisition", "partnership", "commission", "launch",
     "wins", "awarded", "new plant", "greenfield", "brownfield",
     "commissioned", "inaugurated", "scaling", "capacity",
-    "joint venture", "JV", "MoU", "mou",
+    "joint venture", "jv", "mou", "m&a",
+)
+
+# Word-boundary regex — prevents "order" matching "border", allows plurals
+_INTENT_RE = re.compile(
+    r"\b(?:" + "|".join(
+        sorted({re.escape(h.lower()) for h in BUSINESS_INTENT_HINTS}, key=len, reverse=True)
+    ) + r")(?:s|es|ed|ing)?\b",
+    re.I,
 )
 
 
+def _iso_date(s):
+    """RFC-822 (RSS) → ISO YYYY-MM-DD. Falls back to original on error."""
+    try:
+        return parsedate_to_datetime(s).date().isoformat()
+    except Exception:
+        return s
+
+
 def _http_get(url, timeout=15, max_bytes=1_500_000):
-    """Plain HTTP GET with browser UA. Returns text or '' on error."""
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": UA,
@@ -75,9 +75,7 @@ def _http_get(url, timeout=15, max_bytes=1_500_000):
         return ""
 
 
-def _parse_rss(xml_text, source_name, max_items=50):
-    """Parse RSS → list of dicts. Filter only by business-intent hints,
-    NOT by product name. Product-name filtering happens downstream."""
+def _parse_rss(xml_text, source_name, max_items=20):
     if not xml_text:
         return []
     out = []
@@ -97,9 +95,8 @@ def _parse_rss(xml_text, source_name, max_items=50):
             continue
         if not title or not link:
             continue
-        hay = (title + " " + desc).lower()
-        # Require at least one business-intent keyword
-        if not any(hint in hay for hint in BUSINESS_INTENT_HINTS):
+        # Word-boundary intent matching (case-insensitive)
+        if not _INTENT_RE.search(title + " " + desc):
             continue
         out.append({
             "title": title[:300],
@@ -113,19 +110,15 @@ def _parse_rss(xml_text, source_name, max_items=50):
 
 
 def _dict_to_lead(source_name, r):
-    """Convert an RSS dict to StandardLead."""
     return StandardLead(
         source="news",
         category="news",
         url=r.get("url", ""),
         title=str(r.get("title", ""))[:300],
         raw_text=str(r.get("snippet", ""))[:3000],
-        raw_published_at=str(r.get("date", "")),
+        raw_published_at=_iso_date(str(r.get("date", ""))),   # ISO format
         country="India",
-        metadata={
-            "fetch_method": "rss",
-            "internal_source": source_name,
-        },
+        metadata={"fetch_method": "rss", "internal_source": source_name},
     )
 
 
@@ -135,7 +128,6 @@ class NewsAdapter(SourceAdapter):
     priority = 60
 
     def is_enabled(self, settings):
-        # Enabled when we have anything to look for — targets OR industries
         return bool(settings.get("targets") or settings.get("industries"))
 
     def fetch(self, settings):
@@ -146,13 +138,13 @@ class NewsAdapter(SourceAdapter):
                 if not body:
                     log.info(f"[news] {source_name}: 0 lead(s) (feed empty)")
                     continue
-                items = _parse_rss(body, source_name, max_items=30)
+                items = _parse_rss(body, source_name, max_items=20)   # per-feed cap, not global
                 for r in items:
                     leads.append(_dict_to_lead(source_name, r))
                 log.info(f"[news] {source_name}: {len(items)} lead(s)")
             except Exception as e:
                 log.warning(f"[news] {source_name}: ERROR {str(e)[:120]}")
-        return leads[:200]
+        return leads   # no global cap — all 10 feeds contribute
 
 
 register(NewsAdapter())
