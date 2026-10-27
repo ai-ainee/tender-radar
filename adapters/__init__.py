@@ -360,12 +360,12 @@ def reset():
 def _auto_register():
     adapter_modules = [
         ("discovery", "adapters.discovery", "DiscoveryAdapter"),
+        ("filings",   "adapters.filings",   "FilingsAdapter"),
         ("hiring",    "adapters.hiring",    "HiringAdapter"),
-        ("tenders", "adapters.tenders", "TendersAdapter"),
-        # Future category adapters:
-        # ("filings", "adapters.filings", "FilingsAdapter"),
-        # ("news",    "adapters.news",    "NewsAdapter"),
-        # ("company", "adapters.company", "CompanyAdapter"),
+        ("expansion", "adapters.expansion", "ExpansionAdapter"),
+        ("news",      "adapters.news",      "NewsAdapter"),
+        ("company",   "adapters.company",   "CompanyAdapter"),
+        # ("tenders", "adapters.tenders", "TendersAdapter"),  # disabled — all sources blocked
     ]
     for slug, module_path, class_name in adapter_modules:
         try:
