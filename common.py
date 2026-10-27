@@ -344,9 +344,16 @@ class SearchEngine:
             return n
         for page in range(1, max(1, pages) + 1):
             got = None
-            if self.serper: got = self._serper(q, gl, page, recent)
-            if got is None and self.brave: got = self._brave(q, gl, page, recent)
-            if got is None or add(got) == 0: break
+            # Brave first — 2,000/month renewable quota
+            if self.brave:
+                got = self._brave(q, gl, page, recent)
+            # Serper only if Brave failed or returned nothing
+            if not got and self.serper:
+                got = self._serper(q, gl, page, recent)
+            if not got:
+                break
+            if add(got) == 0:
+                break
             time.sleep(0.4)
         if not results: add(self._ddgs(f"{q} {country}".strip() if country and country.lower() not in q.lower() else q, country, recent))
         return results
