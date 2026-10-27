@@ -762,3 +762,30 @@ mou_signing|ministryofdefence|||2026-10|
 valuation_markdown|bailliegifford|80|percent|2026-10|india
 company_launch|provisionlabs|||2026-10|
 financial_earnings|aequs|52.4|inr crore|2026-10|india
+investment|exideindustrieslimited|||2026-10|
+stock_volume|zaggleprepaidoceanserviceslimited|||2026-10|
+auction|reservebankofindia|||2026-10|
+hiring|kansasassociationofcounties|||2026-10|
+reseller_listing|wroffytechnologies|||2026-06|
+hiring|safran|Design Engineer|position|2026-10|bengaluru,karnataka,india
+hiring|google|Network Implementation Engineer AutoCAD Drafter|position|2026-10|singapore
+blog_post|sanjaykumarsingh|||2025-04|
+product_marketing|actcad|||2026-07|
+company_blog|c-designpvtltd|||2026-02|
+mou_signing|autodesk|||2025-05|
+gcc_expansion|autodesk|||2026-08|
+industry_report|autodesk/idc|||2020-07|
+capex|adanigroup|100|usd billion|2026-02|ahmedabad
+capex|airtrunk|3|lakh crore inr|2026-02|india
+career_blog|atkinsrealos|||2025-01|
+service_listing|outsource2india|||2026-10|
+company_blog|sunconengineers|||2025-09|
+hiring|walterpmoore|||2026-10|
+order win / financial results|larsen&toubro|5202|inr crore|2026-10|india
+operations|akasaair|||2026-10|
+partnership|ministryofdefence|5|years|2026-10|newdelhiindia
+expansion|wow!momofoods|20|outlets|2026-10|srilanka
+financial|iciciprudentialmutualfund|||2026-10|
+hiring|bharathcloud|500|employees|2026-10|hyderabadindia
+capex|mahindralifespacedevelopers|1250|inr crores|2026-10|bengaluruindia
+purchase order|wabtec|8.39e+09|inr|2026-10|india
