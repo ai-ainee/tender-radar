@@ -121,7 +121,12 @@ class FilingsAdapter(SourceAdapter):
         return leads
 
     def _keywords(self, settings):
-        return (settings.get("targets") or []) + (settings.get("industries") or [])
+        industries = settings.get("industries") or []
+        base = [k for k in industries if k and k != "ALL_SECTORS"]
+        # Fallback generic signals that indicate a buying event in any industry
+        GENERIC = ["capex", "expansion", "order", "contract", "acquisition",
+                   "investment", "facility", "plant", "construction", "tender"]
+        return base + GENERIC
 
     def _fetch_bse(self, settings):
         if not _HAS_BSE:
