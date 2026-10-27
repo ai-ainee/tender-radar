@@ -65,10 +65,21 @@ def _parse_rss(xml_text, keywords, source_name, max_items=50):
             date = (item.findtext("pubDate") or "").strip()
             if not title or not link:
                 continue
-            if kw_lower:
-                hay = (title + " " + desc).lower()
-                if not any(k in hay for k in kw_lower):
-                    continue
+            # Intentionally NOT filtering by product keyword — general business news
+    # rarely mentions product names directly. AI evaluator downstream will
+    # reject non-relevant articles. Pre-filtering here was rejecting 99% of
+    # leads before AI even saw them.
+    if kw_lower:
+        # Only filter if the article is obviously out of scope — requires
+        # a business/procurement/expansion keyword, not a product keyword.
+        INTENT_HINTS = (
+            "tender", "procurement", "expansion", "capex", "facility",
+            "plant", "contract", "order", "project", "hiring", "investment",
+            "acquisition", "partnership", "commission", "launch",
+        )
+        hay = (title + " " + desc).lower()
+        if not any(hint in hay for hint in INTENT_HINTS):
+            continue
             out.append({
                 "title": title[:300],
                 "url": link,
