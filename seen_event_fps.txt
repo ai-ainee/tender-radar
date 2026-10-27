@@ -715,3 +715,50 @@ partnership|autodesk|||2023-04|
 partnership|designworld|||2015-03|
 product_release|autodesk|||2018-04|
 article_publication|engineering.com|||2022-10|
+auction_result|reservebankofindia|||2026-10|
+service_offering|corpbiz|||2026-10|
+hiring|integraengineeringpvt.ltd.|RFQ Design Engineer|job_opening|2026-10|panchmahal
+service_offering|ahromlabs|||2026-10|
+hiring|vanderlande|Mechanical Project Engineer|job_opening|2026-10|marietta_ga
+content_marketing|clevorafirms|||2026-10|
+service_offering|adzio|||2026-10|
+http_error|indiangasexchangelimited|||2026-08|
+product_catalog|inspraysystems|||2026-10|
+freelancer_listing|upwork|||2026-10|
+automation_implementation|gaylordindustries|||2026-10|
+capacity_expansion|bpc_india|BIM_INTEGRATION||2026-10|india
+software_usage|dg_design_construction|CAD_LICENSES||2026-10|navi_mumbai
+hiring|tata_projects|INFRASTRUCTURE_RECRUITMENT||2026-10|india
+staffing_services|davron|||2026-10|
+generic_careers_page|larsen_and_toubro|||2026-10|
+careers_page|heromotocorp|||2024-01|
+careers_page|accenture|||2026-10|
+careers_page|hcltech|||2025-01|
+contract_awarded|larsen&toubro|5000-10000|inr_crore|2026-10|dhaka
+capex|adanigreenenergylimited|8200|inr crore|2023-05|ahmedabad
+debt recovery|reliancecapital|10000|inr crore|2023-05|mumbai
+earnings announcement|mankindpharma|716|inr crore|2026-10|newdelhi
+brokerage report|jefferies|||2026-10|
+recruitment|governmentofnctofdelhi|15000|personnel|2024-12|newdelhi
+order_win|larsen&toubro|5000|inr_crore|2026-10|dhaka
+capex|coalindialimited|7996|inr_crore|2026-10|india
+capex|governmentofindia|11200|mw|2026-10|arunachalpradesh
+procurement_approval|ministryofdefence|212000|inr crore|2026-10|india
+capex|nanenaex|750|inr crore|2026-10|india
+product_launch|phonepe|||2026-10|
+capex|transformersandrectifiers(india)limited|1250|inr crore|2026-10|gujarat
+earnings_release|kfin_technologies|401.8_CRORE|inr|2026-10|india
+capacity_expansion|banas_dairy|515|tonnes_per_day|2026-10|banaskantha_gujarat_india
+contract_award|reliance_industries_limited|||2026-10|
+capex_spending|coal_india_limited|27|percent_growth|2026-10|india
+product_launch|truecaller|||2026-10|
+diplomatic_talks|government_of_india|||2026-10|
+capex|banasdairy|325|inr crores|2026-10|gujarat
+capex|tatapowerandbpcl|250|inr crores|2026-10|mumbai
+market report|kotak|||2026-10|
+project completion|hindustanzinc|||2026-10|
+funding_round|cent|15|usd million|2026-10|india
+mou_signing|ministryofdefence|||2026-10|
+valuation_markdown|bailliegifford|80|percent|2026-10|india
+company_launch|provisionlabs|||2026-10|
+financial_earnings|aequs|52.4|inr crore|2026-10|india
