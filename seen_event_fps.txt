@@ -662,3 +662,24 @@ blog_post|autodesk|||2023-12|
 blog_post|autodesk|||2024-04|
 article|chemanager|||2017-08|
 case_study|autodesk|||2022-03|
+rfp|brahmosaerospaceprivatelimited|5|licenses|2025-10|india
+reseller_listing|wroffytechnologies|||2026-10|
+vendor_product_page|autodesk|||2026-10|
+reseller_listing|glamtechenterprises|||2026-10|
+service_provider_listing|cadoutsourcingservices|||2026-10|
+capex|everestindustriesltd|1870|inr million|2023-03|karnataka
+hiring draftsperson|greythr|600000|inr|2026-10|mumbai
+engineering consultancy services|leadconsultancyandengineeringservices(india)pvtltd|||2026-10|
+engineering consultancy operations|leadconsultancyandengineeringservices(india)privatelimited|||2026-10|
+hiring design engineer|caterpillarinc.|R0000401756|requisition id|2026-10|bangalore
+recruitment_agency|collarsearch|||2026-10|
+vendor_content|autodesk|||2024-03|
+vendor_content|autodesk|||2023-06|
+vendor_content|autodesk|||2024-07|
+product_launch|autodesk|||2013-03|
+hiring|caterpillarinc.|Junior CAD Engineer|role|2026-10|india
+hiring|heromotocorp|Junior CAD Engineer|role|2026-10|india
+hiring|sunpharma|Junior CAD Engineer|role|2026-10|india
+hiring|sunpharmaceuticalindustriesltd|||2026-10|
+hiring|l&t|||2026-10|
+vendor_empanelment|reliance|||2026-10|
