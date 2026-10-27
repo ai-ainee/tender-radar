@@ -59,7 +59,7 @@ def _http_get(url, timeout=15, max_bytes=1_500_000):
 
 
 def _parse_rss_items(xml_text, keywords, source_name):
-    """Parse RSS → list of {title, url, snippet, date}. Filters by keywords."""
+    """Parse RSS → list of {title, url, snippet, date, source_url, source_text}."""
     if not xml_text:
         return []
     kw_lower = [str(k).lower() for k in (keywords or []) if k]
@@ -71,6 +71,11 @@ def _parse_rss_items(xml_text, keywords, source_name):
             link = (item.findtext("link") or "").strip()
             desc = (item.findtext("description") or "").strip()
             date = (item.findtext("pubDate") or "").strip()
+            # Extract <source url="..."> element — critical for Google News
+            # vendor detection (Google always includes it).
+            source_elem = item.find("source")
+            source_url = source_elem.get("url", "") if source_elem is not None else ""
+            source_text = (source_elem.text or "").strip() if source_elem is not None else ""
             if not title or not link:
                 continue
             if kw_lower:
@@ -82,11 +87,49 @@ def _parse_rss_items(xml_text, keywords, source_name):
                 "url": link,
                 "snippet": re.sub(r"<[^>]+>", " ", desc)[:500],
                 "date": date[:30],
+                "source_url": source_url[:200],
+                "source_text": source_text[:100],
             })
     except Exception as e:
         log.debug(f"[discovery:{source_name}] RSS parse error: {str(e)[:80]}")
     return out
 
+def _is_vendor_source_url(source_url, source_text, targets):
+    """True if the article was published by a target-product vendor itself.
+
+    Critical for Google News RSS where the item link is news.google.com
+    (a redirect URL), but the <source url> attribute reveals the actual
+    publisher. When that's autodesk.com, the article is a vendor press
+    release — not a buyer signal.
+
+    Product-agnostic — matches against target_products AND against
+    VENDOR_DOMAIN_KEYWORDS from adapters/__init__.py.
+    """
+    src_low = (source_text or "").lower()
+    url_low = (source_url or "").lower()
+    if not src_low and not url_low:
+        return False
+
+    # 1. Match against target product names
+    for t in targets:
+        t_low = str(t).lower().strip()
+        if not t_low:
+            continue
+        first_word = t_low.split()[0]
+        if len(first_word) >= 4:
+            if first_word in src_low or first_word in url_low:
+                return True
+
+    # 2. Match against known vendor domains
+    try:
+        from adapters import VENDOR_DOMAIN_KEYWORDS
+        for kw in VENDOR_DOMAIN_KEYWORDS:
+            if kw in url_low:
+                return True
+    except Exception:
+        pass
+
+    return False
 
 def _looks_like_vendor_announcement(title, target_products):
     """Product-agnostic check for vendor press releases.
