@@ -789,3 +789,48 @@ financial|iciciprudentialmutualfund|||2026-10|
 hiring|bharathcloud|500|employees|2026-10|hyderabadindia
 capex|mahindralifespacedevelopers|1250|inr crores|2026-10|bengaluruindia
 purchase order|wabtec|8.39e+09|inr|2026-10|india
+corporate_filing|routemobilelimited|||2026-10|
+regulatory_intimation|schaefflerindialimited|||2026-10|
+conference|reservebankofindia|||2026-10|
+press_release|reservebankofindia|||2026-10|
+social_media_discussion|amriththandra|||2026-10|
+tender|canarabank|||2026-10|
+tender|gujaratindustrialresearchanddevelopmentagency|||2026-10|
+order_win|nlcindialimited|5.2532e+12|inr|2026-09|india
+vendor_page|indiamartseller|||2026-10|
+vendor_page|techsoupindia|||2026-10|
+learning_platform|linkedin|||2026-10|
+vendor_contact|autodesk|||2026-10|
+marketplace_directory|tradeindia|||2026-10|
+blog_comparison|buildambit|||2026-10|
+competition_event|worldskills|||2026-10|
+hiring_service|devloit|||2024-10|
+blog_post|heavengreenenergy|||2026-06|
+tender|rashtriyachemicalsandfertilizerslimited|||2026-10|
+documentation|autodesk|||2024-10|
+marketing|autodesk|||2024-10|
+press_release|autodesk|||2024-10|
+training_offering|caddexindia|||2026-10|
+blog_content|skill-lync|||2020-07|
+training_offering|nettechindia|||2026-10|
+capex_project|acegroup|15|million sq ft|2023-07|noida
+blog_content|auromaarchitecture|||2025-04|
+news article|isro|||2026-09|
+commercial architectural portfolio|morphogenesis|7.1e+06|sq ft|2026-10|india
+hiring|hifit|||2026-10|
+hiring|questglobal|||2026-10|
+hiring|princetechengineeringservices|||2026-10|
+hiring|biotalentsearch|||2026-05|
+hiring|hydrogensystems|4 to 9 years|years experience|2025-10|kochi
+vendor_profile|inventiveengineeringandtechnologypvt.ltd.|||2026-10|
+vendor_profile|inclinedengineering&consultancy|||2026-10|
+vendor_profile|cadeosys|||2026-10|
+capex|larsen&toubro|78750|inr crore|2026-10|mumbai
+capex|geradevelopments|||2026-10|
+partnership|cognizant|||2026-10|
+capex|tesla|86|inr crores|2026-10|india
+hiring|latentviewanalytics|||2026-10|
+capex|jlr|||2026-10|
+order_win|sigmaadvancedsystems|102|usd million|2026-10|india
+capex|mumbaimetro|13856|inr crores|2026-10|mumbai
+other|cial|||2026-10|
