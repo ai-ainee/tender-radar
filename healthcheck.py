@@ -179,7 +179,7 @@ def main(live=True):
         t0 = time.time()
         sheet = SheetAPI()
         cfg = sheet.get("get_settings")
-        n_targets = len(cfg.get("target_products") or [])
+        n_targets = len((cfg or {}).get("target_products") or [])
         add(OK if n_targets else WARN,
             f"Apps Script webhook OK in {time.time() - t0:.1f}s; "
             f"{n_targets} target product(s) in Settings", False)
@@ -214,7 +214,8 @@ def main(live=True):
     crit = state["critical"]
     head = (f"🩺 <b>Radar health check</b> - "
             f"{'ALL GOOD' if not any(l.startswith((BAD, WARN)) for l in lines) else ('PROBLEMS' if crit else 'warnings')}")
-    Telegram().send(head + "\n" + "\n".join(tg_escape(l) for l in lines))
+    full_msg = head + "\n" + "\n".join(tg_escape(l) for l in lines)
+    Telegram().send(full_msg[:4000])   # Telegram limit is 4096, leave margin(head + "\n" + "\n".join(tg_escape(l) for l in lines))
     RUN_INFO.update(stats={"critical": crit, "checks": len(lines)})
     if crit:
         RUN_INFO.update(degraded=True, degraded_reason=f"{crit} critical check(s) failed")
