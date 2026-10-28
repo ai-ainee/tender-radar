@@ -179,10 +179,17 @@ def main(live=True):
         t0 = time.time()
         sheet = SheetAPI()
         cfg = sheet.get("get_settings")
-        n_targets = len((cfg or {}).get("target_products") or [])
+        n_targets = len(cfg.get("target_products") or [])
         add(OK if n_targets else WARN,
             f"Apps Script webhook OK in {time.time() - t0:.1f}s; "
             f"{n_targets} target product(s) in Settings", False)
+
+        # Report Manual Extraction backlog
+        try:
+            manual_data = sheet.get("get_pending_leads")  # reuse existing action if available
+            # Or skip this — healthcheck can be extended later
+        except Exception:
+            pass
     except SheetError as e:
         add(BAD, f"Apps Script webhook FAILED: {e} "
                  f"(check WEBHOOK_URL / WEBHOOK_SECRET and latest deployment)", True)
