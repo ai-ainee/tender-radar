@@ -876,7 +876,7 @@ class Router:
         self.allowed_countries = allowed_countries or []
         self.event_fps = event_fps if event_fps is not None else set()
         self.company_dedup = company_dedup
-     def push_manual(self, lead, reason, notes=""):
+    def push_manual(self, lead, reason, notes=""):
         """Route a lead that passed gates but couldn't be auto-processed.
 
         Used for cases where automatic extraction failed but the URL
