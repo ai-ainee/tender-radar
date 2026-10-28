@@ -71,6 +71,7 @@ SHEET_INBOX = "📥 Inbox"
 SHEET_REVIEW = "⚠️ Needs Review"
 SHEET_PARTNERS = "🤝 Partners & Suppliers"
 SHEET_TRASH = "🗑 AI_Trash"
+SHEET_MANUAL = "🔍 Manual Extraction"
 
 DRY_RUN = "--dry-run" in sys.argv or os.getenv("RADAR_DRY_RUN") == "1"
 
@@ -868,12 +869,48 @@ BATCH:
         return recovered
 
 # ── Router ────────────────────────────────────────────────────────────
+
 class Router:
     def __init__(self, sheet, allowed_countries=None, event_fps=None, company_dedup=None):
         self.sheet = sheet
         self.allowed_countries = allowed_countries or []
         self.event_fps = event_fps if event_fps is not None else set()
         self.company_dedup = company_dedup
+     def push_manual(self, lead, reason, notes=""):
+        """Route a lead that passed gates but couldn't be auto-processed.
+
+        Used for cases where automatic extraction failed but the URL
+        passed all deterministic gates (URL unseen, not hallucination,
+        country OK, not vendor). Human reviews the tab weekly.
+        """
+        capture = datetime.now().strftime("%Y-%m-%d %H:%M")
+        lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(lead.url.encode()).hexdigest()[:10]}"
+        snippet = (lead.title or "")[:200]
+        if lead.snippet:
+            snippet += " — " + lead.snippet[:300]
+        row = [
+            capture,
+            lead.url,
+            lead.buyer_org or "Unknown",
+            snippet,
+            reason,
+            notes or "",
+            "⏳ Pending",
+            lead_id,
+        ]
+        log.info(f"[MANUAL] {lead.buyer_org or '?'} ({reason}) -> Manual Extraction | {lead.url[:80]}")
+        try:
+            self.sheet.post(
+                "insert_lead",
+                target_sheet=SHEET_MANUAL,
+                company_name=safe_cell(lead.buyer_org or "Unknown"),
+                signal_brief=safe_cell(f"[MANUAL-{reason.upper()}] {notes or ''}"),
+                row_data=[safe_cell(x) for x in row],
+                source_url=lead.url,
+            )
+        except SheetError as e:
+            log.warning(f"Manual routing failed: {e}")
+        return "MANUAL", lead.buyer_org or "Unknown", reason  
 
     def push(self, lead, ai_verdict, default_target, default_industry):
         # Merge AI verdict into StandardLead
@@ -944,9 +981,21 @@ class Router:
             confidence = "LOW"
             lead.why_engage_now = "[CONTENT PAGE] " + str(lead.why_engage_now or "")
 
-        # Assign Unidentified fallback
+        # Assign Unidentified fallback — but route snippet-only to Manual
         if lead.buyer_org.lower() in ("unknown", "unknown firm", ""):
             if is_valid and role != "SELLER":
+                # If fetch failed AND no company extracted, needs human eyes
+                is_thin = (
+                    lead.metadata.get("fetch_method") == "snippet"
+                    or lead.metadata.get("snippet_only")
+                    or len(lead.raw_text or "") < 300
+                )
+                if is_thin:
+                    return self.push_manual(
+                        lead,
+                        "no-company",
+                        "Page unreadable + AI couldn't extract company name"
+                    )
                 host = re.sub(r"[^a-z0-9]", "", urlparse(lead.url).netloc.lower().replace("www.", ""))[:18]
                 lead.buyer_org = f"Unidentified {hashlib.md5(lead.url.encode()).hexdigest()[:4]} {host}"
                 confidence = "LOW"
@@ -1212,7 +1261,7 @@ def main():
         "gate_budget": 0, "gate_hallucination": 0,
         "evaluated": 0,
         "inbox": 0, "review": 0, "partners": 0, "dupes": 0, "failed": 0,
-        "ai_rejected": 0, "ai_skipped": 0,
+        "ai_rejected": 0, "ai_skipped": 0, "manual": 0,
     }
 
     for lead in all_leads:
@@ -1291,6 +1340,11 @@ def main():
             verdict = vmap.get(idx)
             if verdict is None:
                 log.info(f"[ai-drop] no verdict for {lead.url[:80]} (buyer={lead.buyer_org or '?'})")
+                router.push_manual(
+                    lead,
+                    "ai-drop",
+                    "AI returned no verdict for this lead in a partial batch response"
+                )
                 mark_seen(seen, lead.url)
                 mark_fp(fps, _fingerprint(lead.raw_text))
                 continue
@@ -1317,6 +1371,8 @@ def main():
                     stats["ai_rejected"] += 1
             elif outcome == "PARTNER":
                 stats["partners"] += 1
+            elif outcome == "MANUAL":
+                stats["manual"] += 1  
             elif outcome == "DUPLICATE":
                 stats["dupes"] += 1
 
