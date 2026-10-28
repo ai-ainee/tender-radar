@@ -395,6 +395,42 @@ def likely_in_target(url, snippet, target_countries, target_states, target_citie
 def apply_quality_gates(lead, allowed_countries):
     """Operates on StandardLead; returns (lead, flags)."""
     flags = []
+    # Detects "product mentioned as location" false positives:
+    # "SITC of tower ACs at the CAD lab" — CAD is a room name, not the item.
+    # Triggers a Review flag when:
+    #   - the product word appears NEAR "lab/room/block/wing/department/facility"
+    #   - AND the procurement verb points to a non-software item
+    try:
+        _text = (lead.title or "") + " " + (lead.raw_text or "")[:2000]
+        _text_low = _text.lower()
+        _target_words = [w for w in
+                         (lead.metadata.get("target_product") or "").lower().split()
+                         if len(w) >= 4]
+        _LOCATION_NOUNS = ("lab", "laboratory", "room", "block", "wing",
+                           "department", "dept", "facility", "campus",
+                           "office", "building", "floor")
+        _NON_SOFTWARE_ITEMS = ("ac ", "a/c", "air condition", "tower ac",
+                                "split ac", "window ac", "furniture", "chair",
+                                "table", "desk", "painting", "paint ",
+                                "housekeeping", "cleaning", "electrical work",
+                                "plumbing", "civil work", "flooring",
+                                "tiles", "false ceiling", "cctv",
+                                "ups ", "dg set", "generator")
+        _product_near_location = False
+        for _t in _target_words:
+            for _loc in _LOCATION_NOUNS:
+                if _t + " " + _loc in _text_low or _t + "-" + _loc in _text_low:
+                    _product_near_location = True
+                    break
+            if _product_near_location:
+                break
+        if _product_near_location:
+            _has_non_sw = any(item in _text_low for item in _NON_SOFTWARE_ITEMS)
+            if _has_non_sw:
+                flags.append("PRODUCT-AS-LOCATION: target mentioned with a room/lab noun AND non-software procurement item")
+                log.info(f"   [location-context-flag] {lead.buyer_org}: target appears as location, not procurement")
+    except Exception:
+        pass  
 
     # Hard-reject unambiguously foreign URLs BEFORE trusting AI's country
     # claim. AI hallucinates "India" when the search query mentions it,
@@ -744,7 +780,37 @@ or documentation. Set confidence="LOW" (routes to Review, not Inbox).
 
 If the page SELLS or describes software/service offerings as the primary
 content, it is not a buyer — it is the vendor.
+═══ PRODUCT MENTION vs PRODUCT PROCUREMENT — critical ═══
+The target product may appear in the text as LOCATION CONTEXT rather than 
+as the actual procurement item. These are FALSE POSITIVES and must NOT 
+reach Inbox.
 
+❌ REJECT / score ≤60 / confidence="LOW" when:
+  • "SITC of 3 tower ACs at the CAD CAM lab" — procurement is ACs, "CAD lab" is a room name
+  • "Office furniture for the AutoCAD department" — procurement is furniture, "AutoCAD" is a dept name
+  • "Electrical work in the Revit training room" — procurement is electrical, "Revit room" is location
+  • "Housekeeping services for the CAD facility" — procurement is housekeeping
+  • "Painting work at the design studio" — procurement is painting
+  • "AC installation in the engineering wing" — procurement is AC
+
+✅ INBOX (score can be 70+) only when the target product IS what's 
+being procured, installed, or licensed:
+  • "Supply of 25 AutoCAD 2026 licenses"
+  • "Procurement of Revit subscription renewal"
+  • "Tender for CAD software for design department"
+  • "Implementation of BIM software at facility"
+  • "SITC of CAD workstations" — CAD workstations is the item being bought
+
+DECISION RULE: Ask yourself "what is being delivered?" If the answer is 
+the target product → valid. If the answer is ACs, furniture, painting, 
+housekeeping, or any non-software item → NOT a target product lead, 
+even if "CAD", "AutoCAD", or "Revit" appears in the text.
+
+When the product appears ONLY as a location/department/room name:
+  → Set is_valid=false AND entity_role="IRRELEVANT" 
+  → OR set confidence="LOW" and score ≤60 (will route to Review)
+
+Never score 70+ when the target product is incidental context.
 ═══ EVALUATION RULES ═══
 1. INBOX (is_valid=true, confidence="HIGH"):
    - Text mentions ANY product in TARGET PORTFOLIO
