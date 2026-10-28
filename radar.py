@@ -428,8 +428,22 @@ def apply_quality_gates(lead, allowed_countries):
     expiry = str(lead.expiry_status or "UNKNOWN").upper()
     if expiry in ("CLOSED", "COMPLETED"):
         evidence = str(lead.expiry_evidence or expiry).strip()
-        flags.append(f"EXPIRED: {evidence[:80]}")
-
+        # Guard against AI misinterpreting order wins as expiries.
+        # "Placed a record ₹52,532 crore order" is a BUY signal, not expiry.
+        _FALSE_EXPIRY = (
+            "placed a record", "placed an order", "placed order",
+            "won a contract", "won contract", "awarded a",
+            "order win", "bagged", "secured order",
+            "record order", "large order", "order intake",
+            "commissioned", "commissioning",
+        )
+        _ev_low = evidence.lower()
+        if any(t in _ev_low for t in _FALSE_EXPIRY):
+            log.info(f"   [expiry-override] AI said CLOSED but evidence is order-win: {evidence[:80]}")
+            lead.expiry_status = "ACTIVE"
+            lead.expiry_evidence = ""
+        else:
+            flags.append(f"EXPIRED: {evidence[:80]}")
     genuine = str(lead.genuineness or "GENUINE").upper()
     if genuine not in ("GENUINE", "") and genuine != "RESELLER":
         flags.append(f"NOT GENUINE: {genuine}")
@@ -513,7 +527,32 @@ def _as_list(value):
 def _fingerprint(text):
     norm = re.sub(r"[^a-z0-9]", "", (text or "").lower())[:3000]
     return hashlib.sha1(norm.encode()).hexdigest()[:16] if len(norm) >= 200 else ""
+  
+def _is_staffing_agency(org):
+    """True if org name looks like a recruitment / staffing agency.
 
+    Prevents recruiters (Biotalent Search, Manpower, etc.) from reaching
+    Inbox via CONFIDENCE-OVERRIDE / SCORE-OVERRIDE just because they're
+    hiring for a client. Real buyers hire directly; recruiters hire for
+    someone else. This blocks the recruiter, not the end-client.
+    """
+    if not org:
+        return False
+    org_low = str(org).lower().strip()
+    STAFFING_TERMS = (
+        "recruit", "staffing", "manpower", "placement services",
+        "executive search", "talent acquisition", "talent search",
+        "hr solutions", "hr services", "headhunting", "headhunter",
+        "biotalent", "hiring solutions", "career solutions",
+        "hr consulting", "people solutions", "resourcing",
+    )
+    if any(term in org_low for term in STAFFING_TERMS):
+        return True
+    # "X Search" where X is people-related (Biotalent Search, Talent Search)
+    if org_low.endswith(" search") and any(w in org_low for w in
+            ("talent", "bio", "people", "human", "executive", "career", "staffing")):
+        return True
+    return False
 
 def safe_cell(v):
     """Prefix dangerous cell values to prevent formula injection in Sheets.
@@ -960,13 +999,15 @@ class Router:
             bool(soft_gates)
             and all("HIRING_SIGNAL" in str(s).upper() for s in soft_gates)
         )
+        _is_staffing = _is_staffing_agency(lead.buyer_org)
         score_override = (
             is_valid
-            and role not in ("SELLER", "IRRELEVANT")
+            and role not in ("SELLER", "IRRELEVANT", "SERVICE_USER")
             and not hard_gates
             and freshness != "STALE"
             and hiring_only_soft
             and score_num >= 85
+            and not _is_staffing
         )
         if score_override:
             log.info(f"[SCORE-OVERRIDE] {lead.buyer_org} score={score_num} — HIRING_SIGNAL with strong score → Inbox")
@@ -980,10 +1021,11 @@ class Router:
             is_valid
             and role in ("BUYER", "PROJECT_BUYER")
             and confidence == "LOW"
-            and gate_ok                     # no gate flags at all
+            and gate_ok
             and freshness != "STALE"
             and score_num >= 70
-            and not score_override          # Group D would already handle this
+            and not score_override
+            and not _is_staffing
         )
         if confidence_override:
             log.info(f"[CONFIDENCE-OVERRIDE] {lead.buyer_org} score={score_num} — LOW confidence but clean pass → Inbox")
