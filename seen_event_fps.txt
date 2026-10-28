@@ -834,3 +834,33 @@ capex|jlr|||2026-10|
 order_win|sigmaadvancedsystems|102|usd million|2026-10|india
 capex|mumbaimetro|13856|inr crores|2026-10|mumbai
 other|cial|||2026-10|
+acquisition|oswalgreentechlimited|||2026-10|
+rights_issue|shivamautotechlimited|||2026-10|
+acquisition|indo-nationallimited|||2026-10|
+hiring|securedengineerspvtltd|MEPF Sales Careers|roles|2026-10|india
+vendor_profile|grammycommunicationspvt.ltd.|Matrix Solutions|reseller|2026-10|new_delhi
+training_promotion|electricityforum|Motor Control Training|course|2026-10|india
+profile_authwall|easternbearingspvtltd|Process Engineer|profile|2026-10|india
+vendor_services|outsource2india|Architectural CAD Drafting Services|service|2026-10|india
+social_media_portfolio|rayvatgroup|||2017-10|
+vendor_service_page|indiacadworks|||2026-10|
+vendor_offering|elogictech|||2026-10|
+blog_article|dinllp|||2025-12|
+vendor_offering|concovinteriors|||2026-10|
+vendor_offering|tejjyinc.|||2026-10|
+vendor_offering|gsourcetechnologies|||2026-10|
+vendor_offering|outsourced|||2026-10|
+hiring_job|worley|||2026-10|
+service_offering|hbsconsultancy|||2026-10|
+store_revamp|autodesk|||2026-06|
+order_win|subroslimited|1225|inr_crore|2026-10|india
+capex|gail(india)limited|63|usd_million|2026-10|ratnagiri_india
+market_intelligence|indianoilcorporation|peak demand 2035|year|2026-10|india
+order_cancellation|waareeenergies|||2026-10|
+project_announcement|nuceliontherapeutics|2 projects|projects|2026-10|india
+capex|gail(india)limited|6.3e+07|usd|2026-10|ratnagiri,maharashtra,india
+financial_news|adanienterprises|1e+10|usd|2026-10|india
+bilateral_talks|ministryofportsshippingandwaterways|||2026-10|
+capex_expansion|bajajauto|80000|units/month|2026-10|india
+capex_expansion|emmvee|5500|inr crore|2026-10|india
+infrastructure_plan|governmentofkarnataka|100000|inr crore|2026-10|bengaluru
