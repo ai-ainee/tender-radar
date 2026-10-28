@@ -961,3 +961,54 @@ capex|foxconn|||2024-11|
 capex|anantraj|357|mw|2026-10|gurugram
 capex|governmentofindia|1856.67|inr crore|2026-10|india
 capex|l&t|1.5e+06|inr crore|2026-10|india
+order_win|acmesolarholdingslimited|||2026-10|
+restructuring|hexawaretechnologieslimited|||2026-10|
+company_profile|autocaddraftingindia|||2026-10|
+company_profile|dimensionindianetworkspvt.ltd.|||2026-10|
+company_profile|cadservicesindia|||2026-10|
+blog_post|alphacadservice|||2026-10|
+vendor_offering|siliconvalley|||2026-10|
+content_marketing|autocadindia|||2026-10|
+freelance_marketplace|cadcrowd|||2026-10|
+vendor_offering|riverstoneinfotech|||2026-10|
+content_marketing|powerkh|||2026-06|
+tender|architectural&engineeringconsultants|||2026-10|
+vendor_service|imarcengineering|||2026-10|
+vendor_service|encadtechnologiespvtltd|||2026-10|
+article|rajdeepenviroconllp|||2026-10|
+vendor_service|belmanflexiblesindia|||2026-10|
+capex|gestamp|Fifth Plant|facility|2026-10|gujaratindia
+hiring|neilsoft|||2026-10|
+vendor press release|autodesk|||2026-10|
+m&a news|schneiderelectric|22.6|billion|2026-10|france
+it services marketing|invitty|||2026-10|
+training services|edstellar|||2026-10|
+freelance|cadcrowd||||
+consulting service|asdvconsultant||||
+product_documentation|openconstructionerp|||2026-10|
+educational_course|sitesetuacademy|||2026-10|
+hiring|ey|5-10|years|2026-10|pune
+blog_post|capstone|||2026-10|
+service_offering|overseasmoguls|||2026-10|
+hiring|jsmgroup|||2026-10|
+hiring|slb|||2026-10|
+hiring|bharatheavyelectricalslimited|||2026-10|
+marketing|autodesk|||2026-10|
+legal|delhihighcourt|||2026-10|
+tender|ministryofrailways|||2026-10|
+hiring|autodesk|||2026-10|
+acquisition|grovecourtcapital|||2026-10|
+partnership|maire|||2026-09|
+capex|petrobras|||2026-04|
+blog post|engineersireland|||2025-07|
+earnings|vedantaaluminium|||2026-10|
+legal_dispute|samithchitspvtltd|407940|inr|2026-10|bengaluru
+investment_commitment|hdhyundai|||2026-10|
+government_scheme|unioncabinet|2.9267e+11|inr|2026-10|newdelhi
+government_scheme|unioncabinet|1e+11|inr|2026-10|newdelhi
+pricing_order|governmentofindia|||2026-10|
+financial_results|hindustanunileverlimited|1.8226e+11|inr|2026-10|mumbai
+capex|tvsmotor|||2026-10|
+program_launch|wadhwanifpo|||2026-10|
+research_cohort|iitkharagpur|6|usd million|2026-10|india
+government_scheme|unioncabinet|7396|inr crore|2026-10|india
