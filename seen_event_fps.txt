@@ -887,3 +887,42 @@ contract awarded|tataprojects|||2026-10|
 capex|adperma|3.45 lakh tonnes|tonnes|2026-10|haldia
 capex|kanodiagroup|1100|inr crores|2026-10|southdelhi
 capex|steamhouseindia|500|inr crores|2026-10|haryana
+order_win|unidt|||2026-10|
+hiring_signal|mstcltd|||2026-10|
+tender|bhelbhopal|||2026-10|
+tender|urbandevelopmentandenvironmentdepartmentmadhyapradesh|GEM/2026/B/8117530|tender id|2026-10|ujjainmadhyapradesh
+tender|andaman&nicobaradministration|3.51382e+12|ref|2026-10|southandaman
+tender|bharatheavyelectricalslimited|||2026-10|
+tender|kvlbusinesssolutions|||2026-10|
+blog|civilguruji|||2026-10|
+report|imarcgroup|||2026-05|
+services|shivaengineeringservices|||2026-10|
+capex|tatasteel|23500|cr inr|2026-10|kalinganagar
+capex|hidpl|||2026-10|
+capex|patankar'screativeturnkeyprojectspvt.ltd.|1200|lacs|2026-10|pune
+capex|venkatesanr.|||2026-10|
+capex|axiomconsulting|||2026-10|
+product_marketing|vexors|||2026-10|
+partnership|danwayelectrical&mechanicalengineeringllc|||2026-10|
+market_news|lmpindia|||2026-10|
+hiring|johnsoncontrols|||2026-10|
+tender|tendernews|||2026-10|
+tender|nhidcl|||2026-10|
+tender|multiplemunicipalbodies|2.5e+07|inr|2026-10|india
+partnership|autodesk|||2026-10|
+hiring|autodesk|||2026-09|
+capex|autodesk,inc.|||2026-10|
+partnership|ruatechnologies|||2026-10|
+training_offering|edstellar|||2026-10|
+software_pricing|autodesk|870|usd|2026-10|india
+service_terms|aws|||2026-10|
+software_reselling|theindiaenterprises|||2026-10|
+vendor_documentation|autodesk|||2026-10|
+educational_blog|universidadantoniodenebrija|||2026-10|
+partnership_announcement|technostructgroup|||2026-09|
+partnership_announcement|l&ttechnologyservices|||2025-11|
+partnership|lttsandautodesk|||2025-11|
+capex|telstar/merck|||2016-05|
+capex|governmentofindia|10000|inr crores|2026-10|india
+capex|larsen&toubro|1.5e+06|inr crores|2026-10|india
+order_win|jswgreentech|100|trucks|2026-10|india
