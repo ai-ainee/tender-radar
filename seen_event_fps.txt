@@ -864,3 +864,26 @@ bilateral_talks|ministryofportsshippingandwaterways|||2026-10|
 capex_expansion|bajajauto|80000|units/month|2026-10|india
 capex_expansion|emmvee|5500|inr crore|2026-10|india
 infrastructure_plan|governmentofkarnataka|100000|inr crore|2026-10|bengaluru
+capex|vishnuchemicalslimited|||2026-10|
+regulatory_direction|reservebankofindia|||2026-10|
+tender|publicworksdepartment,chhattisgarh|||2026-10|
+service_offering|conciletechsystems|||2026-10|
+reseller_offering|indiaenterprises|||2026-10|
+tender|patrimóniocultural,ip|61711.1|eur|2026-06|portugal
+event|openlm|||2026-10|
+hiring|hewlettpackardenterprise|||2026-10|
+vendor_listing|ainosoftechnology|||2026-10|
+cad_drawing_share|planndesignpro||||
+blog_post_guidance|talhive|||2026-09|
+office_opening|autodesk|||2026-10|
+hiring|mtaarchitects|AutoCAD Draftsperson|position|2026-10|chennai_tamil_nadu_india
+hiring|vineetsinhaarchitects|AutoCAD Drafter|position|2026-10|mumbai_maharashtra_india
+hiring_cad_engineer|impact_hr_km_solutions|1|job_opening|2026-09|nashik_maharashtra_india
+training_institute_blog|caddex_india|||2026-10|
+hiring_design_engineer|impact_hr_km_solutions|2|job_openings|2026-10|nashik_maharashtra_india
+training_institute_talent_portal|caddex_india|||2026-10|
+contract awarded|tataprojects/gsfc|||2026-10|
+contract awarded|tataprojects|||2026-10|
+capex|adperma|3.45 lakh tonnes|tonnes|2026-10|haldia
+capex|kanodiagroup|1100|inr crores|2026-10|southdelhi
+capex|steamhouseindia|500|inr crores|2026-10|haryana
