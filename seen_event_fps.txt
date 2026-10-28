@@ -926,3 +926,38 @@ capex|telstar/merck|||2016-05|
 capex|governmentofindia|10000|inr crores|2026-10|india
 capex|larsen&toubro|1.5e+06|inr crores|2026-10|india
 order_win|jswgreentech|100|trucks|2026-10|india
+financial_results|aeroflex|||2026-10|
+regulatory_direction|reservebankofindia|||2026-07|
+tender|localselfgovernmentdepartmentkerala|||2026-10|
+hiring|judgegroupinc|||2026-09|
+tender|irrigation&caddepartmenttelangana|1368.72|crore inr|2026-10|telangana
+tender|jammu&kashmirtenderauthority|2.68e+06|inr|2026-10|jammu&kashmir
+tender|keralapublicworksdepartment|Refer Document|inr|2026-10|ernakulam,kerala
+hiring|hitachienergy|||2026-10|
+hiring|hitachi|||2026-10|
+partnership|sourcecad|||2026-10|
+vendor_page|teslacadsolutions|||2026-10|
+vendor_page|uppteam|||2026-10|
+hiring_signal|optimizationconsultants|||2026-04|
+event_mention|autodesk|||2026-03|
+job_listing|scstechindia|||2026-10|
+tender_aggregation|various|66|tenders|2026-10|karnataka
+banking_services|saudinationalbank|||2026-10|
+product_listing|miniteksystems|||2026-10|
+hiring|caterpillar|||2026-10|
+hiring|cisco|||2026-10|
+hiring|accenture|||2026-10|
+hiring|societegenerale|||2026-10|
+hiring|puma|||2026-10|
+hiring|appleretail|||2026-10|
+hiring|thyssenkruppnuceraindiaprivatelimited|||2026-10|
+blog|autodesk|||2025-09|
+product_launch|doka|||2020-03|
+partnership|ohiouniversity|||2025-11|
+product_launch|techsoft3d|||2019-03|
+product_launch|bricsys|||2018-11|
+company_news|prescient|||2020-05|
+capex|foxconn|||2024-11|
+capex|anantraj|357|mw|2026-10|gurugram
+capex|governmentofindia|1856.67|inr crore|2026-10|india
+capex|l&t|1.5e+06|inr crore|2026-10|india
