@@ -282,7 +282,13 @@ class SearchEngine:
     @staticmethod
     def clean_query(query):
         q = re.sub(r"(site:|intitle:|inurl:)\S+", " ", str(query or ""), flags=re.I)
-        q = re.sub(r'[-"()]', " ", q)
+        # Preserve -word (Google negative operator) but normalise other punctuation.
+        # (1) hyphen between two word chars → just a separator
+        q = re.sub(r"(\w)-(\w)", r"\1 \2", q)
+        # (2) isolated hyphens (space on both sides) → space
+        q = re.sub(r"(?<!\w)-(?!\w)", " ", q)
+        # (3) quotes and parens → space
+        q = re.sub(r'"|\(|\)', " ", q)
         return " ".join(re.sub(r"\bOR\b", " ", q).split())[:300]
     @staticmethod
     def gl_code(country):
