@@ -85,6 +85,32 @@ SHEET_TRASH = "🗑 AI_Trash"
 SHEET_MANUAL = "🔍 Manual Extraction"
 
 DRY_RUN = "--dry-run" in sys.argv or os.getenv("RADAR_DRY_RUN") == "1"
+# Job-portal hostnames — these are listings/aggregators, never direct buyers.
+# Serper's site: queries for hiring produce these; filtering here saves an
+# AI call per row (~5-15s each) and keeps the Trash tab clean.
+JOB_PORTAL_HOSTS = {
+    "indeed.com", "glassdoor.com", "glassdoor.co.in", "naukri.com",
+    "naukrigulf.com", "instahyre.com", "ambitionbox.com",
+    "foundit.in", "founditgulf.com", "shine.com", "timesjobs.com",
+    "jobrapido.com", "jobleads.com", "jobitus.com", "expertini.com",
+    "getmereferred.com", "talentmate.com", "himalayas.app",
+    "bayt.com", "gulftalent.com", "hirect.in", "apna.co",
+    "workindia.in", "jobhai.com", "wellfound.com", "jobsora.com",
+    "upwork.com", "freelancer.com", "freelancer.in",
+    "jobted.in", "careerjet.co.in", "jooble.org", "jobted.com",
+    "workatastartup.com", "jobtoday.com", "monster.com",
+    "ziprecruiter.com", "dice.com", "careerbuilder.com",
+    "placementindia.com", "theirstack.com", "jobma.com",
+    "jobaaj.com", "jobsora.com", "ladders.com",
+}
+
+def _is_job_portal_host(url):
+    try:
+        host = urlparse(url or "").netloc.lower()
+        host = host[4:] if host.startswith("www.") else host
+        return any(host == h or host.endswith("." + h) for h in JOB_PORTAL_HOSTS)
+    except Exception:
+        return False
 
 
 # ── Caches ────────────────────────────────────────────────────────────
@@ -495,18 +521,25 @@ HALLUCINATED_COMPANY_PATTERNS = (
 )
 
 def _is_hallucinated_company(*texts):
+    """Checks org/title text against known AI-hallucination patterns.
+
+    The explicit HALLUCINATED_COMPANY_PATTERNS list below is comprehensive
+    and catches every observed fake-name pattern. The old 'And/Or'
+    heuristic was removed because it caused ~10-15 false positives per
+    run on legitimate NSE/BSE filing titles like:
+      • "Intimation Of Completion Of Trials And Commencement Of Production"
+      • "Disclosure Reg 30 And 46"
+      • "Trading Window Closure And Business Update"
+    The specific patterns in HALLUCINATED_COMPANY_PATTERNS still catch
+    the same hallucinations the And/Or heuristic was designed for
+    (e.g. "3D Concept Analysis And Development India" is explicitly listed).
+    """
     for t in texts:
         if not t:
             continue
         low = str(t).lower()
         for pattern in HALLUCINATED_COMPANY_PATTERNS:
             if pattern in low:
-                return True
-        _m = re.search(r"\s+(Or|And)\s+", str(t), re.I)
-        if _m:
-            _left = str(t)[:_m.start()].split()
-            _right = str(t)[_m.end():].split()
-            if len(_left) >= 2 and len(_right) >= 2:
                 return True
     return False
 
@@ -1230,7 +1263,12 @@ def main():
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
             continue
-        # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
+      # NEW: hard filter — job portals never host direct buyer signals
+        if _is_job_portal_host(lead.url):
+            stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
+            log.debug(f"[JOB-PORTAL] {lead.url[:80]} — hostname is job board")
+            continue  
+      # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
         if not lead.metadata.get("is_job_url"):
             _halluc_hay = (lead.buyer_org or "") + " | " + (lead.title or "")
             if _is_hallucinated_company(_halluc_hay):
