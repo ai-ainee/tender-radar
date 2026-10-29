@@ -975,7 +975,13 @@ class Router:
                 source_url=lead.url,
             )
         except SheetError as e:
-            log.warning(f"Manual routing failed: {e}")
+            log.error(f"[MANUAL-FAILED] {lead.buyer_org or '?'} ({reason}): "
+                      f"{e} — will retry next run")
+            return "MANUAL_FAILED", lead.buyer_org or "Unknown", reason
+        # Mark company so the same entity does not flood Manual via different URLs.
+        if self.company_dedup and lead.buyer_org and \
+           not lead.buyer_org.lower().startswith("unidentified"):
+            self.company_dedup.mark(lead.buyer_org)
         return "MANUAL", lead.buyer_org or "Unknown", reason  
 
     def push(self, lead, ai_verdict, default_target, default_industry):
@@ -1047,26 +1053,53 @@ class Router:
             confidence = "LOW"
             lead.why_engage_now = "[CONTENT PAGE] " + str(lead.why_engage_now or "")
 
-        # Assign Unidentified fallback — but route snippet-only to Manual
+        # ── Unknown organization — route per Manual Extraction design ──
+        # AI returned a verdict but could not extract any organization name.
+        # Four sub-cases:
+        #   A. role=SELLER + no org   → Manual (seller-no-org)
+        #   B. is_valid=True + snippet-only + no org → Manual (snippet-no-org)
+        #   C. is_valid=True + thick page + no org  → Review as Unidentified (existing)
+        #   D. is_valid=False + no org              → fall through to normal reject Review routing
         if lead.buyer_org.lower() in ("unknown", "unknown firm", ""):
-            if is_valid and role != "SELLER":
-                # If fetch failed AND no company extracted, needs human eyes
-                is_thin = (
-                    lead.metadata.get("fetch_method") == "snippet"
-                    or lead.metadata.get("snippet_only")
-                    or len(lead.raw_text or "") < 300
+            _is_snippet = bool(
+                lead.metadata.get("snippet_only")
+                or lead.metadata.get("fetch_method") == "snippet"
+            )
+
+            if is_valid and role == "SELLER":
+                return self.push_manual(
+                    lead,
+                    "seller-no-org",
+                    "AI evaluated as SELLER but extracted no vendor name. "
+                    "Human must identify the vendor before routing to Partners.",
                 )
-                if is_thin:
-                    return self.push_manual(
-                        lead,
-                        "no-company",
-                        "Page unreadable + AI couldn't extract company name"
-                    )
-                host = re.sub(r"[^a-z0-9]", "", urlparse(lead.url).netloc.lower().replace("www.", ""))[:18]
+
+            if is_valid and _is_snippet:
+                return self.push_manual(
+                    lead,
+                    "snippet-no-org",
+                    "Page unreadable (snippet only); AI could not extract "
+                    "a company name. Verify URL and identify buyer manually.",
+                )
+
+            if is_valid:
+                # Thick page, valid buyer, still no org — traceable identifier.
+                host = re.sub(r"[^a-z0-9]", "",
+                              urlparse(lead.url).netloc.lower().replace("www.", ""))[:18]
                 lead.buyer_org = f"Unidentified {hashlib.md5(lead.url.encode()).hexdigest()[:4]} {host}"
                 confidence = "LOW"
-            else:
-                return "SKIPPED", lead.buyer_org, "unknown"
+                # fall through to normal Review routing
+
+            elif not is_valid:
+                # AI evaluated and rejected, but no org was named. Route as a
+                # visible rejection so it appears in Review with a clear reason
+                # rather than disappearing into the old SKIPPED branch.
+                if not lead.why_engage_now:
+                    lead.why_engage_now = (
+                        "[AI REJECTED — NO ORG] AI evaluated the page but "
+                        "could not identify a buyer organization"
+                    )
+                # fall through to normal reject routing below
 
         # Quality gates
         lead, gate_flags = apply_quality_gates(lead, self.allowed_countries)
@@ -1325,9 +1358,12 @@ def main():
         "gate_url_seen": 0,
         "gate_fp_dupe": 0,
         "gate_budget": 0, "gate_hallucination": 0,
+        "gate_banned_kw": 0,
         "evaluated": 0,
         "inbox": 0, "review": 0, "partners": 0, "dupes": 0, "failed": 0,
-        "ai_rejected": 0, "ai_skipped": 0, "manual": 0,
+        "ai_rejected": 0, "ai_skipped": 0,
+        "manual": 0, "manual_failed": 0,
+        "skipped": 0,
     }
 
     for lead in all_leads:
@@ -1339,6 +1375,17 @@ def main():
             stats["gate_hallucination"] = stats.get("gate_hallucination", 0) + 1
             log.info(f"[PRECHECK-HALLUC] {lead.url[:80]} — title/snippet contains known filler")
             continue
+        # Banned-keyword filter — was loaded in settings but never applied.
+        # Now catches macro-news entities (union cabinet, government of india,
+        # haryana erc, delhi high court) if user adds them to banned_keywords
+        # in Settings — saves ~25 AI calls/run.
+        if cfg["banned_kw"]:
+            _hay = ((lead.title or "") + " " + (lead.raw_text or "")[:1000]).lower()
+            _hit = next((kw for kw in cfg["banned_kw"] if kw and kw in _hay), None)
+            if _hit:
+                stats["gate_banned_kw"] += 1
+                log.info(f"[BANNED-KW] {lead.url[:80]} — matches '{_hit}'")
+                continue
         if lead.tender_id and lead.tender_id.upper() in tender_ids:
             stats["gate_tender_dupe"] += 1
             continue
@@ -1393,11 +1440,42 @@ def main():
 
         if not vmap:
             ai_failures += 1
-            log.warning(f"[ai] batch failed completely (attempt {ai_failures})")
+            log.warning(
+                f"[ai] batch failed completely (attempt {ai_failures}) — "
+                f"routing {len(batch)} lead(s) to Manual (LLM quota/outage)"
+            )
             for lead in batch:
-                mark_seen(seen, lead.url)
+                outcome, _, _ = router.push_manual(
+                    lead,
+                    "batch-fail",
+                    "AI batch failed after retries (LLM quota exhausted or "
+                    "all providers down). Verify URL manually.",
+                )
+                if outcome == "MANUAL":
+                    stats["manual"] += 1
+                    mark_seen(seen, lead.url)
+                    mark_fp(fps, _fingerprint(lead.raw_text))
+                    if lead.tender_id:
+                        mark_tender_seen(tender_ids, lead.tender_id)
+                else:
+                    stats["manual_failed"] += 1
             if ai_failures >= 4:
-                log.error("[ai] providers exhausted after 4 fallback batches")
+                log.error(
+                    "[ai] providers exhausted after 4 fallback batches — "
+                    "routing remaining leads to Manual"
+                )
+                for pending in filtered[i + AI_BATCH:]:
+                    outcome, _, _ = router.push_manual(
+                        pending,
+                        "batch-fail",
+                        "AI providers exhausted — not attempted. Verify URL manually.",
+                    )
+                    if outcome == "MANUAL":
+                        stats["manual"] += 1
+                        mark_seen(seen, pending.url)
+                        mark_fp(fps, _fingerprint(pending.raw_text))
+                    else:
+                        stats["manual_failed"] += 1
                 break
             continue
 
@@ -1405,14 +1483,22 @@ def main():
         for idx, lead in enumerate(batch):
             verdict = vmap.get(idx)
             if verdict is None:
-                log.info(f"[ai-drop] no verdict for {lead.url[:80]} (buyer={lead.buyer_org or '?'})")
-                router.push_manual(
+                log.info(f"[ai-drop] no verdict for {lead.url[:80]} "
+                         f"(buyer={lead.buyer_org or '?'}) — routing to Manual")
+                outcome, _, _ = router.push_manual(
                     lead,
                     "ai-drop",
-                    "AI returned no verdict for this lead in a partial batch response"
+                    "AI returned no verdict for this lead after 2 retries "
+                    "(partial batch response — LLM truncated output).",
                 )
-                mark_seen(seen, lead.url)
-                mark_fp(fps, _fingerprint(lead.raw_text))
+                if outcome == "MANUAL":
+                    stats["manual"] += 1
+                    mark_seen(seen, lead.url)
+                    mark_fp(fps, _fingerprint(lead.raw_text))
+                    if lead.tender_id:
+                        mark_tender_seen(tender_ids, lead.tender_id)
+                else:
+                    stats["manual_failed"] += 1
                 continue
 
             outcome, company, reason = router.push(
@@ -1438,7 +1524,11 @@ def main():
             elif outcome == "PARTNER":
                 stats["partners"] += 1
             elif outcome == "MANUAL":
-                stats["manual"] += 1  
+                stats["manual"] += 1
+            elif outcome == "MANUAL_FAILED":
+                stats["manual_failed"] += 1
+            elif outcome == "SKIPPED":
+                stats["skipped"] += 1
             elif outcome == "DUPLICATE":
                 stats["dupes"] += 1
 
@@ -1451,14 +1541,19 @@ def main():
         f"• Adapters produced: <code>{stats['adapter_total']}</code>",
         f"• After gates: <code>{len(filtered)}</code>",
         f"• Gate drops: tender-dupe={stats['gate_tender_dupe']} "
-        f"url-seen={stats['gate_url_seen']} fp-dupe={stats['gate_fp_dupe']}",
+        f"url-seen={stats['gate_url_seen']} fp-dupe={stats['gate_fp_dupe']} "
+        f"banned-kw={stats['gate_banned_kw']}",
         f"• CompanyDedup known: <code>{len(company_dedup)}</code>",
         f"• AI evaluated: <code>{stats['evaluated']}</code>",
         f"• New leads → Inbox {stats['inbox']}, Review {stats['review']}, "
         f"Partners {stats['partners']}",
-        f"• Duplicates: {stats['dupes']} • AI rejected: {stats['ai_rejected']}",
+        f"• Manual (needs human eyes): {stats['manual']}",
+        f"• Duplicates: {stats['dupes']} • AI rejected: {stats['ai_rejected']} "
+        f"• Skipped: {stats['skipped']}",
         f"• Duration: <code>{duration}</code>",
     ]
+    if stats.get("manual_failed"):
+        lines.append(f"• ⚠️ Manual webhook failures (retry next run): {stats['manual_failed']}")
     if stats.get("ai_skipped"):
         lines.append(f"• ⏱ Skipped by time budget: {stats['ai_skipped']} lead(s)")
     tg.send("\n".join(lines))
