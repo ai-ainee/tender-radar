@@ -1012,3 +1012,23 @@ capex|tvsmotor|||2026-10|
 program_launch|wadhwanifpo|||2026-10|
 research_cohort|iitkharagpur|6|usd million|2026-10|india
 government_scheme|unioncabinet|7396|inr crore|2026-10|india
+hiring|blissway|Electrical or Embedded Systems Engineer|position|2026-10|denver,co,usa
+news|unknown|||2026-10|
+hiring|thedevelopersarena|Software Engineer|position|2026-10|india
+capex|tidco|Ongoing Projects|industrial_parks|2026-10|tamilnadu,india
+research|stimsoncenter|Minerals for a New Industrial Age|research_project|2026-10|africa
+hiring|saisidha|AutoCAD Engineer|role|2026-10|india
+hiring|whirlpoolindialimited|Senior CAD Designer Drafting|role|2026-10|pune_maharashtra_india
+hiring|whirlpool|Senior CAD Designer Drafting|role|2026-10|india
+individual_profile|mumzeerpp|Senior Auto Cad Operator|profile|2026-10|kerala_india
+hiring|huntersinternationalsdnbhd|Senior CAD Draftsperson / BIM Modeler|role|2026-10|shah_alam_malaysia
+hiring|whirlpool,inc.|Senior CAD Designer Drafting|role|2026-10|pune_maharashtra_india
+vendor_page|metriq|Metriq CAD|software|2026-10|turkey
+vendor_page|laxton|||2026-10|
+content_marketing|autodesk|||2026-10|
+ongoing_projects|ecrbuildtechpvt.ltd.|||2026-10|
+vendor_page|wipro|||2026-10|
+market_news|jioplatforms|137.3|usd billion|2026-10|india
+agriculture_mission|governmentofindia|1.19|lakh hectares|2026-10|india
+product_launch|nike|3795|inr|2026-10|india
+acquisition_exploration|adanigroup|3|eur billion|2026-10|india
