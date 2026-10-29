@@ -16,6 +16,17 @@ Deploy 1.1 additions over V3 base:
   • Country TLD floor — merges hardcoded .in / .gov.in / .co.in for India
     even if the LLM returns only 2 TLDs
 
+Deploy 1.2 additions (run-5 cleanup):
+  • AI rejections → 🗑 AI_Trash (not Review) — keeps Review queue high-signal
+  • mark_seen guard — FAILED / MANUAL_FAILED leads retry next run instead of
+    being lost forever
+  • Multi-line logging — full why/score/gates/fetch context per lead
+  • Narrowed hallucination filter — only org/title, not raw_text
+  • evaluated counter now counts every lead that entered AI (including
+    ai-drop and batch-fail) so the arithmetic identity holds:
+      inbox + review + partners + manual + manual_failed + skipped
+      + trash + dupes + failed == evaluated
+
 Usage:
   python radar.py                # full run (AI + sheet writes + telegram)
   python radar.py --dry-run      # collect + gates only, no AI/sheet
@@ -165,8 +176,6 @@ def mark_tender_seen(tender_ids, tid):
 _COUNTRY_CTX = {"aliases": {}, "tlds": {}, "cache_key": ""}
 
 
-# TLD floors — guarantee these are always in the map even if the LLM
-# returns fewer. Extend per-country as needed.
 _TLD_FLOOR = {
     "india": [
         (".gov.in", "India"), (".nic.in", "India"), (".co.in", "India"),
@@ -192,7 +201,6 @@ _TLD_FLOOR = {
 
 
 def _add_floor_tlds(countries):
-    """Guarantee minimum TLD coverage for each configured country."""
     added = 0
     for c in countries or []:
         key = str(c).lower().strip()
@@ -215,7 +223,7 @@ def generate_country_context(llm, countries):
     cache_key = "|".join(sorted(str(c).lower() for c in countries if c))
     if _COUNTRY_CTX.get("cache_key") == cache_key:
         return
-      
+
     if os.getenv("COUNTRY_CONTEXT_SKIP_LLM", "0").strip() == "1":
         log.info("country_context: LLM skipped (COUNTRY_CONTEXT_SKIP_LLM=1), using floor TLDs")
         _COUNTRY_CTX["aliases"] = {str(c).lower(): {str(c).lower()} for c in countries if c}
@@ -223,7 +231,7 @@ def generate_country_context(llm, countries):
         _COUNTRY_CTX["cache_key"] = cache_key
         _add_floor_tlds(countries)
         return
-  
+
     country_list = "\n".join(f"- {c}" for c in countries if c)
     prompt = f"""For each country below return aliases and TLDs.
 Countries:
@@ -286,28 +294,12 @@ def country_from_url(url):
         if host.endswith(tld):
             return tlds[tld]
     return ""
-  
+
 def _is_foreign_url(url, allowed_countries):
-    """Hard-reject URLs whose TLD or gov structure is unambiguously foreign.
-
-    Called BEFORE trusting AI's country claim. AI sometimes hallucinates
-    "India" because the search query mentions it, even when the URL is
-    a US/UK/AU/SG/GY government site or a foreign corporate domain.
-
-    Rules:
-      - .gov / .mil (bare, no country code) → US federal → reject unless
-        USA is in allowed_countries
-      - .gov.XX → country XX's government → reject unless XX's country
-        is in allowed_countries
-      - All other URLs pass (ambiguous TLDs like .com/.org/.net need AI
-        judgment, which works most of the time — see the Belt Railway
-        note in the docstring)
-    """
     host = urlparse(url or "").netloc.lower().replace("www.", "")
     if not host:
         return False
 
-    # Country-code → canonical name map (small, common cases only)
     CC_TO_COUNTRY = {
         "in": "india",
         "us": "united states",
@@ -319,12 +311,10 @@ def _is_foreign_url(url, allowed_countries):
 
     allowed_norm = {(c or "").lower().strip() for c in (allowed_countries or []) if c}
 
-    # Rule 1: bare .gov or .mil = US federal (no other country uses bare .gov)
     if host.endswith(".gov") or host.endswith(".mil"):
         if not ({"united states", "usa", "us"} & allowed_norm):
             return True
 
-    # Rule 2: .gov.XX = specific country's government
     m = re.search(r"\.gov\.([a-z]{2})$", host)
     if m:
         cc = m.group(1)
@@ -343,7 +333,6 @@ PORTAL_COUNTRY = {
 
 
 def likely_in_target(url, snippet, target_countries, target_states, target_cities):
-    """Two-mode country/region pre-filter (unchanged from V3 base)."""
     if not target_countries:
         return True
 
@@ -393,13 +382,7 @@ def likely_in_target(url, snippet, target_countries, target_states, target_citie
 
 
 def apply_quality_gates(lead, allowed_countries):
-    """Operates on StandardLead; returns (lead, flags)."""
     flags = []
-    # Detects "product mentioned as location" false positives:
-    # "SITC of tower ACs at the CAD lab" — CAD is a room name, not the item.
-    # Triggers a Review flag when:
-    #   - the product word appears NEAR "lab/room/block/wing/department/facility"
-    #   - AND the procurement verb points to a non-software item
     try:
         _text = (lead.title or "") + " " + (lead.raw_text or "")[:2000]
         _text_low = _text.lower()
@@ -430,11 +413,8 @@ def apply_quality_gates(lead, allowed_countries):
                 flags.append("PRODUCT-AS-LOCATION: target mentioned with a room/lab noun AND non-software procurement item")
                 log.info(f"   [location-context-flag] {lead.buyer_org}: target appears as location, not procurement")
     except Exception:
-        pass  
+        pass
 
-    # Hard-reject unambiguously foreign URLs BEFORE trusting AI's country
-    # claim. AI hallucinates "India" when the search query mentions it,
-    # even when the URL is a US/UK/AU/GY government site. URL evidence wins.
     if allowed_countries and _is_foreign_url(lead.url, allowed_countries):
         host = urlparse(lead.url).netloc.lower().replace("www.", "")
         flags.append(f"FOREIGN URL: {host}")
@@ -465,8 +445,6 @@ def apply_quality_gates(lead, allowed_countries):
     expiry = str(lead.expiry_status or "UNKNOWN").upper()
     if expiry in ("CLOSED", "COMPLETED"):
         evidence = str(lead.expiry_evidence or expiry).strip()
-        # Guard against AI misinterpreting order wins as expiries.
-        # "Placed a record ₹52,532 crore order" is a BUY signal, not expiry.
         _FALSE_EXPIRY = (
             "placed a record", "placed an order", "placed order",
             "won a contract", "won contract", "awarded a",
@@ -486,22 +464,8 @@ def apply_quality_gates(lead, allowed_countries):
         flags.append(f"NOT GENUINE: {genuine}")
 
     return lead, flags
-  
+
 def _classify_gates(gate_flags):
-    """Split gate flags into soft (score-overridable) and hard (never).
-
-    Soft gates are "quality" caveats that high-scoring real buyers can
-    override:
-      - HIRING_SIGNAL: company is hiring for target-product roles —
-        strongest forward-looking buying signal, should not be Review-only.
-
-    Hard gates are structural disqualifiers that no score can override:
-      - FOREIGN URL, WRONG COUNTRY — wrong geography
-      - EXPIRED, COMPLETED — deadline passed
-
-    Any gate flag not in the known lists defaults to HARD (safer — unknown
-    gates fail closed, not open).
-    """
     SOFT = ("HIRING_SIGNAL",)
     HARD = ("FOREIGN URL", "WRONG COUNTRY", "EXPIRED", "COMPLETED")
     soft, hard = [], []
@@ -512,26 +476,11 @@ def _classify_gates(gate_flags):
         elif any(h in f_up for h in HARD):
             hard.append(f)
         else:
-            hard.append(f)   # unknown → hard
+            hard.append(f)
     return soft, hard
 
 # ── Utilities ─────────────────────────────────────────────────────────
 HALLUCINATED_COMPANY_PATTERNS = (
-    # Specific multi-word filler strings that AI has been observed extracting
-    # as `organization`. Kept narrow to avoid false positives on legitimate
-    # page content (job boards, privacy policies, marketing copy).
-    #
-    # REMOVED in run-4 cleanup:
-    #   "not disclosed"  — every job board salary field
-    #   "yrs"            — every job board experience field
-    #   "mnc"            — common Indian B2B phrase
-    #   "company name"   — legal / contact pages
-    #   "unknown"        — any page mentioning "unknown"
-    #   "unidentified"   — any page mentioning "unidentified"
-    #   "client of"      — any B2B services page
-    #   "for client" / "for a client" — same
-    #
-    # Kept patterns require the whole phrase, not a single word.
     "yrs any", "yrs: any", "yrs-any", "yrs. any",
     "years any", "years: any", "years-any",
     "any experience", "experience any",
@@ -539,22 +488,13 @@ HALLUCINATED_COMPANY_PATTERNS = (
     "company confidential", "company: confidential",
     "mnc client", "mnc company", "reputed mnc",
     "reputed company", "leading company", "leading client",
-    # Aggregate labels that keep slipping through (multi-word, unambiguous)
     "various companies", "multiple companies", "multiple firms",
     "various firms", "various clients", "multiple clients",
-    # Known persistent hallucinations (very specific)
     "3d concept analysis",
-    # Compound placeholders (require second word to reduce false positives)
     "unknown company", "unidentified company",
 )
 
 def _is_hallucinated_company(*texts):
-    """Return True if any text matches a known hallucination pattern.
-
-    Called before AI evaluation to short-circuit leads whose title or
-    raw_text contains obvious non-company strings. Saves AI quota and
-    prevents these leads from reaching the routing layer.
-    """
     for t in texts:
         if not t:
             continue
@@ -562,12 +502,6 @@ def _is_hallucinated_company(*texts):
         for pattern in HALLUCINATED_COMPANY_PATTERNS:
             if pattern in low:
                 return True
-        # Composite-entity hallucination: AI sometimes fuses two real
-        # entity names with "Or"/"And". Example from run 3:
-        # "Central Public Works Department Or State Tendering Authority"
-        # — neither side is a single real entity. Reject if BOTH sides of
-        # "Or"/"And" have >=2 words (real entities that legitimately use
-        # "and" usually have one short side, e.g. "Smith And Co").
         _m = re.search(r"\s+(Or|And)\s+", str(t), re.I)
         if _m:
             _left = str(t)[:_m.start()].split()
@@ -587,15 +521,8 @@ def _as_list(value):
 def _fingerprint(text):
     norm = re.sub(r"[^a-z0-9]", "", (text or "").lower())[:3000]
     return hashlib.sha1(norm.encode()).hexdigest()[:16] if len(norm) >= 200 else ""
-  
-def _is_staffing_agency(org):
-    """True if org name looks like a recruitment / staffing agency.
 
-    Prevents recruiters (Biotalent Search, Manpower, etc.) from reaching
-    Inbox via CONFIDENCE-OVERRIDE / SCORE-OVERRIDE just because they're
-    hiring for a client. Real buyers hire directly; recruiters hire for
-    someone else. This blocks the recruiter, not the end-client.
-    """
+def _is_staffing_agency(org):
     if not org:
         return False
     org_low = str(org).lower().strip()
@@ -608,21 +535,12 @@ def _is_staffing_agency(org):
     )
     if any(term in org_low for term in STAFFING_TERMS):
         return True
-    # "X Search" where X is people-related (Biotalent Search, Talent Search)
     if org_low.endswith(" search") and any(w in org_low for w in
             ("talent", "bio", "people", "human", "executive", "career", "staffing")):
         return True
     return False
 
 def safe_cell(v):
-    """Prefix dangerous cell values to prevent formula injection in Sheets.
-
-    Only '=' and '@' trigger formula interpretation. '+' is a common phone
-    prefix (+91...) and '-' is a common negative-number prefix — those are
-    legitimate data, not injections. Blanking them out would corrupt phones
-    and negatives. Google Sheets treats leading '+' or '-' in text as text
-    anyway when the value isn't a pure number.
-    """
     v = "" if v is None else str(v)
     return " " + v if v[:1] in ("=", "@") else v
 
@@ -645,33 +563,15 @@ def load_settings(sheet):
         "company_watchlist": _as_list(s.get("company_watchlist")),
         "api_keys": s.get("api_keys") or {},
     }
-  
+
 # ── Vendor self-reference check ───────────────────────────────────────
 def _is_vendor_self_reference(org, url):
-    """True when extracted org IS the vendor (via URL brand or vendor name).
-
-    Distinguishes two cases on a vendor URL:
-      - Self-reference (org matches vendor) → SELLER → Partners
-      - Case study (org is a real buyer) → BUYER → preserved
-
-    Handles both URL types:
-      1. Direct vendor URL: autodesk.com/... → brand "autodesk" matches org
-      2. Proxy URL: news.google.com/rss/... → brand "google" doesn't match,
-         but org "Autodesk" matches a known vendor keyword
-
-    Example behaviors:
-      ("Autodesk", "autodesk.com/blog/...")         → True
-      ("Autodesk", "news.google.com/rss/...")       → True  (Fix C — name match)
-      ("Shapoorji Pallonji", "autodesk.com/customer-stories/...") → False (real buyer)
-      ("Boston Consulting", "naukri.com/...")        → False (real buyer)
-    """
     if not org or not url:
         return False
 
     org_low = org.lower()
     org_flat = re.sub(r"[^a-z0-9]", "", org_low)
 
-    # 1. URL brand match — direct vendor URL
     try:
         host = urlparse(url).netloc.lower().replace("www.", "")
         parts = host.split(".")
@@ -682,13 +582,9 @@ def _is_vendor_self_reference(org, url):
     except Exception:
         pass
 
-    # 2. Known vendor name match — proxy URL (news.google.com, linkedin.com, etc.)
-    #    When the extracted org matches a known vendor, it's self-reference
-    #    regardless of the URL host.
     try:
         from adapters import VENDOR_DOMAIN_KEYWORDS
         for kw in VENDOR_DOMAIN_KEYWORDS:
-            # "autodesk.com" → "autodesk"
             vendor_name = kw.split(".")[0].replace("-", " ").strip().lower()
             if len(vendor_name) >= 4 and vendor_name in org_low:
                 return True
@@ -696,7 +592,7 @@ def _is_vendor_self_reference(org, url):
         pass
 
     return False
-  
+
 # ── AI Evaluator ──────────────────────────────────────────────────────
 def _valid_verdicts(d):
     if isinstance(d, list):
@@ -913,13 +809,6 @@ BATCH:
     def evaluate_with_retry(self, batch, targets_str, directives_str, industries_str,
                             country, states, geo_rule, ban_rule, special="",
                             max_retries=2):
-        """Run evaluate(); if AI returns partial verdicts, retry only the
-        missing indices. Returns a dict {batch_index: verdict} that covers
-        every lead in `batch` — or as many as retries could recover.
-
-        Recovers leads silently lost when the LLM truncates its JSON array
-        or returns fewer items than requested (see [ai-partial] warnings).
-        """
         n = len(batch)
         recovered = {}
         pending_indices = list(range(n))
@@ -967,12 +856,6 @@ class Router:
         self.event_fps = event_fps if event_fps is not None else set()
         self.company_dedup = company_dedup
     def push_manual(self, lead, reason, notes=""):
-        """Route a lead that passed gates but couldn't be auto-processed.
-
-        Used for cases where automatic extraction failed but the URL
-        passed all deterministic gates (URL unseen, not hallucination,
-        country OK, not vendor). Human reviews the tab weekly.
-        """
         capture = datetime.now().strftime("%Y-%m-%d %H:%M")
         lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(lead.url.encode()).hexdigest()[:10]}"
         snippet = (lead.title or "")[:200]
@@ -988,7 +871,7 @@ class Router:
             "⏳ Pending",
             lead_id,
         ]
-        log.info(f"[MANUAL] {lead.buyer_org or '?'} ({reason}) -> Manual Extraction | {lead.url[:80]}")
+        log.info(f"[MANUAL] {lead.buyer_org or '?'} ({reason}) -> Manual Extraction | {lead.url}")
         try:
             self.sheet.post(
                 "insert_lead",
@@ -1002,14 +885,12 @@ class Router:
             log.error(f"[MANUAL-FAILED] {lead.buyer_org or '?'} ({reason}): "
                       f"{e} — will retry next run")
             return "MANUAL_FAILED", lead.buyer_org or "Unknown", reason
-        # Mark company so the same entity does not flood Manual via different URLs.
         if self.company_dedup and lead.buyer_org and \
            not lead.buyer_org.lower().startswith("unidentified"):
             self.company_dedup.mark(lead.buyer_org)
-        return "MANUAL", lead.buyer_org or "Unknown", reason  
+        return "MANUAL", lead.buyer_org or "Unknown", reason
 
     def push(self, lead, ai_verdict, default_target, default_industry):
-        # Merge AI verdict into StandardLead
         _field_map = {"organization": "buyer_org"}
         for k, v in ai_verdict.items():
             if k in ("item_index", "event_fingerprint"):
@@ -1027,7 +908,6 @@ class Router:
             except Exception:
                 pass
 
-        # Normalise
         lead.buyer_org = normalize_company(str(lead.buyer_org or lead.dm_name or ""))
         is_valid = str(lead.is_valid).lower() in ("true", "1", "yes")
         confidence = str(lead.confidence or "LOW").upper()
@@ -1035,7 +915,6 @@ class Router:
         if role == "IRRELEVANT":
             is_valid = False
 
-        # Aggregate sanity check
         _AGG = re.compile(
             r"\b(survey|report|study|aggregate|analysis|trend|index|forecast|review|"
             r"multiple|various|several|sector|industry|market|firms|companies|organisations|organizations)\b",
@@ -1048,11 +927,6 @@ class Router:
             lead.why_engage_now = "[AGGREGATE/REPORT] " + str(lead.why_engage_now or "")
             is_valid = False
 
-        # ── Vendor domain detection (with case-study exception) ─────────
-        # If URL is on a vendor's own domain, force SELLER role → Partners,
-        # UNLESS the extracted org is not the vendor itself. Vendor case
-        # studies (autodesk.com/customer-stories/shapoorji) mention real
-        # buyers and must not be lost.
         vendor_hit = _is_vendor_domain(lead.url)
         if vendor_hit:
             if _is_vendor_self_reference(lead.buyer_org, lead.url):
@@ -1065,25 +939,13 @@ class Router:
                 confidence = "LOW"
             else:
                 log.info(f"[VENDOR-CASE-STUDY] {lead.url[:60]} — buyer '{lead.buyer_org}' is not the vendor; preserving AI role")
-                # Buyer survives — AI's entity_role, genuineness and
-                # confidence stay exactly as the evaluator returned them.
 
-        # ── NEW: Content page detection ─────────────────────────────────
-        # If URL is a blog/article/resources page, downgrade confidence
-        # so it lands in Review, not Inbox.
         content_hit = _is_content_page(lead.url)
         if content_hit and role != "SELLER":
             log.info(f"[CONTENT-DEMOTE] {lead.url[:70]} → Review")
             confidence = "LOW"
             lead.why_engage_now = "[CONTENT PAGE] " + str(lead.why_engage_now or "")
 
-        # ── Unknown organization — route per Manual Extraction design ──
-        # AI returned a verdict but could not extract any organization name.
-        # Four sub-cases:
-        #   A. role=SELLER + no org   → Manual (seller-no-org)
-        #   B. is_valid=True + snippet-only + no org → Manual (snippet-no-org)
-        #   C. is_valid=True + thick page + no org  → Review as Unidentified (existing)
-        #   D. is_valid=False + no org              → fall through to normal reject Review routing
         if lead.buyer_org.lower() in ("unknown", "unknown firm", ""):
             _is_snippet = bool(
                 lead.metadata.get("snippet_only")
@@ -1107,28 +969,20 @@ class Router:
                 )
 
             if is_valid:
-                # Thick page, valid buyer, still no org — traceable identifier.
                 host = re.sub(r"[^a-z0-9]", "",
                               urlparse(lead.url).netloc.lower().replace("www.", ""))[:18]
                 lead.buyer_org = f"Unidentified {hashlib.md5(lead.url.encode()).hexdigest()[:4]} {host}"
                 confidence = "LOW"
-                # fall through to normal Review routing
 
             elif not is_valid:
-                # AI evaluated and rejected, but no org was named. Route as a
-                # visible rejection so it appears in Review with a clear reason
-                # rather than disappearing into the old SKIPPED branch.
                 if not lead.why_engage_now:
                     lead.why_engage_now = (
                         "[AI REJECTED — NO ORG] AI evaluated the page but "
                         "could not identify a buyer organization"
                     )
-                # fall through to normal reject routing below
 
-        # Quality gates
         lead, gate_flags = apply_quality_gates(lead, self.allowed_countries)
 
-        # Event fingerprint dedup
         fp_key = _fp_key(ai_verdict.get("event_fingerprint"))
         if fp_key and fp_key in self.event_fps:
             log.info(f"[EVENT-DUPE] {fp_key}")
@@ -1137,16 +991,13 @@ class Router:
             _mark_fp_cache(EVENT_FP_FILE, fp_key)
             self.event_fps.add(fp_key)
 
-        # Build why
         score = str(lead.lead_score or 50)
         why = f"🔥 [SCORE: {score}/100] " + str(lead.why_engage_now or "")
 
-        # Snippet-only downgrade
         if lead.metadata.get("snippet_only") and is_valid:
             confidence = "LOW"
             why = "(page unreadable - judged from snippet) " + why
 
-        # Job URL downgrade
         if lead.metadata.get("is_job_url"):
             confidence = "LOW"
             why = "[JOB LISTING — auto-routed to Review] " + why
@@ -1154,13 +1005,6 @@ class Router:
         gate_ok = not gate_flags
         freshness = str(lead.signal_freshness or "RECENT").upper()
 
-        # Score-based soft-gate override.
-        # A strong hiring signal from a real buyer (score >= 85) is a valid
-        # buying signal, not "not genuine" noise. But we only override when:
-        #   - the ONLY gate flags are soft (HIRING_SIGNAL)
-        #   - no hard gate (foreign / expired) is present
-        #   - freshness is not STALE (deadline passed)
-        #   - score >= 85 (conservative — blocks Yrs Any at 80)
         score_num = 0
         try:
             score_num = int(str(lead.lead_score or 0))
@@ -1183,12 +1027,6 @@ class Router:
         )
         if score_override:
             log.info(f"[SCORE-OVERRIDE] {lead.buyer_org} score={score_num} — HIRING_SIGNAL with strong score → Inbox")
-        # Confidence override — LOW confidence is not the same as "reject".
-        # A real buyer with a real signal and score >= 70 deserves Inbox even
-        # when the AI wasn't fully certain. Example: GSAS Micro Systems at
-        # 70/100 with a manufacturing facility inauguration signal went to
-        # Review only because AI tagged confidence=LOW. Blocks: role != buyer,
-        # any gate flag (gates get priority), stale freshness, score < 70.
         confidence_override = (
             is_valid
             and role in ("BUYER", "PROJECT_BUYER")
@@ -1210,13 +1048,13 @@ class Router:
         phone = extract_phone(getattr(lead, "phone", "") or lead.raw_text or "")
         lead_id = f"{str(uuid.uuid4())[:8].upper()}::{hashlib.md5(lead.url.encode()).hexdigest()[:10]}"
 
-        # Route
         if role == "SELLER":
             sheet_name, outcome, reason = SHEET_PARTNERS, "PARTNER", "partner"
             row = [lead_id, capture, lead.buyer_org, lead.city or "", lead.state or "",
                    solution, lead.url, "", "", "", ""]
         elif not is_valid:
-            sheet_name, outcome, reason = SHEET_REVIEW, "REVIEW", "rejected"
+            # FIX 1: AI-rejected → Trash (not Review)
+            sheet_name, outcome, reason = SHEET_TRASH, "TRASH", "rejected"
             why = f"[AI REJECTED — {role}] " + why
             row = [capture, lead.upcoming_events or "Unknown", role, industry,
                    lead.state or "N/A", lead.city or "N/A",
@@ -1254,7 +1092,6 @@ class Router:
                    lead.buyer_org, solution, why, lead.url,
                    lead.product_usage or "Unknown", "", lead_id]
 
-        # Competitor intel
         comp_winner = str(lead.competitor_winner or "").strip()
         if comp_winner and comp_winner.lower() not in ("none", "", "null", "n/a", "unknown"):
             try:
@@ -1268,7 +1105,14 @@ class Router:
             except SheetError as e:
                 log.warning(f"competitor intel not logged: {e}")
 
-        log.info(f"[*] {lead.buyer_org} [{role}/{confidence}] -> {sheet_name} | {lead.url[:80]} | {why[:120]}")
+        # FIX 4: multi-line log with full context
+        log.info(f"[*] {lead.buyer_org} [{role}/{confidence}/{lead.genuineness or '?'}] -> {sheet_name} | {lead.url}")
+        log.info(f"    ├─ why: {why}")
+        log.info(f"    ├─ score={score_num} | freshness={freshness} | valid={is_valid} | role={role} | confidence={confidence}")
+        if gate_flags:
+            log.info(f"    ├─ gates: {gate_flags}")
+        if lead.metadata.get("snippet_only") or lead.metadata.get("is_job_url"):
+            log.info(f"    └─ fetch={lead.metadata.get('fetch_method','?')} snippet={bool(lead.metadata.get('snippet_only'))} job={bool(lead.metadata.get('is_job_url'))}")
 
         if DRY_RUN:
             return outcome, lead.buyer_org, reason
@@ -1288,9 +1132,6 @@ class Router:
             log.error(f"insert_lead failed for {lead.buyer_org}: {e}")
             return "FAILED", lead.buyer_org, "sheet_error"
 
-        # ── NEW: Mark company in pre-check cache after successful push ──
-        # Both INBOX and REVIEW outcomes mean the company is now in the CRM.
-        # Future URLs mentioning this company will be caught pre-fetch.
         if self.company_dedup and lead.buyer_org and \
            not lead.buyer_org.lower().startswith("unidentified"):
             self.company_dedup.mark(lead.buyer_org)
@@ -1337,13 +1178,10 @@ def main():
     tender_ids = load_tender_cache()
     event_fps = _load_fp_cache(EVENT_FP_FILE)
 
-    # ── CompanyDedup — pre-flight CRM check (NEW) ────────────────────
     company_dedup = CompanyDedup(sheet=sheet)
     cfg["company_dedup"] = company_dedup
 
-    # Sync vendor domains from Partners tab (once per run)
     sync_vendor_domains_from_crm(sheet)
-    # ────────────────────────────────────────────────────────────────
 
     all_countries = cfg["countries"]
     country = all_countries[0] if all_countries else ""
@@ -1359,7 +1197,6 @@ def main():
     geo_rule = (f"GEOGRAPHY: must be in {country}." if country else "")
     ban_rule = f"Ignore domains: {', '.join(cfg['banned_sites'])}" if cfg["banned_sites"] else ""
 
-    # ── Run all enabled adapters ────────────────────────────────────
     adapters = get_enabled(cfg)
     log.info(f"Enabled adapters: {[a.name for a in adapters]}")
 
@@ -1373,7 +1210,6 @@ def main():
 
     log.info(f"Total leads from all adapters: {len(all_leads)}")
 
-    # ── Deterministic gates ─────────────────────────────────────────
     max_links = env_int("MAX_LINKS_PER_RUN", 150)
     filtered = []
     stats = {
@@ -1387,28 +1223,20 @@ def main():
         "inbox": 0, "review": 0, "partners": 0, "dupes": 0, "failed": 0,
         "ai_rejected": 0, "ai_skipped": 0,
         "manual": 0, "manual_failed": 0,
-        "skipped": 0,
+        "skipped": 0, "trash": 0,
     }
 
     for lead in all_leads:
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
             continue
-        # Hallucination filter — runs BEFORE AI eval to save quota.
-        # Skip for job URLs: the hiring adapter has already tagged these and
-        # job listings naturally contain filler like "not disclosed" (salary)
-        # and "yrs" (experience). The AI evaluator correctly downgrades these
-        # via metadata is_job_url → [JOB LISTING — auto-routed to Review].
-        if not lead.metadata.get("is_job_url") and _is_hallucinated_company(
-            lead.title or "", lead.raw_text or ""
-        ):
-            stats["gate_hallucination"] = stats.get("gate_hallucination", 0) + 1
-            log.info(f"[PRECHECK-HALLUC] {lead.url[:80]} — title/snippet contains known filler")
-            continue
-        # Banned-keyword filter — was loaded in settings but never applied.
-        # Now catches macro-news entities (union cabinet, government of india,
-        # haryana erc, delhi high court) if user adds them to banned_keywords
-        # in Settings — saves ~25 AI calls/run.
+        # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
+        if not lead.metadata.get("is_job_url"):
+            _halluc_hay = (lead.buyer_org or "") + " | " + (lead.title or "")
+            if _is_hallucinated_company(_halluc_hay):
+                stats["gate_hallucination"] = stats.get("gate_hallucination", 0) + 1
+                log.info(f"[PRECHECK-HALLUC] {lead.url[:80]} — org/title contains known filler")
+                continue
         if cfg["banned_kw"]:
             _hay = ((lead.title or "") + " " + (lead.raw_text or "")[:1000]).lower()
             _hit = next((kw for kw in cfg["banned_kw"] if kw and kw in _hay), None)
@@ -1435,7 +1263,6 @@ def main():
              f"fp_dupe={stats['gate_fp_dupe']} "
              f"budget_exceeded={stats['gate_budget']}")
 
-    # ── AI evaluation ───────────────────────────────────────────────
     if DRY_RUN:
         log.info("[DRY RUN] Skipping AI evaluation. First 5 leads:")
         for lead in filtered[:5]:
@@ -1468,6 +1295,11 @@ def main():
             geo_rule, ban_rule, special,
         )
 
+        # FIX: count every lead in this batch as evaluated (they went to AI),
+        # regardless of whether they got a verdict. This keeps the identity:
+        #   inbox+review+partners+manual+manual_failed+skipped+trash+dupes+failed == evaluated
+        stats["evaluated"] += len(batch)
+
         if not vmap:
             ai_failures += 1
             log.warning(
@@ -1495,6 +1327,9 @@ def main():
                     "routing remaining leads to Manual"
                 )
                 for pending in filtered[i + AI_BATCH:]:
+                    # These leads were never attempted with AI. Count them as
+                    # evaluated because they entered the batch pipeline.
+                    stats["evaluated"] += 1
                     outcome, _, _ = router.push_manual(
                         pending,
                         "batch-fail",
@@ -1536,11 +1371,16 @@ def main():
                 batch[0].metadata.get("target_product") or "General",
                 batch[0].metadata.get("industry") or "ALL_SECTORS"
             )
-            stats["evaluated"] += 1
-            mark_seen(seen, lead.url)
-            mark_fp(fps, _fingerprint(lead.raw_text))
-            if lead.tender_id:
-                mark_tender_seen(tender_ids, lead.tender_id)
+
+            # FIX 3: mark_seen guard — only mark on definitive outcomes.
+            # FAILED / MANUAL_FAILED = webhook error; leave for retry next run.
+            if outcome not in ("FAILED", "MANUAL_FAILED"):
+                mark_seen(seen, lead.url)
+                mark_fp(fps, _fingerprint(lead.raw_text))
+                if lead.tender_id:
+                    mark_tender_seen(tender_ids, lead.tender_id)
+            else:
+                log.warning(f"[retry-next-run] {lead.buyer_org} ({outcome}) — URL NOT marked seen; will retry on next run")
 
             if outcome == "FAILED":
                 stats["failed"] += 1
@@ -1549,6 +1389,10 @@ def main():
                 stats["inbox"] += 1
             elif outcome == "REVIEW":
                 stats["review"] += 1
+                if reason == "rejected":
+                    stats["ai_rejected"] += 1
+            elif outcome == "TRASH":
+                stats["trash"] += 1
                 if reason == "rejected":
                     stats["ai_rejected"] += 1
             elif outcome == "PARTNER":
@@ -1562,7 +1406,6 @@ def main():
             elif outcome == "DUPLICATE":
                 stats["dupes"] += 1
 
-    # ── Summary ─────────────────────────────────────────────────────
     duration = str(datetime.now() - t0).split(".")[0]
     log.info(f"[done] {stats} in {duration}")
 
@@ -1578,7 +1421,7 @@ def main():
         f"• New leads → Inbox {stats['inbox']}, Review {stats['review']}, "
         f"Partners {stats['partners']}",
         f"• Manual (needs human eyes): {stats['manual']}",
-        f"• Duplicates: {stats['dupes']} • AI rejected: {stats['ai_rejected']} "
+        f"• Trash (AI rejected): {stats['trash']} • Duplicates: {stats['dupes']} "
         f"• Skipped: {stats['skipped']}",
         f"• Duration: <code>{duration}</code>",
     ]
