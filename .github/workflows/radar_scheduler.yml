@@ -35,9 +35,9 @@ env:
 jobs:
   run-radar-scout:
     runs-on: ubuntu-latest
-    # Raised from 90 → 120 to fit the 70-min harvester + 25-min enrichment
-    # + ~15 min of checkout/pip/OCR overhead in 'both' mode.
-    timeout-minutes: 120
+    # Raised from 120 → 140 to fit Playwright install (~30s) + GeM Playwright run
+    # (2-4 min) + CPPP fallbacks (~30s) + the existing 70-min harvester budget.
+    timeout-minutes: 140
     env:
       WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
@@ -55,6 +55,11 @@ jobs:
       EXTRA_LLM_BASE_URL: ${{ secrets.EXTRA_LLM_BASE_URL }}
       EXTRA_LLM_API_KEYS: ${{ secrets.EXTRA_LLM_API_KEYS }}
       EXTRA_LLM_MODELS: ${{ secrets.EXTRA_LLM_MODELS }}
+      # Provider order: Groq first (fast, ~2s/call), then Gemini, then OpenRouter.
+      # Gemini's free tier rate-limits aggressively when 6-lead batches fire in
+      # sequence; Groq handles the bulk and only falls through to Gemini when
+      # Groq is exhausted. Set this to "" (empty) to use the default order.
+      LLM_PROVIDER_ORDER: 'groq,gemini,openrouter'
       # Deal-closing context (Settings -> Secrets and variables -> Actions -> Variables). All optional.
       SELLER_COMPANY: ${{ vars.SELLER_COMPANY }}
       SELLER_OFFER: ${{ vars.SELLER_OFFER }}
@@ -77,9 +82,14 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends tesseract-ocr poppler-utils
 
       - name: Install dependencies
-        run: pip install --disable-pip-version-check -r requirements.txt || (sleep 20 && pip install --disable-pip-version-check -r requirements.txt)
+        run: |
+          pip install --disable-pip-version-check -r requirements.txt || (sleep 20 && pip install --disable-pip-version-check -r requirements.txt)
 
-      
+      - name: Install Playwright Chromium (GeM scraping)
+        # Playwright needs the browser binary separately from pip — --with-deps
+        # also installs system libs (libnss3, fonts, etc.) that Chromium needs.
+        run: python -m playwright install chromium --with-deps
+
       - name: Run harvester
         if: >-
           (github.event_name == 'schedule' && (github.event.schedule == '30 1 * * *' || github.event.schedule == '30 14 * * *')) ||
@@ -105,14 +115,17 @@ jobs:
       # Persist the de-duplication cache and retry counters even if a step above failed.
       # seen_tenders.txt  = tender-ID dedup (same tender across GeM/CPPP/state/aggregator → 1 row)
       # seen_event_fps.txt = event-fingerprint dedup (4 news articles about the same capex → 1 row)
-      # Both files are created on first run; the `-f` guard skips them until then.
+      # seen_companies.txt = CompanyDedup local cache (regenerated from CRM each run, but
+      #                      saving avoids re-writing it from scratch on cold starts)
+      # enrich_attempts.json = enrichment worker retry counters
+      # ai_drop_attempts.json = future — per-URL AI-drop counter (no-op if file missing)
+      # All files are created on first run; the `-f` guard skips missing ones.
       - name: Save cache and fingerprints
         if: always()
         run: |
           git config user.name "Radar Scout Bot"
           git config user.email "bot@radarscout.local"
-          # add only the files that exist (one missing path would make `git add` stage nothing)
-          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt enrich_attempts.json; do
+          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt seen_companies.txt enrich_attempts.json ai_drop_attempts.json; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
           if git diff --cached --quiet; then
