@@ -1032,3 +1032,83 @@ market_news|jioplatforms|137.3|usd billion|2026-10|india
 agriculture_mission|governmentofindia|1.19|lakh hectares|2026-10|india
 product_launch|nike|3795|inr|2026-10|india
 acquisition_exploration|adanigroup|3|eur billion|2026-10|india
+contract_awarded|railtel|||2026-10|
+hiring|atos|||2026-10|
+hiring|thalesgroup|||2026-10|
+hiring|legrandgroup|||2026-10|
+hiring|navaltboats|AutoCAD|skill_requirement|2026-10|india
+hiring|itmc|AutoCAD|skill_requirement|2026-10|india
+hiring_signal|siemenslimited|Development Professional|job_opening|2026-10|thane,maharashtra,india
+hiring_signal|brunel|Sr. Pipeline Engineer|job_opening|2026-10|chennai,tamilnadu,india
+hiring_signal|johnsoncontrols|Sprinkler Designer|job_opening|2026-10|bossiercity,louisiana,unitedstates
+hiring_signal|unknown|AutoCAD Detailer|job_opening|2026-10|hyderabad,telangana,india
+hiring_signal|ikea|Home Furnishing Consultant|job_opening|2026-10|pune,maharashtra,india
+hiring_signal|egisgroup|BIM Modeler- Electrical|job_opening|2026-10|bengaluru,karnataka,india
+hiring|nationalcontractingcoltd|Senior Engineer - Civil Design|position|2026-10|india
+hiring|talentmate|Design Engineer|position|2026-10|unitedarabemirates
+hiring|atlascopcogroup|Lead Proposal Engineer|position|2026-10|india
+hiring|succinnovatechnologiespvt.ltd|Business Development Executive|position|2026-10|india
+product_catalog|carrlane|Load-Rated Cable Assemblies|product|2026-10|india
+profile|rahulkumar|Piping Design Engineer|profile|2026-10|india
+conference_class|autodesk|||2025-01|
+employee_review|sarkepcprojects||||
+hiring_civil_design_engineer|hartekgroup|2|openings|2026-10|mohali
+hiring_designer|jacobs|||2026-10|
+hiring_solar_pm|mg|||2026-10|
+capability_listing|stepindustries|50|engineers|2019-01|noida
+hiring|brunel|||2026-10|
+tender / capex|nhidcl|||2026-10|
+tender / capex|nhidcl|30.148|km|2026-10|teliamuratripura
+hiring|mrsquareinfraprojects|||2026-10|
+hiring|engieenergyindiaprivatelimited|||2025-01|
+hiring|statensolar|||2025-02|
+hiring|siemensenergyindialimited|526617|job_id|2026-10|pune_maharashtra_india
+hiring|arthaenergyresources|solar_design_engineer|job_role|2026-10|india
+hiring|unknown|e90f1e9972ff99a8806c94942edd316c1|job_id|2026-10|coimbatore_tamil_nadu_india
+aggregation|ambitionbox|22_autocad_jobs|job_listings|2026-10|india
+aggregation|jobeka|69_autocad_jobs|job_listings|2026-10|gujarat_india
+hiring|bluecoiniot|autocad_engineer|job_title|2026-10|bengaluru_karnataka_india
+hiring|systra|||2026-10|
+hiring|odeconsultantspvtltd|||2026-04|
+hiring|wbkengineeringservices|||2026-10|
+hiring|som|||2026-10|
+hiring|rsparchitectsplanners&engineers|interior designer draftsman|job_opening|2026-10|singapore
+hiring|aeodesignconsultants|revit specialist|job_opening|2026-10|india
+hiring|regalrexnord|careers_page|job_portal|2026-10|global
+hiring|hok|careers_overview|job_portal|2026-10|global
+hiring|fourthdimensiongroup|architect draftsman|job_opening|2026-10|pune_india
+hiring|egis|cad draftsman rail|job_opening|2026-10|bengaluru_india
+job_template|linkedin|Drafter Job Description|template|2026-10|india
+job_posting|unknown|Tender & Bid Manager|position|2026-10|new_delhi_india
+operational_update|geopark|Q3 2026 Operational Update|report|2026-10|india
+hiring|softtechengineers|Vice President Of Sales|position|2026-10|pune_india
+job_posting|algihazholding|IT Technical Project Manager|position|2026-10|chennai_india
+job_aggregation|9am.careers|Data Integrity Jobs|category|2026-10|india
+profile|akashkumargupta|||2026-10|
+product_listing|alibaba|||2026-10|
+profile|syedmoidullah|||2026-10|
+profile|roshanjoseph|||2026-10|
+job_search|indeed|||2026-10|
+hiring|jobleads|||2026-10|
+hiring|aptiv|||2026-10|
+job_search_aggregate|glassdoor|||2026-10|
+job_search_aggregate|simplyhired|||2026-10|
+job_search_aggregate|linkedin|||2026-10|
+job_search_aggregate|indeed|||2026-10|
+job_search_aggregate|foundit.in|||2026-10|
+salary_aggregation|ambitionbox|7.7|lakhs inr|2026-10|india
+job_search_aggregation|glassdoor|996|jobs|2026-08|india
+hiring_draughtsman|emriomsolutions|Junior Draughtsman|role|2026-10|india
+job_search_aggregation|indeed|200|vacancies|2026-10|gurgaon
+freelance_profile|cadcrowd|14|years experience|2026-10|bengaluru
+job_search_aggregation|naukri|||2026-10|
+salary_survey|ambitionbox|7.7|lakhs inr|2026-10|india
+hiring|emriomsolutions|Junior Draughtsman|role|2026-10|india
+job_aggregation|simplyhired|autocad drafting|search_results|2026-10|india
+job_aggregation|linkedin|244|open_roles|2026-10|india
+hiring|unknownentity|PEB detailing engineer|role|2026-10|gurgaon
+job_aggregation|foundit|5062|open_roles|2026-10|india
+hiring|emriomsolutions|||2026-10|
+capex|governmentofindia|16000|inr crore|2026-10|india
+financial|shapoorjipallonjigroup|200|usd million|2026-10|india
+capex|adanienterprises|26000|inr crore|2026-10|mundra
