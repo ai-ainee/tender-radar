@@ -1,15 +1,19 @@
 """adapters/filings.py — Corporate filings category adapter.
 
-Structured corporate disclosures: order wins, capex, partnerships,
-IPOs, regulatory actions.
-
 Sources:
-  ✅ BSE filings      — existing bse_filings.py (curl_cffi, works from GitHub)
-  ✅ NSE filings      — existing nse_filings.py (curl_cffi, works from GitHub)
-  ⚙ SEBI orders      — HTML scrape of sebi.gov.in (may need WAF bypass)
-  ✅ RBI circulars    — RSS feed at rbi.org.in
-  🔲 MCA21            — requires login, stub
-  🔲 Google Patents   — requires API key or heavy scrape, stub
+  ✅ BSE      — via sources.bse (7-day window, alternate endpoint fallback).
+                Falls back to legacy bse_filings.py if sources.bse not deployed.
+  ✅ NSE      — via nse_filings.py (works, 1-3 leads/run)
+  🔲 SEBI     — disabled (0 leads across 3+ runs)
+  🔲 RBI      — disabled (all macro news, AI-rejected)
+  🔲 MCA21    — requires login
+  🔲 Patents  — requires API key
+
+The BSE path was producing 0 leads in every run because the legacy module
+used a 3-day window (too narrow for the ~5-15 announcements BSE publishes
+per week across all sectors) and the primary endpoint returns the literal
+string "No Record Found!" when the window is empty. sources.bse fixes both
+with a 7-day window and alternate endpoint fallback.
 """
 import re
 import urllib.request
@@ -19,12 +23,13 @@ from adapters import SourceAdapter, register
 from standard_lead import StandardLead
 from common import log
 
+# Legacy BSE module — used as fallback only if sources.bse is not deployed
 try:
-    from bse_filings import fetch_bse_filings
-    _HAS_BSE = True
+    from bse_filings import fetch_bse_filings as _fetch_bse_legacy
+    _HAS_BSE_LEGACY = True
 except ImportError:
-    fetch_bse_filings = None
-    _HAS_BSE = False
+    _fetch_bse_legacy = None
+    _HAS_BSE_LEGACY = False
 
 try:
     from nse_filings import fetch_nse_filings
@@ -41,7 +46,7 @@ def _http_get(url, timeout=20, max_bytes=2_000_000):
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": UA,
-            "Accept": "application/xml,text/xml,text/html;q=0.9,*/*;q=0.8",
+            "Accept": "application/xml,application/atom+xml,text/xml,text/html;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-IN,en;q=0.9",
         })
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -52,17 +57,28 @@ def _http_get(url, timeout=20, max_bytes=2_000_000):
 
 
 def _parse_rss(xml_text, keywords, source_name):
+    """Parse RSS 2.0 or Atom. Kept for future SEBI/RBI re-enablement."""
     if not xml_text:
         return []
     kw_lower = [str(k).lower() for k in (keywords or []) if k]
     out = []
     try:
         root = ET.fromstring(xml_text)
-        for item in root.iter("item"):
+        is_atom = root.tag.endswith("feed")
+        item_tag = "entry" if is_atom else "item"
+        for item in root.iter(item_tag):
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
-            desc = (item.findtext("description") or "").strip()
-            date = (item.findtext("pubDate") or "").strip()
+            if not link and is_atom:
+                for ln in item.findall("link"):
+                    if ln.get("rel") in (None, "alternate"):
+                        link = ln.get("href") or ""
+                        break
+            desc = (item.findtext("description")
+                    or item.findtext("summary") or "").strip()
+            date = (item.findtext("pubDate")
+                    or item.findtext("published")
+                    or item.findtext("updated") or "").strip()
             if not title or not link:
                 continue
             if kw_lower:
@@ -121,13 +137,11 @@ class FilingsAdapter(SourceAdapter):
         return leads
 
     def _keywords(self, settings):
-        """Filings never mention product names (Autocad, Revit). They mention
-        capex, expansion, order wins, acquisitions, facilities. Filter by
-        industry + universal business-intent signals, not by product name.
-        Product relevance is judged downstream by the AI evaluator."""
+        """Filings never mention product names. Filter by industry +
+        universal business-intent signals. Product relevance is judged
+        downstream by the AI evaluator."""
         industries = settings.get("industries") or []
         industry_kw = [k for k in industries if k and k != "ALL_SECTORS"]
-        # Universal business-event signals that indicate a buying event
         intent_kw = [
             "capex", "expansion", "order", "contract", "acquisition",
             "investment", "facility", "plant", "construction", "tender",
@@ -137,16 +151,39 @@ class FilingsAdapter(SourceAdapter):
         return industry_kw + intent_kw
 
     def _fetch_bse(self, settings):
-        if not _HAS_BSE:
-            return []
         kw = self._keywords(settings)
+
+        # Preferred: sources.bse (7-day window + alternate endpoint fallback)
         try:
-            raw = fetch_bse_filings(kw, max_days=3, max_results=60)
+            from sources.bse import fetch_bse
+        except ImportError:
+            fetch_bse = None
+
+        if fetch_bse is not None:
+            try:
+                raw = fetch_bse(kw, max_days=7, max_results=60)
+                if not isinstance(raw, list):
+                    log.info(f"[filings:bse] sources.bse non-list ({type(raw).__name__})")
+                    raw = []
+                if raw:
+                    log.debug(f"[filings:bse] sources.bse returned {len(raw)} row(s)")
+                    return [_dict_to_lead("bse", r) for r in raw
+                            if isinstance(r, dict) and r.get("url")]
+                # Empty result — try legacy fallback in case sources.bse
+                # had a transient failure
+            except Exception as e:
+                log.warning(f"[filings:bse] sources.bse ERROR {str(e)[:120]} — trying legacy")
+
+        # Fallback: legacy bse_filings.py (3-day window)
+        if not _HAS_BSE_LEGACY:
+            return []
+        try:
+            raw = _fetch_bse_legacy(kw, max_days=3, max_results=60)
         except Exception as e:
-            log.debug(f"[filings:bse] {str(e)[:100]}")
+            log.debug(f"[filings:bse] legacy {str(e)[:100]}")
             return []
         if not isinstance(raw, list):
-            log.info(f"[filings:bse] non-list response ({type(raw).__name__}) — treating as 0 leads")
+            log.info(f"[filings:bse] legacy non-list ({type(raw).__name__})")
             return []
         return [_dict_to_lead("bse", r) for r in raw
                 if isinstance(r, dict) and r.get("url")]
@@ -167,16 +204,11 @@ class FilingsAdapter(SourceAdapter):
                 if isinstance(r, dict) and r.get("url")]
 
     def _fetch_sebi(self, settings):
-        # Disabled: 0 leads produced across 3 consecutive runs (18:03, 18:22, 01:11).
-        # Re-enable only after verifying the feed URL still returns items,
-        # or after adding a stricter business-intent filter.
+        # Disabled: 0 leads across all runs
         return []
 
     def _fetch_rbi(self, settings):
-        # Disabled: 10 leads/run, ALL rejected as IRRELEVANT macro news
-        # (repo auctions, bond auctions, market operations — not procurement
-        # signals). Re-enable only after adding a business-intent filter that
-        # keeps capex/facility/expansion mentions and drops monetary policy.
+        # Disabled: all leads were macro news (repo auctions, bond auctions) — AI rejected
         return []
 
     def _fetch_mca21(self, settings):
