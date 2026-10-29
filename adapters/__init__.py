@@ -365,7 +365,7 @@ def _auto_register():
         ("expansion", "adapters.expansion", "ExpansionAdapter"),
         ("news",      "adapters.news",      "NewsAdapter"),
         ("company",   "adapters.company",   "CompanyAdapter"),
-        # ("tenders", "adapters.tenders", "TendersAdapter"),  # disabled — all sources blocked
+        ("tenders", "adapters.tenders", "TendersAdapter"),
     ]
     for slug, module_path, class_name in adapter_modules:
         try:
