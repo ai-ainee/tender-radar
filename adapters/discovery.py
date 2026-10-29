@@ -40,6 +40,22 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
 
+# ── Query negative operators ─────────────────────────────────────────
+# Tender/RFQ queries on a service-named product ("Autocad drafting services")
+# surface CAD outsourcing shops (Cad Crowd, Alpha Cad, etc.) instead of buyers.
+# Append negatives to steer Google toward supply/procurement pages.
+# These survive SearchEngine.clean_query() after the fix in common.py.
+_NEG_TENDER = " -services -outsourcing -training -course -indiamart -tradeindia -naukri -justdial -freelance -provider"
+_NEG_HIRING = " -indiamart -tradeindia -naukri -justdial -freelance"
+
+
+def _add_negatives(q):
+    """Append negative operators appropriate to query intent."""
+    ql = str(q or "").lower()
+    is_hiring = any(w in ql for w in ("hiring", "vacancy", "jobs", "recruit"))
+    return q + (_NEG_HIRING if is_hiring else _NEG_TENDER)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # RSS helpers
 # ═══════════════════════════════════════════════════════════════════════
@@ -564,9 +580,10 @@ class DiscoveryAdapter(SourceAdapter):
                     recent = any(w in query.lower() for w in
                                  ("tender", "rfp", "bid", "procurement", "loa",
                                   "award", "contract", "order", "empanelment"))
-                    log.info(f"[search] Searching: {query}")
+                    search_query = _add_negatives(query)
+                    log.info(f"[search] Searching: {search_query}")
                     try:
-                        results = self._search.search(query, country, pages=pages, recent=recent)
+                        results = self._search.search(search_query, country, pages=pages, recent=recent)
                     except Exception as e:
                         log.warning(f"[discovery:serper] query failed: {str(e)[:100]}")
                         continue
