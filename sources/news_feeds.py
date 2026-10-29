@@ -43,11 +43,20 @@ INTENT = re.compile(
 )
 
 # Noise regex: drop macro market news before intent matching
+# Noise regex — drops only pure financial/market/legal news that has NO
+# procurement signal. Removed entries:
+#   • "stake", "shares?", "stock" — a "₹5,000 cr stake in new plant" IS a signal
+#   • "results?" — "Company results in new facility" is real
+#   • "cabinet" — "Cabinet approves ₹10,000 cr scheme" is a signal
+#   • "appoints?", "resigns?", "ceo" — "CEO inaugurates new plant" is a signal
+#   • "raises \$" — "Raises $500m for new plant" is a signal
+# Kept: pure financial reporting (Q1 results, net profit), market indices,
+# legal proceedings, and funding rounds unrelated to procurement.
 NOISE = re.compile(
-    r"\b(q[1-4]\b|fy\d{2}|net profit|net loss|results?\b|quarterly|"
-    r"stake|shares?|stock|sensex|nifty|earnings|dividend|"
-    r"cabinet|price cap|appoints?|resigns?|ceo|"
-    r"raises? \$|funding round|valuation|ipo|"
+    r"\b(q[1-4]\b|fy\d{2}|net profit|net loss|"
+    r"quarterly earnings|sensex|nifty|"
+    r"price cap|"
+    r"funding round|valuation|ipo|"
     r"high court|supreme court|tribunal)\b",
     re.I,
 )
