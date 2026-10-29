@@ -145,7 +145,11 @@ class FilingsAdapter(SourceAdapter):
         except Exception as e:
             log.debug(f"[filings:bse] {str(e)[:100]}")
             return []
-        return [_dict_to_lead("bse", r) for r in (raw or []) if isinstance(r, dict) and r.get("url")]
+        if not isinstance(raw, list):
+            log.info(f"[filings:bse] non-list response ({type(raw).__name__}) — treating as 0 leads")
+            return []
+        return [_dict_to_lead("bse", r) for r in raw
+                if isinstance(r, dict) and r.get("url")]
 
     def _fetch_nse(self, settings):
         if not _HAS_NSE:
@@ -156,35 +160,23 @@ class FilingsAdapter(SourceAdapter):
         except Exception as e:
             log.debug(f"[filings:nse] {str(e)[:100]}")
             return []
-        return [_dict_to_lead("nse", r) for r in (raw or []) if isinstance(r, dict) and r.get("url")]
+        if not isinstance(raw, list):
+            log.info(f"[filings:nse] non-list response ({type(raw).__name__}) — treating as 0 leads")
+            return []
+        return [_dict_to_lead("nse", r) for r in raw
+                if isinstance(r, dict) and r.get("url")]
 
     def _fetch_sebi(self, settings):
-        kw = self._keywords(settings)
-        # SEBI publishes RSS for orders and press releases
-        for url in (
-            "https://www.sebi.gov.in/sebiweb/ajax/home/getnewslist.jsp",
-            "https://www.sebi.gov.in/sebi_data/rss/orders.xml",
-        ):
-            body = _http_get(url, timeout=20)
-            if not body:
-                continue
-            if "<item>" in body:
-                items = _parse_rss(body, kw, "sebi")
-                if items:
-                    return [_dict_to_lead("sebi", r) for r in items]
+        # Disabled: 0 leads produced across 3 consecutive runs (18:03, 18:22, 01:11).
+        # Re-enable only after verifying the feed URL still returns items,
+        # or after adding a stricter business-intent filter.
         return []
 
     def _fetch_rbi(self, settings):
-        kw = self._keywords(settings)
-        for url in (
-            "https://rbi.org.in/pressreleases_rss.xml",
-            "https://www.rbi.org.in/Scripts/RSS.aspx?Id=13",
-        ):
-            body = _http_get(url, timeout=20)
-            if body and "<item>" in body:
-                items = _parse_rss(body, kw, "rbi")
-                if items:
-                    return [_dict_to_lead("rbi", r) for r in items]
+        # Disabled: 10 leads/run, ALL rejected as IRRELEVANT macro news
+        # (repo auctions, bond auctions, market operations — not procurement
+        # signals). Re-enable only after adding a business-intent filter that
+        # keeps capex/facility/expansion mentions and drops monetary policy.
         return []
 
     def _fetch_mca21(self, settings):
