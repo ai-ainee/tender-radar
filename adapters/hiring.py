@@ -240,7 +240,32 @@ class HiringAdapter(SourceAdapter):
                         company = parts[1]           # Naukri's 2-part format
                     elif " at " in title.lower():
                         company = title.split(" at ", 1)[-1].split(",")[0].strip()
-                    # If no company extractable, still add — AI will filter
+
+                    # Skip when no real company name extracted — the SERP title
+                    # was a category/aggregation page ("CAD Draftsman Jobs in India",
+                    # "AutoCAD Jobs in Bangalore", etc.), not a specific employer.
+                    # These always return IRRELEVANT / JOB_PORTAL from the AI —
+                    # filtering here saves 5-15s per wasted AI call.
+                    _company_low = (company or "").strip().lower()
+                    _BAD_COMPANY_NAMES = {
+                        "jobs", "job", "careers", "career", "hiring",
+                        "vacancies", "vacancy", "recruiter", "recruitment",
+                        "apply", "apply now", "view all jobs", "search results",
+                        "job openings", "job listing", "job postings",
+                        "senior", "junior", "fresher", "lead", "manager",
+                        "engineer", "designer", "drafter", "draftsman",
+                        "indeed", "naukri", "glassdoor", "shine",
+                        "linkedin", "foundit", "timesjobs", "instahyre",
+                        "ambitionbox", "talentmate", "expertini",
+                    }
+                    if (
+                        not company
+                        or len(_company_low) < 3
+                        or _company_low in _BAD_COMPANY_NAMES
+                        or any(_company_low.startswith(b + " ") for b in _BAD_COMPANY_NAMES)
+                    ):
+                        log.debug(f"[hiring] skip (no company in title): {title[:80]}")
+                        continue
 
                     leads.append(StandardLead(
                         source="hiring",
