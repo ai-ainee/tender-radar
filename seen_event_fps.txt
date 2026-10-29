@@ -1191,3 +1191,86 @@ hiring|vertiv|6-8|years experience|2026-10|india
 hiring|dimensionsengineeringconsultant|||2026-10|
 hiring|wsp|5|years experience|2026-10|bengaluru/noida
 vendor_site|pinnacleinfotech|||2026-10|
+order_win|tonboimagingindialimited|||2026-10|
+tax_litigation|5paisacapitallimited|||2026-10|
+tender_civil_works|bordersecurityforce|15|inr lac|2026-10|kolkata_west_bengal
+job_listing_aggregation|airekoservices&installation|||2026-10|
+vendor_marketing_page|yuktiai|||2026-10|
+hiring|carriercorporation|||2026-10|
+hiring|armada|||2026-10|
+certification|worldcouriermanagementltd.|||2026-03|
+news_article|neuralconcept|||2026-10|
+community_registration|xometry|||2026-10|
+trade_show|kanddcommunicationlimited|||2026-11|
+saas_pricing|wibeshr|||2026-10|
+conference|wearedevelopers|||2026-10|
+cad file download|pinterestuser|||2026-10|
+cad drawing share|cadbull|||2026-10|
+cad block repository|archweb|||2026-10|
+article / blog|som|||2026-10|
+research publication|srivenkateswarauniversity|||2026-08|
+hiring|hntb|||2026-10|
+hiring|paradigmstructuralengineers|||2026-07|
+hiring|tesla|||2026-10|
+educational material|sdcpublications|||2026-10|
+hiring|frontierresourcing|||2026-10|
+job_board|4dayweek.io|||2026-10|
+hiring|canadianexecutivesearchgroup|||2026-10|
+content_article|linkedincommunity|||2026-10|
+hiring|pramac|||2026-07|
+infrastructure_capex|apcoinfra|4315.89|crores inr|2026-10|india
+capex|centralpublicworksdepartment(cpwd)|20000|crore inr|2020-01|newdelhi
+capex|atharvlifestyle|||2025-06|
+capex|bluestonesinfrastructureindiabuilders|||2026-10|
+capex|mirrikhgroup|||2026-10|
+capex|sanfranciscorecreationandparkcommission|||2018-03|
+capex|multiplefirms|||2025-12|
+hiring|outsourced|||2026-10|
+hiring|lakecomo|||2026-10|
+hiring|subsea7|||2026-10|
+hiring|egis|||2026-10|
+hiring|monarchsurveyors|||2026-10|
+hiring|wsp|||2026-10|
+hiring|google|||2026-10|
+hiring|trueenvironmental|||2026-07|
+hiring|dynamicengineeringconsultants|||2026-10|
+hiring|dynamicengineeringconsultants,pc|||2026-10|
+hiring|dec-wilmington|||2026-10|
+hiring|bostonconsultinggroup|||2026-10|
+hiring|anduril|||2026-10|
+hiring|siemens|||2026-10|
+hiring|sofi|||2026-10|
+hiring|evansengineeringandconsulting|||2026-10|
+hiring|eudesignconsulting|||2026-10|
+hiring|stellar|||2026-10|
+hiring_expansion|egisroadoperationindia|||2026-10|
+earnings_call|reckitt|600|gbp million|2026-10|
+hiring|camunda|||2026-10|
+hiring|arcadis|||2026-10|
+design project management|farhana.|||2026-10|
+vendor marketing|openit,inc.|||2026-10|
+hiring|oneroofconstructions&architects|||2026-10|
+product listing|etsy|||2026-10|
+hiring|gradiant|||2026-10|
+vendor_site|projectbase|||2026-10|
+vendor_site|smartfactorysolutions|||2026-10|
+vendor_site|onsite|||2026-10|
+case_study|solizeindia|||2026-10|
+tender|koncite|||2026-10|
+hiring|harman|||2026-10|
+capex|syrmasgselemaster|20000|sq. ft.|2026-09|bengaluru
+capex|neoherculesindia|||2026-10|
+partnership|autodeskindia|||2025-06|
+research publication|ijert|||2026-05|
+content marketing|wallxy|||2026-06|
+podcast|autodesk|||2026-10|
+hiring|dozreichtechnology|||2026-10|
+hiring|arm|||2026-10|
+news|bcci|||2026-10|
+capex|trent|||2026-10|
+partnership|axirosemiconductor|||2026-10|
+capex|governmentoftamilnadu|3767|inr crores|2026-10|tamilnadu
+policy|tnerc|2.5|gw|2026-10|tamilnadu
+capex|adanigroup|2000|rooms|2026-10|india
+investigation|enforcementdirectorate|4940|inr crores|2026-10|india
+expansion|pixxel|||2026-10|
