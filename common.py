@@ -559,7 +559,17 @@ class LLMRouter:
             body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "maxOutputTokens": 8192}}
             return requests.post(f"{self.base['gemini']}/models/{model}:generateContent", headers={"x-goog-api-key": key, "Content-Type": "application/json"}, json=body, timeout=(10, 120))
-        body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "response_format": {"type": "json_object"}}
+        # OpenAI-compatible providers (Groq, OpenRouter, Extra, OpenAI).
+        # max_tokens=8192 — matches Gemini's maxOutputTokens. Without this,
+        # providers use their default (often 4096), truncating 6-lead JSON
+        # batches to ~1 verdict. See log: "AI returned 1 verdict(s) for 6 lead(s)".
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 8192,
+            "response_format": {"type": "json_object"},
+        }
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         if provider == "openrouter": headers.update({"HTTP-Referer": "https://github.com/radar-scout", "X-Title": "Radar Scout"})
         r = requests.post(f"{self.base[provider]}/chat/completions", headers=headers, json=body, timeout=(10, 120))
