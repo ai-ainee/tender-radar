@@ -1,0 +1,38 @@
+name: BSE Endpoint Diagnostic
+
+on:
+  workflow_dispatch:        # manual trigger only
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --disable-pip-version-check requests urllib3 curl_cffi beautifulsoup4 pypdf
+
+      - name: Run BSE diagnostic
+        env:
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+        run: python test_bse.py
+
+      - name: Upload result as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bse-diagnostic-output
+          path: bse_diagnose_output.txt
+          retention-days: 7
