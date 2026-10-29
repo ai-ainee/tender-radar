@@ -517,24 +517,35 @@ def _classify_gates(gate_flags):
 
 # ── Utilities ─────────────────────────────────────────────────────────
 HALLUCINATED_COMPANY_PATTERNS = (
-    # Job-board filler text that AI sometimes extracts as company names.
-    # These appear in naukri.com titles like "Senior BIM Engineer - Yrs Any"
-    # where "Yrs Any" is the years-of-experience field, not a company.
+    # Specific multi-word filler strings that AI has been observed extracting
+    # as `organization`. Kept narrow to avoid false positives on legitimate
+    # page content (job boards, privacy policies, marketing copy).
+    #
+    # REMOVED in run-4 cleanup:
+    #   "not disclosed"  — every job board salary field
+    #   "yrs"            — every job board experience field
+    #   "mnc"            — common Indian B2B phrase
+    #   "company name"   — legal / contact pages
+    #   "unknown"        — any page mentioning "unknown"
+    #   "unidentified"   — any page mentioning "unidentified"
+    #   "client of"      — any B2B services page
+    #   "for client" / "for a client" — same
+    #
+    # Kept patterns require the whole phrase, not a single word.
     "yrs any", "yrs: any", "yrs-any", "yrs. any",
     "years any", "years: any", "years-any",
     "any experience", "experience any",
-    "not disclosed", "not disclosed.", "not disclosed;",
-    "company name", "company confidential", "company: confidential",
-    "mnc", "mnc client", "mnc company", "reputed mnc",
+    "not disclosed.", "not disclosed;",
+    "company confidential", "company: confidential",
+    "mnc client", "mnc company", "reputed mnc",
     "reputed company", "leading company", "leading client",
-    "client of", "for client", "for a client",
-    # Aggregate labels that keep slipping through
+    # Aggregate labels that keep slipping through (multi-word, unambiguous)
     "various companies", "multiple companies", "multiple firms",
     "various firms", "various clients", "multiple clients",
-    # Known persistent hallucinations
-    "3d concept analysis", "yrs",  # bare "yrs" as last resort
-    # Placeholders
-    "unknown", "unknown company", "unidentified",
+    # Known persistent hallucinations (very specific)
+    "3d concept analysis",
+    # Compound placeholders (require second word to reduce false positives)
+    "unknown company", "unidentified company",
 )
 
 def _is_hallucinated_company(*texts):
@@ -1383,8 +1394,14 @@ def main():
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
             continue
-        # Hallucination filter — runs BEFORE AI eval to save quota
-        if _is_hallucinated_company(lead.title or "", lead.raw_text or ""):
+        # Hallucination filter — runs BEFORE AI eval to save quota.
+        # Skip for job URLs: the hiring adapter has already tagged these and
+        # job listings naturally contain filler like "not disclosed" (salary)
+        # and "yrs" (experience). The AI evaluator correctly downgrades these
+        # via metadata is_job_url → [JOB LISTING — auto-routed to Review].
+        if not lead.metadata.get("is_job_url") and _is_hallucinated_company(
+            lead.title or "", lead.raw_text or ""
+        ):
             stats["gate_hallucination"] = stats.get("gate_hallucination", 0) + 1
             log.info(f"[PRECHECK-HALLUC] {lead.url[:80]} — title/snippet contains known filler")
             continue
