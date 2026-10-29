@@ -24,7 +24,7 @@ from urllib.parse import quote_plus
 
 from adapters import SourceAdapter, register
 from standard_lead import StandardLead
-from common import log, fetch_page
+from common import log, fetch_page, SearchEngine
 
 # ── Existing Naukri + role generation (graceful import) ──────────────
 try:
@@ -119,6 +119,7 @@ class HiringAdapter(SourceAdapter):
 
     def __init__(self):
         self._llm = None
+        self._search = None
 
     def is_enabled(self, settings):
         return bool(settings.get("targets"))
@@ -127,6 +128,8 @@ class HiringAdapter(SourceAdapter):
         from common import LLMRouter
         if self._llm is None:
             self._llm = LLMRouter()
+        if self._search is None:
+            self._search = SearchEngine()
 
         targets = settings.get("targets") or []
         if not targets:
@@ -180,151 +183,107 @@ class HiringAdapter(SourceAdapter):
     def _stub(self, name, note=""):
         log.info(f"[hiring] {name}: not implemented ({note})")
         return []
+    def _search_job_board(self, role_pairs, settings, site_domains):
+        """Find job postings on target boards via SearchEngine site: queries.
 
-    # ── Naukri (existing scraper — working) ──────────────────────────
-    def _fetch_naukri(self, role_pairs, settings):
-        """Disabled — Naukri search pages are React SPA and JS-rendered.
-        Raw HTML from fetch_page has no company names → returns 0 leads.
+        Replaces broken native scrapers — Naukri/Shine/TimesJobs are React
+        SPAs requiring JS execution, and Indeed's public RSS endpoint was
+        retired in ~2023. Google already indexes every one of these pages,
+        and SearchEngine (Serper → Brave → DDG) can find them for free.
 
-        Naukri production requires Playwright (we removed it to save 15 min/run)
-        or the unofficial JSON API (jobapi/v3/search — untested, may be blocked).
+        Cost: len(role_pairs) * len(site_domains) queries, capped at 3 roles.
+        With 4 domains and 3 roles = 12 queries/run — well within Serper's
+        2500/month free tier (~0.5%).
 
-        Current state: 0 leads from 30-60s of runtime per run = pure waste.
-        Re-enable only if:
-          • Playwright is added back AND cached (see portal_crawler.py notes)
-          • OR you verify the JSON API endpoint works from a datacenter IP
+        Returns a list of StandardLead with company extracted from the SERP
+        title (Indeed/Naukri titles follow "Role - Company - Location").
         """
-        return []
+        if not self._search:
+            return []
 
-    # ── Indeed India (RSS — genuine free, structured) ────────────────
-    def _fetch_indeed(self, role_pairs, settings):
         leads = []
-        for role, product in role_pairs:
-            url = f"https://www.indeed.co.in/rss?q={quote_plus(role)}&l=India"
-            body = _http_get(url, timeout=20)
-            if not body or "<item>" not in body:
-                continue
-            for item in self._parse_indeed_rss(body)[:10]:
-                leads.append(StandardLead(
-                    source="hiring",
-                    category="hiring",
-                    url=item["url"],
-                    title=item["title"],
-                    raw_text=item["snippet"],
-                    buyer_org=item["company"][:200],
-                    country="India",
-                    metadata={
-                        "internal_source": "indeed",
-                        "role": role,
-                        "target_product": product,
-                        "is_job_url": True,
-                    },
-                ))
-        return leads
+        seen_urls = set()
 
-    def _parse_indeed_rss(self, xml_text):
-        out = []
-        try:
-            root = ET.fromstring(xml_text)
-            for item in root.iter("item"):
-                title = (item.findtext("title") or "").strip()
-                link = (item.findtext("link") or "").strip()
-                desc = (item.findtext("description") or "").strip()
-                if not title or not link:
+        for role, product in role_pairs[:3]:  # cap at 3 roles to limit queries
+            for domain in site_domains:
+                # Quoted role for phrase match; "India" for geo bias
+                query = f'site:{domain} "{role}" India'
+                try:
+                    results = self._search.search(
+                        query, country="india", pages=1, recent=False,
+                    )
+                except Exception as e:
+                    log.debug(f"[hiring:{domain}] search error: {str(e)[:80]}")
                     continue
-                # Indeed RSS title format: "Job Title - Company - Location"
-                parts = [p.strip() for p in title.split(" - ")]
-                company = ""
-                job_title = title[:300]
-                if len(parts) >= 3:
-                    job_title = parts[0]
-                    company = parts[1]
-                elif len(parts) == 2:
-                    job_title = parts[0]
-                    company = parts[1]
-                out.append({
-                    "title": job_title[:300],
-                    "company": company[:200],
-                    "url": link,
-                    "snippet": re.sub(r"<[^>]+>", " ", desc)[:500],
-                })
-        except Exception as e:
-            log.debug(f"[hiring:indeed] RSS parse error: {str(e)[:80]}")
-        return out
 
-    # ── Shine (HTML scrape — best-effort) ────────────────────────────
+                if not results:
+                    continue
+
+                for res in results[:5]:  # cap 5 per (role, domain)
+                    url = (res.get("link") or "").strip()
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+
+                    title = res.get("title") or ""
+                    snippet = res.get("snippet") or ""
+
+                    # Extract company from title. Common formats:
+                    #   Indeed:   "AutoCAD Draftsman - Acme Corp - Mumbai"
+                    #   Naukri:   "Senior BIM Engineer - L&T Construction"
+                    #   Shine:    "CAD Designer - Tata Projects Ltd, Pune"
+                    company = ""
+                    parts = [p.strip() for p in title.split(" - ")]
+                    if len(parts) >= 3:
+                        company = parts[1]           # Indeed's 3-part format
+                    elif len(parts) == 2:
+                        company = parts[1]           # Naukri's 2-part format
+                    elif " at " in title.lower():
+                        company = title.split(" at ", 1)[-1].split(",")[0].strip()
+                    # If no company extractable, still add — AI will filter
+
+                    leads.append(StandardLead(
+                        source="hiring",
+                        category="hiring",
+                        url=url,
+                        title=title[:300],
+                        raw_text=snippet[:500],
+                        buyer_org=company[:200],
+                        country="India",
+                        metadata={
+                            "internal_source": f"serper_{domain.replace('.', '_')}",
+                            "role": role,
+                            "target_product": product,
+                            "is_job_url": True,
+                            "fetch_method": "serper_site_search",
+                        },
+                    ))
+
+        return leads
+    # ── Job-board fetchers — all via Serper site: queries ────────────
+    # Native fetchers (RSS / HTML scrape) have been retired by each board:
+    #   Naukri     — React SPA, needs Playwright
+    #   Indeed     — public RSS endpoint killed in ~2023
+    #   Shine      — JS-rendered job cards
+    #   TimesJobs  — JS-rendered
+    #   Foundit    — JS-rendered
+    # Google indexes all of them. Serper's organic results include the
+    # company name in the SERP title, which is all we need.
+
+    def _fetch_naukri(self, role_pairs, settings):
+        return self._search_job_board(role_pairs, settings, ["naukri.com"])
+
+    def _fetch_indeed(self, role_pairs, settings):
+        return self._search_job_board(role_pairs, settings, ["in.indeed.com"])
+
     def _fetch_shine(self, role_pairs, settings):
-        leads = []
-        for role, product in role_pairs:
-            slug = _slug(role)
-            if not slug:
-                continue
-            url = f"https://www.shine.com/jobs/{slug}-jobs"
-            try:
-                content = fetch_page(url, max_chars=12000)
-            except Exception:
-                continue
-            if not content or len(content) < 200:
-                continue
-            companies = _extract_companies_from_text(content, role, 8)
-            for company in companies:
-                leads.append(StandardLead(
-                    source="hiring",
-                    category="hiring",
-                    url=f"{url}#{_slug(company)}",
-                    title=role,
-                    raw_text=f"{role} hiring at {company}",
-                    buyer_org=company[:200],
-                    country="India",
-                    metadata={
-                        "internal_source": "shine",
-                        "role": role,
-                        "target_product": product,
-                        "is_job_url": True,
-                        "fetch_method": "html_scrape",
-                    },
-                ))
-        return leads
+        return self._search_job_board(role_pairs, settings, ["shine.com"])
 
-    # ── TimesJobs (HTML scrape — best-effort) ────────────────────────
     def _fetch_timesjobs(self, role_pairs, settings):
-        leads = []
-        for role, product in role_pairs:
-            url = (f"https://www.timesjobs.com/candidate/job-search.html"
-                   f"?searchType=personalizedSearch&from=submit"
-                   f"&txtKeywords={quote_plus(role)}&txtLocation=India")
-            try:
-                content = fetch_page(url, max_chars=12000)
-            except Exception:
-                continue
-            if not content or len(content) < 200:
-                continue
-            companies = _extract_companies_from_text(content, role, 8)
-            for company in companies:
-                leads.append(StandardLead(
-                    source="hiring",
-                    category="hiring",
-                    url=f"{url}#{_slug(company)}",
-                    title=role,
-                    raw_text=f"{role} hiring at {company}",
-                    buyer_org=company[:200],
-                    country="India",
-                    metadata={
-                        "internal_source": "timesjobs",
-                        "role": role,
-                        "target_product": product,
-                        "is_job_url": True,
-                        "fetch_method": "html_scrape",
-                    },
-                ))
-        return leads
+        return self._search_job_board(role_pairs, settings, ["timesjobs.com"])
 
-    # ── Foundit (HTML scrape — best-effort) ──────────────────────────
     def _fetch_foundit(self, role_pairs, settings):
-        """Disabled — Foundit search pages return pure navigation/cookie text.
-        Extractor produced junk ('Login', 'Info', 'We Can Remember You').
-        Re-enable only if you find a reliable structured endpoint."""
-        return []
+        return self._search_job_board(role_pairs, settings, ["foundit.in"])
 
     # ── LinkedIn (stub — needs paid API or RSSHub proxy) ─────────────
     def _fetch_linkedin(self, role_pairs, settings):
