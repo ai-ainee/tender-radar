@@ -1,14 +1,19 @@
 """
 Radar Scout health check - run weekly by the workflow, on demand (job = health) or locally: python healthcheck.py
 
-Deploy 2.1 fixes:
+Deploy 2.2 fixes:
+  • sources/ module check — verifies all 8 new source modules import cleanly
+    and that Playwright + its browser binary are installed. Runs before the
+    live API calls so a broken sources/gem.py fails fast with a clear message
+    instead of producing "tenders: 0 lead(s)" on the next harvest run.
   • Adapter health — uses load_settings() to get normalised shape (was showing
     all adapters disabled because it passed raw API response)
   • CompanyDedup — now loads CRM snapshot too (was only showing 22 local cache rows)
   • Contact Master — distinguishes empty tab vs missing tab vs filtered rows
 
-Verifies: libraries, OCR tools, API keys, Apps Script webhook, live LLM, live search,
-Telegram, adapters, phone coverage, CompanyDedup cache. Exits 1 when CRITICAL.
+Verifies: libraries, sources modules, OCR tools, API keys, Apps Script webhook,
+live LLM, live search, Telegram, adapters, phone coverage, CompanyDedup cache.
+Exits 1 when CRITICAL.
 """
 import importlib
 import os
@@ -43,6 +48,86 @@ def check_libs(add):
             importlib.import_module(mod)
         except Exception as e:
             add(BAD, f"New module '{mod}' missing/broken ({why}): {str(e)[:80]}", critical)
+
+
+def check_sources(add):
+    """Verify the new sources/ modules are importable and their deps exist.
+
+    Each source module is a self-contained external data source (GeM via
+    Playwright, CPPP via proxy, BSE filings, company watchlist, news feeds,
+    MoEF, trade publications). If any of them has a syntax error, missing
+    import, or missing dependency, the harvest pipeline silently returns
+    zero leads from that source with no obvious signal beyond a single log
+    line. Running this check weekly catches regressions before harvests.
+    """
+    # (module, label, critical)
+    # critical = True means the source should always work; False means
+    # best-effort source that may legitimately be missing if not deployed.
+    modules = [
+        ("sources",                    "sources package itself",       True),
+        ("sources.gem",                "GeM via Playwright",           True),
+        ("sources.cppp",               "CPPP with proxy fallback",     True),
+        ("sources.bse",                "BSE filings (7-day window)",   True),
+        ("sources.company_watchlist",  "Watchlist crawler",            True),
+        ("sources.news_feeds",         "News RSS feeds",               True),
+        ("sources.moef",               "MoEF public hearings",         False),
+        ("sources.trade_publications", "Trade publication RSS",        False),
+    ]
+    for mod, label, critical in modules:
+        try:
+            importlib.import_module(mod)
+        except Exception as e:
+            add(BAD if critical else WARN,
+                f"Source module '{mod}' broken ({label}): {str(e)[:80]}",
+                critical)
+
+    # Verify each module exposes its expected fetch_* function
+    expected_callables = [
+        ("sources.gem",                "fetch_gem",                 True),
+        ("sources.cppp",               "fetch_cppp",                True),
+        ("sources.bse",                "fetch_bse",                 True),
+        ("sources.company_watchlist",  "fetch_company_watchlist",   True),
+        ("sources.news_feeds",         "fetch_all_news",            True),
+        ("sources.moef",               "fetch_moef",                False),
+        ("sources.trade_publications", "fetch_trade_publications",  False),
+    ]
+    for mod_name, fn_name, critical in expected_callables:
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:
+            continue  # already reported above
+        if not callable(getattr(mod, fn_name, None)):
+            add(BAD if critical else WARN,
+                f"Source module '{mod_name}' missing callable '{fn_name}()'",
+                critical)
+
+    # Playwright needs both the Python package AND the Chromium browser binary.
+    # `pip install playwright` alone does NOT install the browser — the workflow
+    # must also run `python -m playwright install chromium --with-deps`.
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        add(WARN, "playwright package not installed — GeM will return 0 leads", False)
+    else:
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"],
+                )
+                browser.close()
+            add(OK, "Playwright Chromium launches cleanly (GeM will work)", False)
+        except Exception as e:
+            msg = str(e)[:120]
+            if "Executable doesn't exist" in msg or "playwright install" in msg:
+                add(BAD,
+                    "Playwright Chromium browser binary NOT installed — "
+                    "run `python -m playwright install chromium --with-deps` "
+                    "in the workflow after `pip install`",
+                    False)
+            else:
+                add(WARN, f"Playwright Chromium launch failed: {msg}", False)
 
 
 def check_keys(add):
@@ -161,6 +246,42 @@ def check_company_dedup(add, sheet):
         add(WARN, f"CompanyDedup cache check failed: {str(e)[:80]}", False)
 
 
+def check_company_watchlist(add, sheet):
+    """Verify company_watchlist is set in Settings and returned by Apps Script.
+
+    Without this, adapters/company.py can't crawl any buyer URLs — it will
+    always return 0 leads even though the code path is wired correctly.
+    """
+    try:
+        st = sheet.get("get_settings")
+    except Exception as e:
+        add(WARN, f"Cannot check company_watchlist (settings unavailable): {str(e)[:80]}", False)
+        return
+
+    if not isinstance(st, dict):
+        add(WARN, "Settings response shape is not a dict — company_watchlist unknown", False)
+        return
+
+    wl = st.get("company_watchlist")
+    if not isinstance(wl, list):
+        add(BAD,
+            "Apps Script does NOT return 'company_watchlist' — adapters/company.py will produce 0 leads. "
+            "Add `company_watchlist: []` and the colMap entry in doGet → get_settings.",
+            False)
+        return
+
+    urls = [u for u in wl if isinstance(u, str) and u.strip()]
+    if not urls:
+        add(WARN,
+            "company_watchlist is EMPTY in Settings — adapters/company.py will produce 0 leads. "
+            "Add 20+ buyer URLs (NHAI, CPWD, MHADA, etc.) to the 'Company Watchlist' column.",
+            False)
+    elif len(urls) < 5:
+        add(WARN, f"company_watchlist has only {len(urls)} URL(s) — add 20+ for good coverage", False)
+    else:
+        add(OK, f"company_watchlist: {len(urls)} URL(s) configured", False)
+
+
 def main(live=True):
     started = time.time()
     lines, state = [], {"critical": 0}
@@ -172,6 +293,7 @@ def main(live=True):
         log.info(f"[health] {level} {msg}")
 
     check_libs(add)
+    check_sources(add)                      # ← NEW: sources/ modules + Playwright browser
     llm = check_keys(add)
 
     sheet = None
@@ -196,6 +318,7 @@ def main(live=True):
 
     if sheet:
         check_adapters(add, sheet)
+        check_company_watchlist(add, sheet)    # ← NEW: verify watchlist is wired
         check_phone_coverage(add, sheet)
 
     check_company_dedup(add, sheet)
@@ -222,7 +345,7 @@ def main(live=True):
     head = (f"🩺 <b>Radar health check</b> - "
             f"{'ALL GOOD' if not any(l.startswith((BAD, WARN)) for l in lines) else ('PROBLEMS' if crit else 'warnings')}")
     full_msg = head + "\n" + "\n".join(tg_escape(l) for l in lines)
-    Telegram().send(full_msg[:4000])   # Telegram limit is 4096, leave margin(head + "\n" + "\n".join(tg_escape(l) for l in lines))
+    Telegram().send(full_msg[:4000])
     RUN_INFO.update(stats={"critical": crit, "checks": len(lines)})
     if crit:
         RUN_INFO.update(degraded=True, degraded_reason=f"{crit} critical check(s) failed")
