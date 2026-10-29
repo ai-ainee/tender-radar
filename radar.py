@@ -551,6 +551,18 @@ def _is_hallucinated_company(*texts):
         for pattern in HALLUCINATED_COMPANY_PATTERNS:
             if pattern in low:
                 return True
+        # Composite-entity hallucination: AI sometimes fuses two real
+        # entity names with "Or"/"And". Example from run 3:
+        # "Central Public Works Department Or State Tendering Authority"
+        # — neither side is a single real entity. Reject if BOTH sides of
+        # "Or"/"And" have >=2 words (real entities that legitimately use
+        # "and" usually have one short side, e.g. "Smith And Co").
+        _m = re.search(r"\s+(Or|And)\s+", str(t), re.I)
+        if _m:
+            _left = str(t)[:_m.start()].split()
+            _right = str(t)[_m.end():].split()
+            if len(_left) >= 2 and len(_right) >= 2:
+                return True
     return False
 
 def _as_list(value):
@@ -619,6 +631,7 @@ def load_settings(sheet):
         "banned_sites": [k.lower() for k in _as_list(s.get("banned_websites"))],
         "protected": [k.lower() for k in _as_list(s.get("protected_domains"))],
         "job_portals": [k.lower().strip() for k in _as_list(s.get("job_portals"))],
+        "company_watchlist": _as_list(s.get("company_watchlist")),
         "api_keys": s.get("api_keys") or {},
     }
   
