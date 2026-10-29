@@ -52,6 +52,20 @@ _INTENT_RE = re.compile(
     re.I,
 )
 
+# Noise titles that match business-intent hints but are macro/market news,
+# not procurement signals. From run 3: 25+ rejections from Hindu BusinessLine
+# with quarterly results, board changes, cabinet approvals.
+_NOISE_RE = re.compile(
+    r"\b("
+    r"q[1-4]\b|fy\d{2}|net profit|net loss|results?\b|quarterly|"
+    r"stake|shares?|stock|sensex|nifty|earnings|dividend|"
+    r"cabinet|price cap|appoints?|resigns?|ceo|"
+    r"raises? \$|funding round|valuation|ipo|"
+    r"high court|supreme court|tribunal"
+    r")\b",
+    re.I,
+)
+
 
 def _iso_date(s):
     """RFC-822 (RSS) → ISO YYYY-MM-DD. Falls back to original on error."""
@@ -94,6 +108,9 @@ def _parse_rss(xml_text, source_name, max_items=20):
         except Exception:
             continue
         if not title or not link:
+            continue
+        # Drop macro/market noise BEFORE intent matching
+        if _NOISE_RE.search(title):
             continue
         # Word-boundary intent matching (case-insensitive)
         if not _INTENT_RE.search(title + " " + desc):
