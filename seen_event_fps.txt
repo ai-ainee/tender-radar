@@ -1112,3 +1112,82 @@ hiring|emriomsolutions|||2026-10|
 capex|governmentofindia|16000|inr crore|2026-10|india
 financial|shapoorjipallonjigroup|200|usd million|2026-10|india
 capex|adanienterprises|26000|inr crore|2026-10|mundra
+investment|panachedigilifelimited|||2026-10|
+financial_results|assetreconstructioncompany(india)limited|||2026-10|
+product_trials|cleanfino-chemlimited|||2026-10|
+tender_aggregation|tenderdetail|||2026-10|
+hiring|coreweave|||2026-09|
+job_search_results|indeed|||2026-10|
+hiring civil engineer|vinayakjobs|3 L–4.8 L|inr per year|2026-10|raipur
+profile mention|muhammadmazharulhaqghalib|||2026-10|
+tender|minthill|||2026-10|
+hiring town engineer|townofgreenburgh|150000 – 175275|usd|2026-10|greenburghny
+tender|thetatapowercompanylimited|1.2e+07|inr|2026-10|mumbaimaharashtraindia
+tender|nationalhighways&infrastructuredevelopmentcorporationlimited|||2020-08|
+vendor_page|levelplane|||2026-10|
+hiring|nexusengineeringgroup|||2026-09|
+hiring|bowmanconsultinggroup,ltd.|||2026-10|
+hiring|servicenow|||2026-10|
+hiring|unitedliving|||2026-10|
+hiring|usconec,ltd.|||2026-10|
+platform selection|jaksongreenvehiclesprivatelimited|||2026-10|
+blog_publication|acginfotech|||2026-10|
+hiring|whisperaero|||2026-10|
+tender_aggregation|sardarvallabhbhaipatelinternationalschooloftextiles|||2026-10|
+hiring|jakson|||2026-10|
+hiring|diageoindia|200-300 Cr|inr|2026-02|bangalore
+resume_profile|yusufdurbar|||2018-01|
+job_listing|ramboll|||2026-10|
+hiring_signal|thorntontomasetti|||2026-10|
+career_page|dupont|||2026-10|
+real_estate_blog|gygygroup|||2026-09|
+news_article|adgroup|||2026-03|
+market_intelligence|saralnirman|||2025-02|
+market_intelligence|ministryoffinance,departmentofeconomicaffairs|1.7e+06|inr crore|2026-01|india
+market_intelligence|various|84084|inr crore|2026-10|india
+interview|bombardier|||2026-02|
+capex|airtrunk|2.1e+10|usd|2026-08|maharashtra
+market_intelligence|giia|111 lakh crore|inr|2026-04|india
+hiring autocad draftsman|qeblawibrooks|75000 to 100000 INR|inr|2026-02|dehradun,india
+hiring autocad draftsman mep hvac|phensaprivatelimited|||2026-10|
+blog article|f5hiringsolutions|||2026-10|
+hiring revit modeler|cadoutsourcingservices|||2026-10|
+blog article|indovancepvtltd|||2015-12|
+hiring autocad freshers|cisin|||2024-09|
+hiring|neetdeepgroup|||2026-10|
+blog post|jobsyahanbureau|||2026-05|
+salary aggregator|ambitionbox|||2026-10|
+hiring|pdindiadesigns|||2023-07|
+profile snippet|kanagaraj.k|||2026-10|
+hiring|pdindiadesigns|||2023-08|
+hiring|spencerinteriors&contractingllc|||2021-03|
+job_listing|indeed|||2026-10|
+hiring|jdidesign,india|||2024-07|
+hiring|unknown|||2025-10|
+hiring|ojasvihadesign&construction|1|position|2026-10|bangalore
+hiring|unspecifiedcompany|1|position|2024-02|raipur
+hiring|williamhare|||2026-10|
+hiring|aaloatomics|||2026-10|
+hiring|stackinfra|||2026-10|
+content|universalsteel|||2026-10|
+document|americanironandsteelinstitute|||2016-10|
+profile|ktechitsoftwaresolutions|||2026-10|
+product release|octave|||2026-10|
+partner offering|microgenesis|||2026-10|
+research publication|ijsart|||2021-06|
+hiring|autodeskaustraliapty|||2026-10|
+research publication|srkrengineeringcollege|||2019-10|
+product integration|buildots|||2025-08|
+hiring|stantec|||2026-10|
+software review|attendmitra|||2026-10|
+partnership|autodeskandpinnacleinfotech|||2026-10|
+hiring|autodesk|||2026-07|
+capex|acegroup|||2026-10|
+market_report|researchandmarkets|50.7|trillion inr|2025-07|india
+aggregate_news|desimachines|||2026-10|
+opinion_piece|frontline|||2026-09|
+hiring|jobgetherpartner|||2026-10|
+hiring|vertiv|6-8|years experience|2026-10|india
+hiring|dimensionsengineeringconsultant|||2026-10|
+hiring|wsp|5|years experience|2026-10|bengaluru/noida
+vendor_site|pinnacleinfotech|||2026-10|
