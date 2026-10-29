@@ -55,11 +55,12 @@ jobs:
       EXTRA_LLM_BASE_URL: ${{ secrets.EXTRA_LLM_BASE_URL }}
       EXTRA_LLM_API_KEYS: ${{ secrets.EXTRA_LLM_API_KEYS }}
       EXTRA_LLM_MODELS: ${{ secrets.EXTRA_LLM_MODELS }}
-      # Provider order: Groq first (fast, ~2s/call), then Gemini, then OpenRouter.
-      # Gemini's free tier rate-limits aggressively when 6-lead batches fire in
-      # sequence; Groq handles the bulk and only falls through to Gemini when
-      # Groq is exhausted. Set this to "" (empty) to use the default order.
-      LLM_PROVIDER_ORDER: 'groq,gemini,openrouter'
+      # Provider order: Gemini first — you have 2 keys (vs 1 Groq key), so
+      # Gemini has 2× the quota before hitting a 429. Groq is faster but
+      # single-key; put it second so its faster response acts as the second
+      # attempt when Gemini is rate-limited. OpenRouter is last (paid-ish).
+      # Set this to "" (empty) to use the code default.
+      LLM_PROVIDER_ORDER: 'gemini,groq,openrouter'
       # Deal-closing context (Settings -> Secrets and variables -> Actions -> Variables). All optional.
       SELLER_COMPANY: ${{ vars.SELLER_COMPANY }}
       SELLER_OFFER: ${{ vars.SELLER_OFFER }}
