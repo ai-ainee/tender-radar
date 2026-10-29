@@ -361,11 +361,11 @@ def _auto_register():
     adapter_modules = [
         ("discovery", "adapters.discovery", "DiscoveryAdapter"),
         ("filings",   "adapters.filings",   "FilingsAdapter"),
+        ("tenders",   "adapters.tenders",   "TendersAdapter"),
         ("hiring",    "adapters.hiring",    "HiringAdapter"),
         ("expansion", "adapters.expansion", "ExpansionAdapter"),
         ("news",      "adapters.news",      "NewsAdapter"),
         ("company",   "adapters.company",   "CompanyAdapter"),
-        ("tenders", "adapters.tenders", "TendersAdapter"),
     ]
     for slug, module_path, class_name in adapter_modules:
         try:
