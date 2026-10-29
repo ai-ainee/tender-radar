@@ -1,11 +1,13 @@
 """adapters/expansion.py — Expansion & capex category adapter.
 
-Forward-looking infrastructure signals:
-  ✅ MoEF PARIVESH — public hearings (₹100 cr+ projects, 6-12 mo advance)
-  ⚙ Invest India  — FDI announcements (RSS)
-  ⚙ 10times India — trade show exhibitor lists
-  🔲 PLI lists    — PDFs, needs manual parse, stub
-  🔲 Eventbrite   — requires API key, stub
+Sources:
+  ✅ sources.moef              (preferred, if deployed) — MoEF PARIVESH hearings
+  ✅ sources.trade_publications (preferred, if deployed) — 6 construction RSS feeds
+  ⚙ Inline fallback — MoEF HTML scrape + Invest India + 10times (all best-effort)
+
+All inline fetchers are known-unreliable in datacenter IPs. The preferred
+path is the new sources.* modules which use more robust extraction.
+The inline code below is a fallback that avoids total adapter failure.
 """
 import re
 import urllib.request
@@ -23,7 +25,7 @@ def _http_get(url, timeout=20, max_bytes=2_000_000):
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": UA,
-            "Accept": "application/xml,text/xml,text/html;q=0.9,*/*;q=0.8",
+            "Accept": "application/xml,application/atom+xml,text/xml,text/html;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-IN,en;q=0.9",
         })
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -34,17 +36,28 @@ def _http_get(url, timeout=20, max_bytes=2_000_000):
 
 
 def _parse_rss(xml_text, keywords, source_name):
+    """Parse RSS 2.0 or Atom. Returns [{title,url,snippet,date}]."""
     if not xml_text:
         return []
     kw_lower = [str(k).lower() for k in (keywords or []) if k]
     out = []
     try:
         root = ET.fromstring(xml_text)
-        for item in root.iter("item"):
+        is_atom = root.tag.endswith("feed")
+        item_tag = "entry" if is_atom else "item"
+        for item in root.iter(item_tag):
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
-            desc = (item.findtext("description") or "").strip()
-            date = (item.findtext("pubDate") or "").strip()
+            if not link and is_atom:
+                for ln in item.findall("link"):
+                    if ln.get("rel") in (None, "alternate"):
+                        link = ln.get("href") or ""
+                        break
+            desc = (item.findtext("description")
+                    or item.findtext("summary") or "").strip()
+            date = (item.findtext("pubDate")
+                    or item.findtext("published")
+                    or item.findtext("updated") or "").strip()
             if not title or not link:
                 continue
             if kw_lower:
@@ -86,11 +99,12 @@ class ExpansionAdapter(SourceAdapter):
     def fetch(self, settings):
         leads = []
         for name, fetcher in [
-            ("moef",         self._fetch_moef),
-            ("invest_india", self._fetch_invest_india),
-            ("10times",      self._fetch_10times),
-            ("pli",          self._fetch_pli),
-            ("eventbrite",   self._fetch_eventbrite),
+            ("moef",          self._fetch_moef),
+            ("trade_pubs",    self._fetch_trade_publications),
+            ("invest_india",  self._fetch_invest_india),
+            ("10times",       self._fetch_10times),
+            ("pli",           self._fetch_pli),
+            ("eventbrite",    self._fetch_eventbrite),
         ]:
             try:
                 results = fetcher(settings)
@@ -104,8 +118,26 @@ class ExpansionAdapter(SourceAdapter):
         return (settings.get("targets") or []) + (settings.get("industries") or [])
 
     def _fetch_moef(self, settings):
-        """MoEF PARIVESH — public hearing listings."""
+        """MoEF PARIVESH — public hearing listings.
+
+        Preferred: sources.moef (table-aware extraction).
+        Fallback: inline regex (best-effort, often empty).
+        """
         kw = self._keywords(settings)
+
+        # Preferred path
+        try:
+            from sources.moef import fetch_moef
+            raw = fetch_moef(kw, max_results=20)
+            if raw:
+                return [_dict_to_lead("moef", r) for r in raw
+                        if isinstance(r, dict) and r.get("url")]
+        except ImportError:
+            pass
+        except Exception as e:
+            log.warning(f"[expansion] moef (sources) ERROR {str(e)[:120]}")
+
+        # Inline fallback
         for url in (
             "https://environmentclearance.nic.in/dashboard_public_hearing.aspx",
             "https://parivesh.nic.in/",
@@ -118,7 +150,6 @@ class ExpansionAdapter(SourceAdapter):
                 continue
             out = []
             kw_low = [k.lower() for k in kw]
-            # Match hearing notification patterns — title starts with project name
             for m in re.finditer(
                 r"(?:Public\s+Hearing|Notice)[^\n]{0,300}(?:for|at)\s+([A-Z][A-Za-z0-9&.,\s()\-]{10,200})",
                 content, re.I,
@@ -126,40 +157,46 @@ class ExpansionAdapter(SourceAdapter):
                 title = m.group(0).strip()[:300]
                 if kw_low and not any(k in title.lower() for k in kw_low):
                     continue
-                out.append({
-                    "title": title,
-                    "url": url,
-                    "snippet": title,
-                    "date": "",
-                })
+                out.append({"title": title, "url": url, "snippet": title, "date": ""})
                 if len(out) >= 20:
                     break
             if out:
                 return [_dict_to_lead("moef", r) for r in out]
         return []
 
+    def _fetch_trade_publications(self, settings):
+        """Construction / infrastructure trade publications via sources.trade_publications."""
+        try:
+            from sources.trade_publications import fetch_trade_publications
+        except ImportError:
+            return []
+        try:
+            raw = fetch_trade_publications(max_items=5)
+            return [_dict_to_lead("trade_pubs", r) for r in raw
+                    if isinstance(r, dict) and r.get("url")]
+        except Exception as e:
+            log.warning(f"[expansion] trade_pubs ERROR {str(e)[:120]}")
+            return []
+
     def _fetch_invest_india(self, settings):
-        """Invest India — FDI announcements RSS."""
+        """Invest India — FDI announcements RSS (best-effort; often 0)."""
         kw = self._keywords(settings)
         for url in (
             "https://www.investindia.gov.in/rss.xml",
             "https://www.investindia.gov.in/feed",
         ):
             body = _http_get(url, timeout=20)
-            if body and "<item>" in body:
+            if body and ("<item>" in body or "<entry>" in body):
                 items = _parse_rss(body, kw, "invest_india")
                 if items:
                     return [_dict_to_lead("invest_india", r) for r in items]
         return []
 
     def _fetch_10times(self, settings):
-        """10times India — trade show listings."""
+        """10times India — trade show listings (JS-rendered, best-effort; often 0)."""
         kw = self._keywords(settings)
         try:
-            content = fetch_page(
-                "https://10times.com/india",
-                max_chars=30000,
-            )
+            content = fetch_page("https://10times.com/india", max_chars=30000)
         except Exception:
             return []
         if not content or len(content) < 300:
