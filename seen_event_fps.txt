@@ -1376,3 +1376,7 @@ hiring|teckvalleyindia|||2026-10|
 capex|cabinet|40000 Crore|inr|2026-10|india
 financial_results|godrejconsumerproducts|||2026-10|
 technology_test|starbucks|||2026-10|
+capex|adaniportsandspecialeconomiczoneslimited|3.3|billion usd|2026-10|ahmedabad
+general_news|upgovernment|||2026-10|
+product_announcement|spotify|2027|year|2026-10|sweden
+portal_launch|adjudicatoryboardformajorports|||2026-10|
