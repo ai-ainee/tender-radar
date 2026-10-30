@@ -308,35 +308,29 @@ class HiringAdapter(SourceAdapter):
     def _fetch_foundit(self, role_pairs, settings):
         return self._search_job_board(role_pairs, settings, ["foundit.in"])
 
-    # ── LinkedIn (stub — needs paid API or RSSHub proxy) ─────────────
+    # ── LinkedIn (company posts via Serper site: search) ─────────────
     def _fetch_linkedin(self, role_pairs, settings):
-        """LinkedIn company posts (not jobs) via Serper site: queries.
+        """LinkedIn company posts (NOT jobs) via Serper site: queries.
 
         Why posts and not jobs:
-          • linkedin.com/jobs/* is a job portal page — AI always rejects it
+          • linkedin.com/jobs/* is a job-portal page — AI always rejects it
           • linkedin.com/posts/* is a company's own announcement — the post
             text often includes the expansion/hiring intent, which the AI
             can evaluate as a real HIRING_SIGNAL from a real company.
 
-        Query pattern: "site:linkedin.com/posts <role keyword> <intent verb>"
-        Yields 3-8 LinkedIn posts per role, of which ~30% are real signals.
+        Query pattern: "site:linkedin.com/posts <intent verb> <role> India"
+        Yields 3-8 LinkedIn posts per query, of which ~30% are real signals.
         """
         if not self._search:
             return []
 
-        INTENT_VERBS = (
-            '"we are hiring"',
-            '"hiring"',
-            '"join our team"',
-            '"looking for"',
-        )
+        INTENT_VERBS = ('"we are hiring"', '"hiring"')
 
         leads = []
         seen_urls = set()
 
-        # Cap to 3 roles to keep API usage reasonable (3 roles × 4 verbs = 12 queries)
         for role, product in role_pairs[:3]:
-            for verb in INTENT_VERBS[:2]:  # 2 verbs per role = 6 queries total
+            for verb in INTENT_VERBS:
                 query = f'site:linkedin.com/posts {verb} "{role}" India'
                 try:
                     results = self._search.search(
@@ -359,7 +353,6 @@ class HiringAdapter(SourceAdapter):
 
                     # Extract company from LinkedIn post title.
                     # Format: "<Company> on LinkedIn: <Post text>"
-                    #    or:  "<Person> on LinkedIn: <Post text>"
                     company = ""
                     if " on LinkedIn:" in title:
                         company = title.split(" on LinkedIn:")[0].strip()
@@ -367,19 +360,16 @@ class HiringAdapter(SourceAdapter):
                         idx = title.lower().index(" on linkedin:")
                         company = title[:idx].strip()
 
-                    # Skip if company looks like a person's name
-                    if company:
-                        _comp_words = company.split()
-                        _PERSON_HINTS = (
-                            " , ", "|", "-", "(", ")",
-                            "engineer", "manager", "founder", "ceo",
-                            "director", "head of", "vp ",
-                        )
-                        _lc = company.lower()
-                        if any(h in _lc for h in _PERSON_HINTS):
-                            continue
-
                     if not company or len(company) < 3:
+                        continue
+
+                    # Reject person-profile-like "companies" (title was a name)
+                    _lc = company.lower()
+                    _PERSON_HINTS = (
+                        "engineer", "manager", "founder", "ceo",
+                        "director", "head of", "vp ", " , ", "|",
+                    )
+                    if any(h in _lc for h in _PERSON_HINTS):
                         continue
 
                     leads.append(StandardLead(
