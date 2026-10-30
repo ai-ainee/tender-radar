@@ -98,6 +98,7 @@ jobs:
           # Harvester-only budget. Overrides radar.py's default 45 min.
           # This does NOT affect the enrichment worker below (which keeps its 25 min default).
           MAX_RUNTIME_MIN: '70'
+          AI_BATCH_SIZE: '3'
         run: python radar.py
 
       - name: Run enrichment worker
