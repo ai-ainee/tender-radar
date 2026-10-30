@@ -1,4 +1,4 @@
-"""test_bse.py — ScraperAPI + BSE diagnostic. Always writes output."""
+"""test_bse.py — ScraperAPI + BSE diagnostic. Loads keys from Sheet."""
 import os
 import sys
 import traceback
@@ -14,15 +14,32 @@ w("=" * 60)
 w("SCRAPERAPI BSE TEST")
 w("=" * 60)
 
-# Check keys
+# ── Step 1: Load keys the same way radar.py does ──
+w("\n--- Key loading ---")
+w(f"env SCRAPERAPI_API_KEYS before load: {'SET' if os.getenv('SCRAPERAPI_API_KEYS') else 'EMPTY'}")
+
+try:
+    from common import SheetAPI, inject_api_keys_from_settings
+    sheet = SheetAPI()
+    cfg = sheet.get("get_settings")
+    api_keys_block = cfg.get("api_keys") if isinstance(cfg, dict) else None
+    if api_keys_block:
+        inject_api_keys_from_settings(api_keys_block)
+    w(f"env SCRAPERAPI_API_KEYS after load:  {'SET' if os.getenv('SCRAPERAPI_API_KEYS') else 'EMPTY'}")
+except Exception as e:
+    w(f"[WARN] Could not load Settings: {e}")
+    traceback.print_exc()
+
+# ── Step 2: Check keys ──
 raw = os.getenv("SCRAPERAPI_API_KEYS", "")
 keys = [k.strip() for k in raw.replace('"', "").replace("'", "").split(",") if k.strip()]
 w(f"SCRAPERAPI_API_KEYS count: {len(keys)}")
 
 if not keys:
-    w("[FAIL] No ScraperAPI keys set in env")
+    w("[FAIL] No ScraperAPI keys found in env OR Sheet Settings")
     sys.exit(0)
 
+# ── Step 3: Test ScraperAPI proxy ──
 try:
     import requests
     import urllib3
@@ -38,7 +55,7 @@ try:
         f"?pageno=1&strCat=-1&strPrevDate={from_date}&strScrip="
         f"&strSearch=P&strToDate={to_date}&strType=C&subcategory="
     )
-    w(f"URL: {url[:110]}...")
+    w(f"\nURL: {url[:110]}...")
 
     proxies = {
         "http":  f"http://scraperapi:{key}@proxy-server.scraperapi.com:8001",
@@ -70,18 +87,15 @@ try:
                         w(f"First row keys: {list(data['Table'][0].keys())[:10]}")
                         w(f"First row sample: {str(data['Table'][0])[:300]}")
                     else:
-                        w("[NOTE] Table is present but empty — no announcements in window")
+                        w("[NOTE] Table is empty — no announcements in 15-day window")
                 else:
                     w("[FAIL] No 'Table' key in response")
-            elif isinstance(data, list):
-                w(f"SUCCESS (list): {len(data)} items")
             else:
-                w(f"Unexpected response type")
+                w(f"Unexpected response: {str(data)[:200]}")
         except Exception as e:
             w(f"[FAIL] JSON parse error: {e}")
     else:
         w(f"[FAIL] Non-200 response")
-
 except Exception as e:
     w(f"[FAIL] Exception: {e}")
     traceback.print_exc()
