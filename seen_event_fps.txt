@@ -1408,3 +1408,26 @@ hiring|assystem|CAD Designer Draftsman|position|2026-09|navimumbai
 news|governmentofindia|10000 crore|inr|2026-10|india
 commissioning|ntpcgreenenergylimited|95.6|mw|2026-10|rajasthan
 market_update|mcx|141620|inr|2026-10|india
+capex|royalorchidhotelslimited|Z by Regenta launch|hotel property|2026-10|vijayawada
+white_paper|s-5!|solar mounting white paper|research|2026-10|australia
+product_offering|fluidverse|stormwater modules|service|2026-10|uae
+dictionary_entry|merriam-webster|savage synonyms|thesaurus|2026-10|
+contract_award|cityofturku|Kupittaa Core development mandate|infrastructure|2026-10|turku
+article|inta|AI Generated Designs|article|2026-10|usa
+q&a forum post|homedesigninstitute|||2022-01|
+company registration directory entry|edcengineeringdesigncenterindiaprivatelimited|||2014-06|
+hiring job posting|jacobs|BIM Design Specialist|role||krakow,poland
+blog post / product marketing|bricsys|||2020-07|
+hiring job posting|generacpowersystems|Mechanical Design Engineer|role|2026-08|eastpeoria,il,usa
+blog_post|theindustrialplots|8250|acres|2026-10|jhajjar
+policy_report|nitiaayog|12|sectors|2026-08|newdelhi
+policy_article|theeconomictimes|||2021-07|
+editorial_article|manufacturingtodayindia|||2026-10|
+internship_programme|autodesk|AICTE|partnership|2026-10|india
+service_offering|virtualemployee|8|usd/hour|2026-10|india
+marketing_blog|f5hiringsolutions|||2026-10|
+careers_index|wsp|||2026-10|
+service_promotion|qebim|||2026-10|
+training_promotion|buildambit|||2026-10|
+hiring_bim_revit|jacobs|47448|requisition_id|2026-10|bangalore
+capex_expansion|ekamobility|2000|inr crore|2026-10|india
