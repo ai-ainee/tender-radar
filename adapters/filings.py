@@ -151,42 +151,14 @@ class FilingsAdapter(SourceAdapter):
         return industry_kw + intent_kw
 
     def _fetch_bse(self, settings):
-        kw = self._keywords(settings)
-
-        # Preferred: sources.bse (7-day window + alternate endpoint fallback)
-        try:
-            from sources.bse import fetch_bse
-        except ImportError:
-            fetch_bse = None
-
-        if fetch_bse is not None:
-            try:
-                raw = fetch_bse(kw, max_days=15, max_results=60)
-                if not isinstance(raw, list):
-                    log.info(f"[filings:bse] sources.bse non-list ({type(raw).__name__})")
-                    raw = []
-                if raw:
-                    log.debug(f"[filings:bse] sources.bse returned {len(raw)} row(s)")
-                    return [_dict_to_lead("bse", r) for r in raw
-                            if isinstance(r, dict) and r.get("url")]
-                # Empty result — try legacy fallback in case sources.bse
-                # had a transient failure
-            except Exception as e:
-                log.warning(f"[filings:bse] sources.bse ERROR {str(e)[:120]} — trying legacy")
-
-        # Fallback: legacy bse_filings.py (3-day window)
-        if not _HAS_BSE_LEGACY:
-            return []
-        try:
-            raw = _fetch_bse_legacy(kw, max_days=3, max_results=60)
-        except Exception as e:
-            log.debug(f"[filings:bse] legacy {str(e)[:100]}")
-            return []
-        if not isinstance(raw, list):
-            log.info(f"[filings:bse] legacy non-list ({type(raw).__name__})")
-            return []
-        return [_dict_to_lead("bse", r) for r in raw
-                if isinstance(r, dict) and r.get("url")]
+        """Disabled — Akamai blocks all proxy modes from GitHub Actions.
+        Attempted: curl_cffi, urllib, raw requests, bse PyPI package,
+        ScraperAPI standard proxy, ScraperAPI session-persistent proxy.
+        All either return 403 or empty responses.
+        NSE (5-15 leads/run) covers corporate filings adequately.
+        To re-enable: see git history for the ScraperAPI + bse attempt."""
+        log.info("[filings:bse] disabled — Akamai blocks proxy workarounds")
+        return []
 
     def _fetch_nse(self, settings):
         if not _HAS_NSE:
