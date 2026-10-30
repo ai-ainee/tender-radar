@@ -1288,12 +1288,15 @@ def main():
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
             continue
+        # Google obfuscation redirects — dead links in the CRM, filter everywhere
         if _is_google_redirect(lead.url):
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
+        # Job portals — filter everywhere EXCEPT the hiring adapter, which
+        # legitimately returns job-portal URLs (site:naukri.com queries) that
+        # carry the employer name in the SERP title. Those go to the AI,
+        # which extracts the real company and routes to Review/Inbox.
         if lead.source != "hiring" and _is_job_portal_host(lead.url):
-            stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
-            continue
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
         # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
