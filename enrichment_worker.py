@@ -587,8 +587,21 @@ def google_news(org, limit=6):
     return parse_rss(http_get(url, timeout=12), limit, org)
 
 def bing_news(org, limit=6):
+    """Bing News RSS — returns [] on XML parse failure.
+
+    Bing's RSS feed is frequently malformed (invalid control chars,
+    unescaped &, etc.). Wrap parsing in try/except so a broken feed
+    doesn't crash the research pipeline. Returns [] on any failure.
+    """
     url = f"https://www.bing.com/news/search?q={quote_plus(chr(34) + org + chr(34))}&format=rss"
-    return parse_rss(http_get(url, timeout=12), limit, org)
+    try:
+        body = http_get(url, timeout=12)
+        if not body or len(body) < 100:
+            return []
+        return parse_rss(body, limit, org)
+    except Exception as e:
+        log.debug(f"bing_news parse failed for {org}: {str(e)[:100]}")
+        return []
 
 def wikipedia_intro(org):
     url = ("https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrlimit=1&prop=extracts&exintro=1"
