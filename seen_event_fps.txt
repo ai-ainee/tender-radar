@@ -1370,3 +1370,9 @@ capex|vedanta|25|usd billion|2026-10|india
 capex|amintelligence|3|usd billion|2026-10|india
 policy|pmoindia|||2026-10|
 capex|junipergreenenergy|85|mw|2024-04|maharashtra
+financial_results|network18|||2026-09|
+order_win|goodluckdefenceandaerospacelimited|58.20 Crore|inr|2026-10|india
+hiring|teckvalleyindia|||2026-10|
+capex|cabinet|40000 Crore|inr|2026-10|india
+financial_results|godrejconsumerproducts|||2026-10|
+technology_test|starbucks|||2026-10|
