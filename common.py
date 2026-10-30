@@ -110,8 +110,12 @@ def extract_emails(text, limit=8):
 def normalize_company(name):
     if not name or not isinstance(name, str): return "Unknown"
     cleaned = re.sub(r"(?i)\b(ltd|pvt|limited|private|inc|corp|llc)\b\.?", "", name)
+    # Preserve & as a word — "Larsen & Toubro" not "Larsen  Toubro"
+    cleaned = cleaned.replace("&", " AND ")
     cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip().title()
+    # Normalise " And " to " & " for display
+    cleaned = re.sub(r"\bAnd\b", "&", cleaned, flags=re.I)
     return cleaned if cleaned else "Unknown"
 
 def extract_json(raw):
