@@ -361,7 +361,7 @@ def _auto_register():
     adapter_modules = [
         ("discovery", "adapters.discovery", "DiscoveryAdapter"),
         ("filings",   "adapters.filings",   "FilingsAdapter"),
-        ("tenders",   "adapters.tenders",   "TendersAdapter"),
+        ("tenders",   "adapters.tenders",   "TendersAdapter"),   # ← ADD THIS
         ("hiring",    "adapters.hiring",    "HiringAdapter"),
         ("expansion", "adapters.expansion", "ExpansionAdapter"),
         ("news",      "adapters.news",      "NewsAdapter"),
