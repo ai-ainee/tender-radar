@@ -14,4 +14,4 @@ ddgs
 aiohttp
 duckduckgo-search>=6.3.0
 playwright>=1.40.0
-bse
+bse>=3.3.4
