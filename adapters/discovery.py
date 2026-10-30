@@ -610,28 +610,22 @@ class DiscoveryAdapter(SourceAdapter):
                                 continue
 
                         if not protected_hit:
-                        if _is_gem_blocked(raw):
-                            mark_precheck_url(pending_urls, c)
-                            continue
-                        if _is_banned_domain(raw, banned_sites):
-                            mark_precheck_url(pending_urls, c)
-                            continue
-                        is_job = _is_job_url(raw)
-                        if is_job and any(d in low_url for d in job_portals):
-                            mark_precheck_url(pending_urls, c)
-                            continue
-                        if country_list and not likely_in_target(
-                            raw, snippet_raw, country_list, states,
-                            settings.get("cities") or []
-                        ):
-                            mark_precheck_url(pending_urls, c)
-                            continue
-                        if _is_gem_blocked(raw):
-                            mark_precheck_url(pending_urls, c)
-                            continue
-                        if _is_banned_domain(raw, banned_sites):
-                            mark_precheck_url(pending_urls, c)
-                            continue
+                            if _is_gem_blocked(raw):
+                                mark_precheck_url(pending_urls, c)
+                                continue
+                            if _is_banned_domain(raw, banned_sites):
+                                mark_precheck_url(pending_urls, c)
+                                continue
+                            is_job = _is_job_url(raw)
+                            if is_job and any(d in low_url for d in job_portals):
+                                mark_precheck_url(pending_urls, c)
+                                continue
+                            if country_list and not likely_in_target(
+                                raw, snippet_raw, country_list, states,
+                                settings.get("cities") or []
+                            ):
+                                mark_precheck_url(pending_urls, c)
+                                continue
 
                         pending_urls.add(c)
 
