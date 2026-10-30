@@ -101,7 +101,7 @@ JOB_PORTAL_HOSTS = {
     "workatastartup.com", "jobtoday.com", "monster.com",
     "ziprecruiter.com", "dice.com", "careerbuilder.com",
     "placementindia.com", "theirstack.com", "jobma.com",
-    "jobaaj.com", "jobsora.com", "ladders.com",
+    "jobaaj.com", "ladders.com",
 }
 
 def _is_job_portal_host(url):
@@ -1262,6 +1262,9 @@ def main():
     for lead in all_leads:
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
+            continue
+        if _is_job_portal_host(lead.url):
+            stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
       # NEW: hard filter — job portals never host direct buyer signals
         if _is_job_portal_host(lead.url):
