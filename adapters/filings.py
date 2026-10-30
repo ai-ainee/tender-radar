@@ -161,7 +161,7 @@ class FilingsAdapter(SourceAdapter):
 
         if fetch_bse is not None:
             try:
-                raw = fetch_bse(kw, max_days=7, max_results=60)
+                raw = fetch_bse(kw, max_days=15, max_results=60)
                 if not isinstance(raw, list):
                     log.info(f"[filings:bse] sources.bse non-list ({type(raw).__name__})")
                     raw = []
