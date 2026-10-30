@@ -1,115 +1,116 @@
-"""test_bse.py — GitHub Actions diagnostic for BSE endpoint.
+"""test_bse.py — defensive BSE diagnostic.
 
-Writes results to bse_diagnose_output.txt so you can download them
-from the Actions artifacts even if the step fails.
+Writes results to bse_diagnose_output.txt so you can download the artifact.
 """
 import json
 import sys
 import traceback
 
 def write(text):
-    """Print AND append to file."""
-    print(text)
+    print(text, flush=True)
     with open("bse_diagnose_output.txt", "a", encoding="utf-8") as f:
         f.write(text + "\n")
 
-# Start fresh
 open("bse_diagnose_output.txt", "w").close()
 
 write("=" * 60)
-write("BSE ENDPOINT DIAGNOSTIC")
+write("BSE DIAGNOSTIC v2")
 write("=" * 60)
 
-# ── Test imports ──────────────────────────────────────────────
+# ── 1. Inspect bse package ────────────────────────────────────
+write("\n--- bse package ---")
 try:
-    from sources.bse import _build_url_primary, _build_url_alt, _fetch_via_cffi, _fetch_via_urllib
-    write("[OK] imports from sources.bse")
+    import bse as bse_pkg
+    write(f"[OK] import bse -> {getattr(bse_pkg, '__file__', '?')}")
+    write(f"  version: {getattr(bse_pkg, '__version__', 'unknown')}")
+    members = [m for m in dir(bse_pkg) if not m.startswith('_')]
+    write(f"  public members: {members}")
+    BSE_cls = getattr(bse_pkg, 'BSE', None)
+    if BSE_cls:
+        write(f"  BSE class methods: {[m for m in dir(BSE_cls) if not m.startswith('_')]}")
+except ImportError as e:
+    write(f"[FAIL] cannot import bse: {e}")
+    write("  → requires 'bse' in requirements.txt AND workflow install step")
+    bse_pkg = None
 except Exception as e:
-    write(f"[FAIL] could not import sources.bse: {e}")
+    write(f"[FAIL] bse import raised: {e}")
+    bse_pkg = None
+
+# ── 2. Inspect sources.bse (only what exists) ─────────────────
+write("\n--- sources.bse ---")
+try:
+    import sources.bse as sbs
+    write("[OK] imported sources.bse")
+    funcs = [n for n in dir(sbs) if not n.startswith('_')]
+    write(f"  functions: {funcs}")
+    # Only test what's actually present
+    for name in ("fetch_bse", "_fetch_via_cffi", "_try_endpoint", "_build_url_primary", "_build_url_alt"):
+        write(f"  has {name}: {hasattr(sbs, name)}")
+except Exception as e:
+    write(f"[FAIL] sources.bse import raised: {e}")
     traceback.print_exc()
-    sys.exit(0)
+    sbs = None
 
-# ── Test each endpoint ────────────────────────────────────────
-for name, builder in [("PRIMARY", _build_url_primary), ("ALTERNATE", _build_url_alt)]:
-    write(f"\n--- {name} endpoint (7-day window) ---")
-    try:
-        url = builder(7)
-    except Exception as e:
-        write(f"[FAIL] could not build URL: {e}")
-        continue
-
-    write(f"URL: {url[:140]}...")
-
-    # Try curl_cffi (production path)
-    try:
-        cffi_body = _fetch_via_cffi(url)
-    except Exception as e:
-        write(f"curl_cffi EXCEPTION: {e}")
-        cffi_body = None
-
-    if cffi_body is None:
-        write("curl_cffi:  FAILED (returned None)")
-    else:
-        write(f"curl_cffi:  {len(cffi_body)} bytes")
-        preview = cffi_body[:300].decode("utf-8", errors="replace")
-        write(f"  preview: {preview!r}")
-
-        # Try to parse
+# ── 3. Call fetch_bse ─────────────────────────────────────────
+if sbs and hasattr(sbs, "fetch_bse"):
+    write("\n--- fetch_bse() call ---")
+    for days, kw in [(15, []), (15, ["capex","expansion","order","contract","investment","plant"])]:
         try:
-            data = json.loads(cffi_body.decode("utf-8", errors="replace"))
-            if isinstance(data, str):
-                write(f"  PARSED: string -> {data!r}")
-            elif isinstance(data, list):
-                write(f"  PARSED: list with {len(data)} item(s)")
-                if data and isinstance(data[0], dict):
-                    write(f"  first item keys: {list(data[0].keys())[:10]}")
-            elif isinstance(data, dict):
-                write(f"  PARSED: dict with keys {list(data.keys())[:10]}")
-                for k, v in data.items():
-                    if isinstance(v, list):
-                        write(f"    {k}: list[{len(v)}]")
-                        if v and isinstance(v[0], dict):
-                            write(f"      first row keys: {list(v[0].keys())[:10]}")
-                    else:
-                        write(f"    {k}: {type(v).__name__} = {str(v)[:80]!r}")
+            result = sbs.fetch_bse(kw, max_days=days, max_results=10)
+            write(f"fetch_bse(kw={len(kw)}, {days}d): {len(result)} row(s)")
+            if result:
+                for i, r in enumerate(result[:3]):
+                    write(f"  [{i}] {str(r.get('title',''))[:80]!r}")
+                    write(f"      company={r.get('company')!r} date={r.get('date')!r}")
         except Exception as e:
-            write(f"  PARSE FAILED: {e}")
+            write(f"[FAIL] fetch_bse(kw={len(kw)}, {days}d) raised: {e}")
+            traceback.print_exc()
 
-    # Try urllib (fallback)
+# ── 4. Raw requests session with warmup ──────────────────────
+write("\n--- raw session test ---")
+try:
+    import requests
+    from datetime import datetime, timedelta
+
+    to_date = datetime.now().strftime("%Y%m%d")
+    from_date = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
+
+    s = requests.Session()
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+    s.headers.update({"User-Agent": ua, "Accept-Language": "en-IN,en;q=0.9"})
+
+    write("  warming up homepage...")
+    s.get("https://www.bseindia.com/", timeout=15)
+    write(f"    cookies: {len(s.cookies)}")
+    s.get("https://www.bseindia.com/corporates/ann.html", timeout=15)
+    write(f"    cookies after ann.html: {len(s.cookies)}")
+
+    url = (
+        "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w"
+        f"?pageno=1&strCat=-1&strPrevDate={from_date}&strScrip="
+        f"&strSearch=P&strToDate={to_date}&strType=C&subcategory="
+    )
+    write(f"  GET {url[:120]}...")
+    r = s.get(url, headers={
+        "Referer": "https://www.bseindia.com/corporates/ann.html",
+        "Origin": "https://www.bseindia.com",
+        "Accept": "application/json, text/plain, */*",
+    }, timeout=20)
+    write(f"  status: {r.status_code}")
+    write(f"  body[:400]: {r.text[:400]!r}")
     try:
-        urllib_body = _fetch_via_urllib(url)
+        data = r.json()
+        write(f"  parsed type: {type(data).__name__}")
+        if isinstance(data, dict):
+            write(f"  keys: {list(data.keys())}")
+            for k, v in data.items():
+                if isinstance(v, list):
+                    write(f"    {k}: list[{len(v)}]")
     except Exception as e:
-        write(f"urllib EXCEPTION: {e}")
-        urllib_body = None
-
-    if urllib_body is None:
-        write("urllib:     FAILED (returned None)")
-    else:
-        write(f"urllib:     {len(urllib_body)} bytes")
-        preview = urllib_body[:300].decode("utf-8", errors="replace")
-        write(f"  preview: {preview!r}")
-
-# ── Test the full fetch_bse call ─────────────────────────────
-write("\n--- full fetch_bse() call with empty keywords ---")
-try:
-    from sources.bse import fetch_bse
-    result = fetch_bse([], max_days=7, max_results=10)
-    write(f"fetch_bse([], 7d): {len(result)} row(s)")
-    if result:
-        for i, r in enumerate(result[:3]):
-            write(f"  [{i}] {str(r.get('title', ''))[:80]!r} | {r.get('date')}")
+        write(f"  parse failed: {e}")
 except Exception as e:
-    write(f"fetch_bse EXCEPTION: {e}")
+    write(f"[FAIL] raw session test raised: {e}")
     traceback.print_exc()
-
-write("\n--- full fetch_bse() call with intent keywords ---")
-try:
-    kw = ["capex", "expansion", "order", "contract", "acquisition",
-          "investment", "facility", "plant", "construction", "tender"]
-    result = fetch_bse(kw, max_days=7, max_results=10)
-    write(f"fetch_bse({kw}, 7d): {len(result)} row(s)")
-except Exception as e:
-    write(f"fetch_bse EXCEPTION: {e}")
 
 write("\n" + "=" * 60)
 write("DIAGNOSTIC COMPLETE")
