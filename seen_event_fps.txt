@@ -1390,3 +1390,21 @@ mission_launch|isro|GSLV-F18|satellite_launch|2026-10|india
 market_entry|ilborro|||2026-10|
 market_report|fitchratings|||2026-10|
 industry_analysis|industryexperts|||2026-10|
+subsidiary_incorporation|recltd|incorporation|filing|2026-10|india
+case_study_showcase|aasaan|industrial_corridor_showcase|case_study|2026-10|india
+hiring_cad_engineer|hewlett_packard_enterprise|mechanical_engineer_thermal_packaging|job_posting|2026-10|india
+app_listing|nesto_group|inaam_app|mobile_app|2026-10|uae
+conference_event|iccadm_conference|cad_conference_doha|event|2027-05|doha_qatar
+vendor_capability_showcase|essentials_jewelry|cad_team_capacity|marketing_page|2026-10|jaipur_india
+rfe|departmentofposts|P-26/1/2022-Phil-DOP|empanelment|2026-10|delhi
+hiring|hiltigroup|20610|requisition|2026-10|gurugram
+research_publication|indusuniversity|IJERTCONV4IS10006|paper|2016-10|ahmedabad
+blog_article|thebetterindia|14-amazing-infrastructure-projects-india|article|2015-10|india
+portfolio_review|gammonengineersandcontractorsprivatelimited|100cr-plus|projects|2026-10|india
+hiring|burohappold|Highway Engineer|position|2026-10|bengaluru
+hiring|whirlpoolcorporation|Senior CAD Designer|position|2026-10|india
+hiring|wsp|Senior CAD Technician|position|2026-10|india
+hiring|assystem|CAD Designer Draftsman|position|2026-09|navimumbai
+news|governmentofindia|10000 crore|inr|2026-10|india
+commissioning|ntpcgreenenergylimited|95.6|mw|2026-10|rajasthan
+market_update|mcx|141620|inr|2026-10|india
