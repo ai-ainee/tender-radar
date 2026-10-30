@@ -496,6 +496,11 @@ def apply_quality_gates(lead, allowed_countries):
             "order win", "bagged", "secured order",
             "record order", "large order", "order intake",
             "commissioned", "commissioning",
+            "began commercial operation", "began operations",
+            "commenced commercial operation", "commenced operations",
+            "started production", "started operations",
+            "operationalised", "operationalized",
+            "now operational", "is operational",
         )
         _ev_low = evidence.lower()
         if any(t in _ev_low for t in _FALSE_EXPIRY):
@@ -1085,7 +1090,7 @@ class Router:
             and confidence == "LOW"
             and gate_ok
             and freshness != "STALE"
-            and score_num >= 70
+            and score_num >= 50
             and not score_override
             and not _is_staffing
         )
