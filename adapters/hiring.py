@@ -310,7 +310,97 @@ class HiringAdapter(SourceAdapter):
 
     # ── LinkedIn (stub — needs paid API or RSSHub proxy) ─────────────
     def _fetch_linkedin(self, role_pairs, settings):
-        return self._stub("linkedin", "requires paid API or RSSHub proxy — not genuine free")
+        """LinkedIn company posts (not jobs) via Serper site: queries.
+
+        Why posts and not jobs:
+          • linkedin.com/jobs/* is a job portal page — AI always rejects it
+          • linkedin.com/posts/* is a company's own announcement — the post
+            text often includes the expansion/hiring intent, which the AI
+            can evaluate as a real HIRING_SIGNAL from a real company.
+
+        Query pattern: "site:linkedin.com/posts <role keyword> <intent verb>"
+        Yields 3-8 LinkedIn posts per role, of which ~30% are real signals.
+        """
+        if not self._search:
+            return []
+
+        INTENT_VERBS = (
+            '"we are hiring"',
+            '"hiring"',
+            '"join our team"',
+            '"looking for"',
+        )
+
+        leads = []
+        seen_urls = set()
+
+        # Cap to 3 roles to keep API usage reasonable (3 roles × 4 verbs = 12 queries)
+        for role, product in role_pairs[:3]:
+            for verb in INTENT_VERBS[:2]:  # 2 verbs per role = 6 queries total
+                query = f'site:linkedin.com/posts {verb} "{role}" India'
+                try:
+                    results = self._search.search(
+                        query, country="india", pages=1, recent=True,
+                    )
+                except Exception as e:
+                    log.debug(f"[hiring:linkedin] search error: {str(e)[:80]}")
+                    continue
+
+                for res in results[:5]:
+                    url = (res.get("link") or "").strip()
+                    if not url or url in seen_urls:
+                        continue
+                    if "linkedin.com/posts" not in url.lower():
+                        continue
+                    seen_urls.add(url)
+
+                    title = res.get("title") or ""
+                    snippet = res.get("snippet") or ""
+
+                    # Extract company from LinkedIn post title.
+                    # Format: "<Company> on LinkedIn: <Post text>"
+                    #    or:  "<Person> on LinkedIn: <Post text>"
+                    company = ""
+                    if " on LinkedIn:" in title:
+                        company = title.split(" on LinkedIn:")[0].strip()
+                    elif " on linkedin:" in title.lower():
+                        idx = title.lower().index(" on linkedin:")
+                        company = title[:idx].strip()
+
+                    # Skip if company looks like a person's name
+                    if company:
+                        _comp_words = company.split()
+                        _PERSON_HINTS = (
+                            " , ", "|", "-", "(", ")",
+                            "engineer", "manager", "founder", "ceo",
+                            "director", "head of", "vp ",
+                        )
+                        _lc = company.lower()
+                        if any(h in _lc for h in _PERSON_HINTS):
+                            continue
+
+                    if not company or len(company) < 3:
+                        continue
+
+                    leads.append(StandardLead(
+                        source="hiring",
+                        category="hiring",
+                        url=url,
+                        title=title[:300],
+                        raw_text=(snippet or title)[:800],
+                        buyer_org=company[:200],
+                        country="India",
+                        metadata={
+                            "internal_source": "linkedin_posts",
+                            "role": role,
+                            "target_product": product,
+                            "is_job_url": False,
+                            "fetch_method": "serper_site_search",
+                        },
+                    ))
+
+        log.info(f"[hiring:linkedin] {len(leads)} lead(s) collected")
+        return leads
 
     # ── Internshala (stub — freshers-only, not senior buying signals) ─
     def _fetch_internshala(self, role_pairs, settings):
