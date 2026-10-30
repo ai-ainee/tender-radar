@@ -556,8 +556,15 @@ class LLMRouter:
         self._throttle()
         self.calls[provider] = self.calls.get(provider, 0) + 1
         if provider == "gemini":
-            body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json", "maxOutputTokens": 8192}}
+            body = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "responseMimeType": "application/json",
+                    "maxOutputTokens": 8192,
+                    "thinkingConfig": {"thinkingBudget": 0},
+                },
+            }
             return requests.post(f"{self.base['gemini']}/models/{model}:generateContent", headers={"x-goog-api-key": key, "Content-Type": "application/json"}, json=body, timeout=(10, 120))
         # OpenAI-compatible providers (Groq, OpenRouter, Extra, OpenAI).
         # max_tokens=8192 — matches Gemini's maxOutputTokens. Without this,
