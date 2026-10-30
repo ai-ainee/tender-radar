@@ -44,51 +44,42 @@ def _build_url_alt(max_days):
 
 
 def _fetch_via_cffi(api_url):
+    """Fetch BSE announcements using the bse package, which handles
+    session cookies and headers correctly."""
     try:
-        from curl_cffi import requests as cffi_requests
+        from bse import BSE
+        from datetime import datetime, timedelta
     except ImportError:
         return None
+
     try:
-        session = cffi_requests.Session(impersonate="chrome120")
-        hdrs_html = {"User-Agent": UA,
-                     "Accept": "text/html,application/xhtml+xml"}
-        hdrs_json = {"User-Agent": UA,
-                     "Referer": "https://www.bseindia.com/",
-                     "Origin": "https://www.bseindia.com",
-                     "Accept": "application/json, text/plain, */*"}
-        session.get("https://www.bseindia.com/corporates/ann.html",
-                    headers=hdrs_html, timeout=15)
-        time.sleep(1)
-        r = session.get(api_url, headers=hdrs_json, timeout=20)
-        if r.status_code == 200 and r.content:
-            return r.content
-        log.debug(f"[bse] cffi HTTP {r.status_code}")
-        return None
+        # The bse package needs a download folder for cookie storage
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with BSE(download_folder=tmpdir) as bse:
+                # Reconstruct the date range from the api_url
+                # (or better, accept from_date/to_date as arguments)
+                to_date = datetime.now()
+                from_date = to_date - timedelta(days=7)
+                # The bse package returns a dict with a 'Table' key
+                data = bse.announcements(
+                    from_date=from_date,
+                    to_date=to_date,
+                    category="-1",
+                    subcategory="",
+                    scripcode="",
+                )
+                if data and isinstance(data, dict) and "Table" in data:
+                    import json
+                    return json.dumps(data).encode("utf-8")
+                return None
     except Exception as e:
-        log.debug(f"[bse] cffi error: {str(e)[:120]}")
+        log.warning(f"[bse] bse package error: {str(e)[:150]}")
         return None
-
-
-def _fetch_via_urllib(api_url):
-    try:
-        req = urllib.request.Request(api_url, headers={
-            "User-Agent": UA,
-            "Referer": "https://www.bseindia.com/",
-            "Origin": "https://www.bseindia.com",
-            "Accept": "application/json, text/plain, */*",
-        })
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return r.read(2_000_000)
-    except Exception as e:
-        log.debug(f"[bse] urllib error: {str(e)[:120]}")
-        return None
-
 
 def _try_endpoint(api_url):
-    """Return parsed rows list, or None if the fetch itself failed."""
+    """Fetch and parse BSE announcements using the bse package."""
     body = _fetch_via_cffi(api_url)
-    if body is None:
-        body = _fetch_via_urllib(api_url)
     if body is None:
         return None
 
@@ -98,10 +89,10 @@ def _try_endpoint(api_url):
         log.debug(f"[bse] JSON parse failed: {str(e)[:80]}")
         return None
 
-    # BSE returns the literal JSON string "No Record Found!" when empty.
-    if isinstance(data, str):
-        log.debug(f"[bse] empty-response marker: {data[:60]!r}")
-        return []
+    # The bse package returns a dict with a 'Table' key
+    if isinstance(data, dict) and isinstance(data.get("Table"), list):
+        return data["Table"]
+    return []
     if data is None:
         return []
     if isinstance(data, list):
@@ -115,58 +106,46 @@ def _try_endpoint(api_url):
     log.debug(f"[bse] unexpected type {type(data).__name__}")
     return None
 
-
 def fetch_bse(keywords, max_days=7, max_results=60):
-    """Return list of BSE announcements matching keywords.
-
-    Returns [] on any failure. Never raises.
-    """
+    """Fetch BSE announcements using the bse package."""
     kw_lower = [str(k).lower().strip() for k in (keywords or []) if k]
 
-    for url_builder, name in ((_build_url_primary, "primary"),
-                              (_build_url_alt, "alternate")):
-        api_url = url_builder(max_days)
-        rows = _try_endpoint(api_url)
-        if rows is None:
-            continue
-        if not rows:
-            log.debug(f"[bse] {name}: 0 rows in {max_days}-day window")
-            continue
+    rows = _try_endpoint(None)  # api_url no longer needed
+    if rows is None:
+        return []
 
-        log.debug(f"[bse] {name}: {len(rows)} rows")
-        out = []
-        for item in rows:
-            if not isinstance(item, dict):
+    out = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        subject = str(item.get("NEWSSUB") or item.get("HEADLINE") or "").strip()
+        details = str(item.get("MORE") or "").strip()
+        scrip = str(item.get("SLONGNAME") or item.get("Scripname") or "").strip()
+        if not subject:
+            continue
+        if kw_lower:
+            hay = (subject + " " + details + " " + scrip).lower()
+            if not any(k in hay for k in kw_lower):
                 continue
-            subject = str(item.get("NEWSSUB") or item.get("HEADLINE") or "").strip()
-            details = str(item.get("MORE") or "").strip()
-            scrip = str(item.get("SLONGNAME") or item.get("Scripname") or "").strip()
-            if not subject:
-                continue
-            if kw_lower:
-                hay = (subject + " " + details + " " + scrip).lower()
-                if not any(k in hay for k in kw_lower):
-                    continue
-            attachment = str(item.get("ATTACHMENTNAME") or "").strip()
-            if attachment:
-                pdf_url = ("https://www.bseindia.com/xml-data/corpfiling/"
-                           "AttachLive/" + urllib.parse.quote(attachment))
-            else:
-                pdf_url = ("https://www.bseindia.com/corporates/ann.html"
-                           "?scrip=" + urllib.parse.quote(scrip))
-            out.append({
-                "url": pdf_url,
-                "title": subject[:300],
-                "snippet": details[:800],
-                "company": scrip[:200],
-                "date": str(item.get("NEWS_DT") or "")[:10],
-            })
-            if len(out) >= max_results:
-                break
+        attachment = str(item.get("ATTACHMENTNAME") or "").strip()
+        if attachment:
+            pdf_url = ("https://www.bseindia.com/xml-data/corpfiling/"
+                       "AttachLive/" + urllib.parse.quote(attachment))
+        else:
+            pdf_url = ("https://www.bseindia.com/corporates/ann.html"
+                       "?scrip=" + urllib.parse.quote(scrip))
+        out.append({
+            "url": pdf_url,
+            "title": subject[:300],
+            "snippet": details[:800],
+            "company": scrip[:200],
+            "date": str(item.get("NEWS_DT") or "")[:10],
+        })
+        if len(out) >= max_results:
+            break
 
-        if out:
-            log.info(f"[bse] {len(out)} matching row(s) from {name} endpoint")
-            return out
+    log.info(f"[bse] {len(out)} matching row(s) from bse package")
+    return out
 
     log.info(f"[bse] no matching rows in last {max_days} day(s)")
     return []
