@@ -1476,3 +1476,6 @@ capex|geindia|300|inr crore|2012-06|bangalore
 app_listing|chiranjeevipandey|||2026-10|
 academic_webinar|biswanathcollege|||2026-10|
 expressway_construction_tender|uttarpradeshexpresswaysindustrialdevelopmentauthority|1008.67|inr crore|2026-10|chitrakoot_uttar_pradesh_india
+corporate_filing|signatureglobal|||2026-10|
+regulatory_inspection|granulesindialimited|11|observations|2026-10|gagillapur
+regulatory_disclosure|bhartiairtellimited|||2026-10|
