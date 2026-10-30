@@ -1269,6 +1269,7 @@ def main():
         "gate_tender_dupe": 0,
         "gate_url_seen": 0,
         "gate_fp_dupe": 0,
+        "gate_job_portal": 0,
         "gate_budget": 0, "gate_hallucination": 0,
         "gate_banned_kw": 0,
         "evaluated": 0,
@@ -1285,11 +1286,7 @@ def main():
         if _is_job_portal_host(lead.url) or _is_google_redirect(lead.url):
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
-      # NEW: hard filter — job portals never host direct buyer signals
-        if _is_job_portal_host(lead.url) or _is_google_redirect(lead.url):
-            stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
-            continue  
-      # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
+        # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
         if not lead.metadata.get("is_job_url"):
             _halluc_hay = (lead.buyer_org or "") + " | " + (lead.title or "")
             if _is_hallucinated_company(_halluc_hay):
