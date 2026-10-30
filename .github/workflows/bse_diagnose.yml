@@ -22,7 +22,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --disable-pip-version-check requests urllib3 curl_cffi beautifulsoup4 pypdf
+          pip install --disable-pip-version-check requests urllib3 curl_cffi beautifulsoup4 pypdf bse
 
       - name: Run BSE diagnostic
         env:
