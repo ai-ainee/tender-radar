@@ -1286,9 +1286,8 @@ def main():
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
       # NEW: hard filter — job portals never host direct buyer signals
-        if _is_job_portal_host(lead.url):
+        if _is_job_portal_host(lead.url) or _is_google_redirect(lead.url):
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
-            log.debug(f"[JOB-PORTAL] {lead.url[:80]} — hostname is job board")
             continue  
       # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
         if not lead.metadata.get("is_job_url"):
