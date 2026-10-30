@@ -1,30 +1,29 @@
-"""sources/bse.py — BSE announcements via ScraperAPI residential proxy.
+"""sources/bse.py — BSE via bse package + ScraperAPI proxy.
 
-Akamai blocks all direct requests (curl_cffi, requests, bse package)
-from datacenter IPs like GitHub Actions. ScraperAPI routes through
-residential IPs, bypassing the block.
-
-Cost: 1 credit per request (standard proxy mode). Requires
-SCRAPERAPI_API_KEYS env var.
+Why this shape:
+  • Akamai blocks datacenter IPs at the TLS layer (403 on direct requests).
+  • ScraperAPI's residential proxy bypasses that (200).
+  • But the BSE API also requires session cookies from bseindia.com
+    before it will return JSON — a plain proxy request gets the SPA
+    homepage HTML instead.
+  • The `bse` package does the warmup (gets cookies) correctly.
+  • We inject the ScraperAPI proxy via HTTPS_PROXY so its internal
+    requests.Session routes everything — warmup AND API call — through
+    the same residential IP (session-persistent proxy).
 """
 import os
+import tempfile
+import time
 import urllib.parse
 from datetime import datetime, timedelta
-
-import requests
 
 from common import log
 
 try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    from bse import BSE
+    _HAS_BSE_PKG = True
 except ImportError:
-    pass
-
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-
-BSE_ENDPOINT = "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w"
+    _HAS_BSE_PKG = False
 
 
 def _get_scraperapi_key():
@@ -34,61 +33,82 @@ def _get_scraperapi_key():
 
 
 def fetch_bse(keywords, max_days=15, max_results=60):
-    """Fetch BSE announcements via ScraperAPI. Returns [] on failure."""
+    if not _HAS_BSE_PKG:
+        log.warning("[bse] bse package not installed — skipping")
+        return []
+
     key = _get_scraperapi_key()
     if not key:
         log.warning("[bse] SCRAPERAPI_API_KEYS not set — skipping")
         return []
 
-    max_days = max(int(max_days), 15)  # BSE's 7-day window is often empty
-
+    max_days = max(int(max_days), 15)
     kw_lower = [str(k).lower().strip() for k in (keywords or []) if k]
-    to_date = datetime.now().strftime("%Y%m%d")
-    from_date = (datetime.now() - timedelta(days=max_days)).strftime("%Y%m%d")
 
-    url = (
-        f"{BSE_ENDPOINT}?pageno=1&strCat=-1&strPrevDate={from_date}"
-        f"&strScrip=&strSearch=P&strToDate={to_date}&strType=C&subcategory="
+    from_date = datetime.now() - timedelta(days=max_days)
+    to_date = datetime.now()
+
+    # ScraperAPI session-persistent proxy URL.
+    # The -session-number-N suffix keeps the same residential IP for all
+    # requests in the session, so BSE cookies from warmup survive the
+    # handoff to the API endpoint.
+    session_num = int(time.time()) % 10000
+    proxy_url = (
+        f"http://scraperapi-session-number-{session_num}:{key}"
+        f"@proxy-server.scraperapi.com:8001"
     )
 
-    proxies = {
-        "http":  f"http://scraperapi:{key}@proxy-server.scraperapi.com:8001",
-        "https": f"http://scraperapi:{key}@proxy-server.scraperapi.com:8001",
-    }
-    headers = {
-        "User-Agent": UA,
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://www.bseindia.com/corporates/ann.html",
-        "Origin": "https://www.bseindia.com",
-    }
+    # Save + inject proxy env vars for the bse package's requests.Session
+    saved_http = os.environ.get("HTTP_PROXY")
+    saved_https = os.environ.get("HTTPS_PROXY")
+    os.environ["HTTP_PROXY"] = proxy_url
+    os.environ["HTTPS_PROXY"] = proxy_url
 
+    data = None
     try:
-        log.info(f"[bse] fetching via ScraperAPI proxy (last {max_days}d)")
-        r = requests.get(url, proxies=proxies, headers=headers, timeout=90, verify=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with BSE(download_folder=tmpdir) as bse:
+                # Belt and suspenders — also set on session if the package
+                # exposes it (depends on bse package version internals)
+                for attr in ("session", "_session"):
+                    sess = getattr(bse, attr, None)
+                    if sess is not None and hasattr(sess, "proxies"):
+                        try:
+                            sess.proxies.update(
+                                {"http": proxy_url, "https": proxy_url}
+                            )
+                        except Exception:
+                            pass
+                        break
+
+                log.info(f"[bse] warming up + fetching via ScraperAPI (last {max_days}d)")
+                data = bse.announcements(from_date=from_date, to_date=to_date)
     except Exception as e:
-        log.warning(f"[bse] ScraperAPI request failed: {str(e)[:200]}")
+        log.warning(f"[bse] bse+ScraperAPI failed: {str(e)[:200]}")
         return []
-
-    if r.status_code != 200:
-        log.warning(f"[bse] ScraperAPI HTTP {r.status_code}")
-        return []
-
-    try:
-        data = r.json()
-    except Exception:
-        log.warning(f"[bse] non-JSON response: {r.text[:150]!r}")
-        return []
+    finally:
+        if saved_http is None:
+            os.environ.pop("HTTP_PROXY", None)
+        else:
+            os.environ["HTTP_PROXY"] = saved_http
+        if saved_https is None:
+            os.environ.pop("HTTPS_PROXY", None)
+        else:
+            os.environ["HTTPS_PROXY"] = saved_https
 
     if not isinstance(data, dict) or not isinstance(data.get("Table"), list):
-        log.info(f"[bse] response has no 'Table' key: {list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
+        log.info(
+            f"[bse] no Table in response: "
+            f"{list(data.keys()) if isinstance(data, dict) else type(data).__name__}"
+        )
         return []
 
     rows = data["Table"]
     if not rows:
-        log.info(f"[bse] no announcements in last {max_days} day(s)")
+        log.info(f"[bse] 0 announcements in last {max_days}d")
         return []
 
-    log.info(f"[bse] {len(rows)} raw announcement(s) via ScraperAPI")
+    log.info(f"[bse] {len(rows)} raw announcement(s)")
 
     out = []
     for item in rows:
@@ -105,11 +125,15 @@ def fetch_bse(keywords, max_days=15, max_results=60):
                 continue
         attachment = str(item.get("ATTACHMENTNAME") or "").strip()
         if attachment:
-            pdf_url = ("https://www.bseindia.com/xml-data/corpfiling/"
-                       "AttachLive/" + urllib.parse.quote(attachment))
+            pdf_url = (
+                "https://www.bseindia.com/xml-data/corpfiling/AttachLive/"
+                + urllib.parse.quote(attachment)
+            )
         else:
-            pdf_url = ("https://www.bseindia.com/corporates/ann.html"
-                       "?scrip=" + urllib.parse.quote(scrip))
+            pdf_url = (
+                "https://www.bseindia.com/corporates/ann.html?scrip="
+                + urllib.parse.quote(scrip)
+            )
         out.append({
             "url": pdf_url,
             "title": subject[:300],
