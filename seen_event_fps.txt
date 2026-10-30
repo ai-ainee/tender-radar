@@ -1431,3 +1431,39 @@ service_promotion|qebim|||2026-10|
 training_promotion|buildambit|||2026-10|
 hiring_bim_revit|jacobs|47448|requisition_id|2026-10|bangalore
 capex_expansion|ekamobility|2000|inr crore|2026-10|india
+tender|governmentofbangladesh|||2026-10|
+marketing|jiaxingvirtuoustechnologyco.,ltd.|||2026-10|
+news|samsung|129999|inr|2026-10|india
+rfq|ganpatienterprises|1500|licenses|2023-10|ranchi_india
+rfq|amep|10|licenses|2026-04|hyderabad_india
+promotion|mxalgo|||2026-10|
+conference|icseit|||2027-04|
+individual_profile|mssawan|||2026-10|
+hiring|ramboll|AutoCAD Expert|role|2026-10|chennai
+hiring|autodesk|Software Engineer in Test|role|2026-10|singapore
+blog_post|jisgroup|||2025-12|
+capex|kirbybuildingsystems&structuresindiapvtltd|40000|sq ft|2026-10|hyderabad
+opinion_article|etedgeinsights|||2026-10|
+industry_article|interarchbuildingproducts|||2026-10|
+design_center_expansion|omnidesigntechnologies|ODT India Center of Excellence|office|2026-10|bangalore
+job_opening|amazon|1.05783e+07|job_id|2026-10|luxembourg_madrid
+technical_blog|aakashx|||2026-06|
+careers_portal|baesystems|||2026-10|
+general_footprint|caterpillar|||2026-10|
+general_website|hyundaimotorcompany|||2026-10|
+directory_listing|multiplefirms|||2026-10|
+general_footprint|caterpillarinc.|||2026-10|
+exhibition|pmmi|||2026-10|
+software_documentation|bluebeam|||2026-10|
+hiring|siemens|Switchgear Design Engineer - Secondary|job_opening|2026-10|india
+hiring|cyncly|Trainee 3D Design Engineer|job_opening|2026-10|india
+hiring|siemens|Solution Engineer C&P Design|job_opening|2026-10|bangalore
+other|growthhubconsultants|||2026-10|
+other|edspired|||2026-10|
+other|nokia|||2026-10|
+hiring|siemensenergy|Senior Professional P3|position|2026-10|ahmedabad_gujarat_india
+news|rbi|7.26|percent_interest|2026-10|india
+political_election|benjaminnetanyahu|53|seats|2026-10|jerusalem_israel
+regulatory_notice|sunpharma|332|batches_recalled|2026-10|assam_india
+capex_loan_approval|asiandevelopmentbank|139.55|usd_million|2026-10|puducherry_puducherry_india
+financial_report|sunpharma|1989|inr_crore|2026-09|india
