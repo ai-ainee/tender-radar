@@ -60,7 +60,7 @@ jobs:
       # single-key; put it second so its faster response acts as the second
       # attempt when Gemini is rate-limited. OpenRouter is last (paid-ish).
       # Set this to "" (empty) to use the code default.
-      LLM_PROVIDER_ORDER: 'gemini,groq,openrouter'
+      LLM_PROVIDER_ORDER: 'groq,gemini,openrouter'
       # Deal-closing context (Settings -> Secrets and variables -> Actions -> Variables). All optional.
       SELLER_COMPANY: ${{ vars.SELLER_COMPANY }}
       SELLER_OFFER: ${{ vars.SELLER_OFFER }}
