@@ -39,7 +39,7 @@ def _build_url_alt(max_days):
     return (
         "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w"
         f"?pageno=1&strCat=-1&strPrevDate={from_date}&strScrip="
-        f"&strSearch=&strToDate={to_date}&strType=C&subcategory="
+        f"&strSearch=P&strToDate={to_date}&strType=C&subcategory="
     )
 
 
