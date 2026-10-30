@@ -1274,3 +1274,99 @@ policy|tnerc|2.5|gw|2026-10|tamilnadu
 capex|adanigroup|2000|rooms|2026-10|india
 investigation|enforcementdirectorate|4940|inr crores|2026-10|india
 expansion|pixxel|||2026-10|
+capacity_expansion|patelretaillimited|||2026-10|
+product_marketing|pronasoft|||2026-10|
+hiring|opengov|||2026-10|
+profile_listing|mahimeena|||2026-10|
+job_posting|unknown|||2026-10|
+conference|tendersniper|11th Conference of the Asia Pacific Public Electronic Procurement Network||2026-10|india
+job_posting|altana|Director of Product Management Public Sector||2026-10|india
+conference|asiandevelopmentbank|11th Conference of the Asia Pacific Public Electronic Procurement Network||2026-05|india
+recruitment_result|delhistatecancerinstitutes|RECTT./11/2026|notice_id|2026-10|delhi
+tender_result|unknown|6.51|inr crore|2026-10|india
+partnership|smipl|||2026-10|
+tender|ministryofrailways|TD261040|tender_ref|2026-10|westbengal
+rfp|ministryofdefence|2028|year|2026-10|india
+rfp|ministryofdefence|30|months|2026-10|india
+capex|ministryofelectronicsandinformationtechnology|200|companies|2026-10|india
+article|sanchiconnect|||2026-10|
+essay|chaitanyagiri|||2026-10|
+defense_rfp|ministryofdefence|30|months|2026-10|india
+case_study|hlbstech|||2026-10|
+job_posting|legrandgroup|Territory Manager|role|2026-10|visakhapatnam
+vendor_blog|progecadindia|ProgeCAD|software|2026-10|india
+promotion|lionsshareitsolutions|||2026-10|
+promotion|appbowl|||2026-10|
+promotion|zwcad|||2026-10|
+product_launch|lumionphilippines|||2026-10|
+article|spinfireinsight|||2026-10|
+hiring|comsol|||2026-10|
+hiring|intelcorporation|||2026-10|
+product_launch|creallo|||2026-10|
+content_marketing|hcldfmpro|||2026-10|
+hiring|outpostspace|||2026-10|
+tender|navsupflcpugetsound|||2026-10|
+case study|pathnovo|12000|drawings|2026-07|india
+hiring profile|deeppandya|||2026-10|
+blog article|kishanmendapara|||2022-02|
+pdf error|keiindustries|||2026-10|
+hiring|jfeengineeringindia|||2026-10|
+partnership|wrenchsolutions|||2010-05|
+product marketing|pvx.ai|||2026-10|
+hiring|dpworldindia|||2026-10|
+hiring|gevernova|||2026-10|
+hiring|pinnacleinfotech|||2026-04|
+hiring|gradiant|||2023-11|
+capex|sdlgindia|1.5e+10|inr|2026-09|gujarat,india
+market_report|multiplefirms|||2026-10|
+capex|shyammetalics&energy|||2026-10|
+policy|governmentofgujarat|||2015-01|
+capex|repsol|2.5e+08|eur|2014-11|cartagena,spain
+capex|tafe|1.4e+08|usd|2026-09|india
+capex|governmentofindia|||2021-05|
+capex|johnsonmattheyindiaprivatelimited|198.85|inr cr|2026-06|taloja
+capex|multipleproducers|||2026-09|
+capex|ebm-papst|340|inr cr|2025-04|chennai
+research|carnegieindia|||2025-08|
+capex|cnhindustrial|2000|inr cr|2026-10|india
+capex|envirocareinfrasolutionprivatelimited|||2026-06|
+expansion|akzonobel|21 million|eur|2024-02|comoitaly
+capex|metso|40|percent_capacity_increase|2026-10|alwarrajasthanindia
+capex|waareeenergies|||2026-10|
+capex|cdilsemiconductor|||2026-10|
+hiring|howellprotectionsystemsindiapvt.ltd.|||2026-05|
+hiring|k2cranes&componentsprivateltd|||2026-10|
+hiring|saisidhaengineeringindustriespvt.ltd.|||2026-10|
+job_listing|multiplefirms|||2026-10|
+content_marketing|f5hiringsolutions|||2026-10|
+hiring|walterpmoore|4-8|years experience|2026-10|india
+careers_page|cdmsmith|||2026-10|
+hiring|geodesigns&researchpvt.ltd.|||2026-10|
+hiring|kiewitindustrial&waterengineering|||2026-10|
+discussion|smallengineeringfirm|||2026-10|
+hiring|siliconengineeringconsultantspvt.ltd.|||2026-10|
+hiring|wbkengineeringservicespvt.ltd.|||2026-10|
+market research|payscale|||2026-07|
+hiring|thorntontomasetti|||2026-10|
+hiring|multiplefirms|||2026-10|
+vendor offering|urcadservices|||2026-10|
+hiring|equinoxengineeringltd.|||2026-10|
+hiring|intelliprogroupinc.|||2026-10|
+tender|ministryofdefence,nagaland|GEM/2026/B/8099939|tender id|2026-10|nagaland
+hiring|jacobssolutions|||2026-10|
+hiring|k-ride|||2026-11|
+content publication|2050materials|||2026-10|
+industry news|bentleysystems|||2026-10|
+hiring|quraltalentnexus|||2026-10|
+award|evides|||2026-10|
+vendor_news|bentleysystems|||2026-10|
+job_posting|cleanroomindustriessdnbhd|||2026-10|
+job_posting|baumeister|||2026-10|
+hiring|alamaraalsharqiyallc|||2026-10|
+legal case|madhyapradeshhighcourt|||2026-10|
+capex|governmentofgujarat|14000|inr crore|2026-10|gujarat
+legal|cbi|210.13|inr crore|2026-10|prayagraj
+capex|vedanta|25|usd billion|2026-10|india
+capex|amintelligence|3|usd billion|2026-10|india
+policy|pmoindia|||2026-10|
+capex|junipergreenenergy|85|mw|2024-04|maharashtra
