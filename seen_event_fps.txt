@@ -1467,3 +1467,9 @@ political_election|benjaminnetanyahu|53|seats|2026-10|jerusalem_israel
 regulatory_notice|sunpharma|332|batches_recalled|2026-10|assam_india
 capex_loan_approval|asiandevelopmentbank|139.55|usd_million|2026-10|puducherry_puducherry_india
 financial_report|sunpharma|1989|inr_crore|2026-09|india
+loan_remittance|tinnarubberandinfrastructurelimited|3rd tranche|loan|2026-10|india
+research_paper|dpatil|||2024|
+hiring|wea|Proposals Electrical Engineer|job|2026-10|philippines
+hiring|liberalgroup|Senior Process Engineer|job|2026-10|italy
+capex|amdindia|4e+08|usd|2023-11|bengaluru
+capex|geindia|300|inr crore|2012-06|bangalore
