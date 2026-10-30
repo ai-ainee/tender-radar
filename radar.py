@@ -1090,7 +1090,7 @@ class Router:
             and confidence == "LOW"
             and gate_ok
             and freshness != "STALE"
-            and score_num >= 50
+            and score_num >= 70
             and not score_override
             and not _is_staffing
         )
