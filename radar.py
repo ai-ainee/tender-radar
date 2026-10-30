@@ -103,7 +103,26 @@ JOB_PORTAL_HOSTS = {
     "placementindia.com", "theirstack.com", "jobma.com",
     "jobaaj.com", "ladders.com",
 }
+# Google obfuscation redirect URLs — Serper sometimes returns these instead
+# of the real destination. The URL is an ad click wrapper that expires in
+# ~7 days, so once stored in the CRM it becomes a dead link. The AI can
+# judge the destination from the snippet, but enrichment + manual review
+# need a live URL. Filter at source. Clean organic results (Google indexes
+# every one of them) are more than enough.
+GOOGLE_REDIRECT_MARKERS = (
+    "google.com/goto",
+    "google.com/url",
+    "google.com/amp",
+    "news.google.com/rss",
+    "news.google.com/articles",
+)
 
+def _is_google_redirect(url):
+    if not url:
+        return False
+    low = url.lower()
+    return any(marker in low for marker in GOOGLE_REDIRECT_MARKERS)
+  
 def _is_job_portal_host(url):
     try:
         host = urlparse(url or "").netloc.lower()
@@ -1263,7 +1282,7 @@ def main():
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
             continue
-        if _is_job_portal_host(lead.url):
+        if _is_job_portal_host(lead.url) or _is_google_redirect(lead.url):
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
       # NEW: hard filter — job portals never host direct buyer signals
