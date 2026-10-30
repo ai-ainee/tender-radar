@@ -568,6 +568,7 @@ class DiscoveryAdapter(SourceAdapter):
         seen_fps = set()
         precheck_dupes = 0
         tender_id_hits = 0
+        gem_url_hits = 0
 
         for target, industry, gen in campaigns:
             if len(leads) >= max_links:
@@ -610,9 +611,6 @@ class DiscoveryAdapter(SourceAdapter):
                                 continue
 
                         if not protected_hit:
-                            if _is_gem_blocked(raw):
-                                mark_precheck_url(pending_urls, c)
-                                continue
                             if _is_banned_domain(raw, banned_sites):
                                 mark_precheck_url(pending_urls, c)
                                 continue
@@ -644,6 +642,9 @@ class DiscoveryAdapter(SourceAdapter):
                                    or tender_id_from_url(raw))
                             if tid:
                                 tender_id_hits += 1
+
+                        if "gem.gov.in" in low_url or "eprocure.gov.in" in low_url:
+                            gem_url_hits += 1
 
                         if content and len(content) > 120:
                             fp = _fingerprint(content)
@@ -697,7 +698,8 @@ class DiscoveryAdapter(SourceAdapter):
 
         log.info(f"[discovery:serper] {len(leads)} lead(s) collected, "
                  f"{precheck_dupes} pre-check dupes skipped, "
-                 f"{tender_id_hits} tender ID(s) extracted")
+                 f"{tender_id_hits} tender ID(s) extracted, "
+                 f"{gem_url_hits} GeM/CPPP URL(s)")
         return leads
 
     # ── Google News RSS (Fix B applied) ─────────────────────────────
