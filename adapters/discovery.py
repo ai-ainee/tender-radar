@@ -610,22 +610,20 @@ class DiscoveryAdapter(SourceAdapter):
                                 continue
 
                         if not protected_hit:
-                        # NEW: Google obfuscation redirects (google.com/goto?url=,
-                        # google.com/url?q=, news.google.com/rss/articles/) are
-                        # short-lived ad click URLs that expire in ~7 days. The
-                        # AI can judge the destination from the snippet, but
-                        # the URL stored in the CRM becomes unclickable within a
-                        # week — breaking enrichment and manual review. Filter
-                        # them at source; the clean organic results (50 of 150
-                        # in a typical run) are more than enough.
-                        _low_raw = raw.lower()
-                        if any(x in _low_raw for x in (
-                            "google.com/goto",
-                            "google.com/url",
-                            "google.com/amp",
-                            "news.google.com/rss",
-                            "news.google.com/articles",
-                        )):
+                        if _is_gem_blocked(raw):
+                            mark_precheck_url(pending_urls, c)
+                            continue
+                        if _is_banned_domain(raw, banned_sites):
+                            mark_precheck_url(pending_urls, c)
+                            continue
+                        is_job = _is_job_url(raw)
+                        if is_job and any(d in low_url for d in job_portals):
+                            mark_precheck_url(pending_urls, c)
+                            continue
+                        if country_list and not likely_in_target(
+                            raw, snippet_raw, country_list, states,
+                            settings.get("cities") or []
+                        ):
                             mark_precheck_url(pending_urls, c)
                             continue
                         if _is_gem_blocked(raw):
@@ -738,12 +736,7 @@ class DiscoveryAdapter(SourceAdapter):
                        f"?q={q}&hl=en-IN&gl=IN&ceid=IN:en")
                 body = _http_get(url, timeout=15)
                 for r in _parse_rss_items(body, [], "google_news")[:15]:
-                    _url = (r.get("url") or "").lower()
-                    if any(x in _url for x in (
-                        "google.com/goto", "google.com/url",
-                        "news.google.com/rss", "news.google.com/articles",
-                    )):
-                        continue
+                    # Skip vendor announcements detected via title
                     if _looks_like_vendor_announcement(r.get("title", ""), targets):
                         continue
                     if _is_vendor_source_url(r.get("source_url", ""),
