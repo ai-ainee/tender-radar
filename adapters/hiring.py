@@ -248,12 +248,11 @@ class HiringAdapter(SourceAdapter):
                     # filtering here saves 5-15s per wasted AI call.
                     _company_low = (company or "").strip().lower()
                     _BAD_COMPANY_NAMES = {
+                        # Pure job-board branding — never legitimate company names
                         "jobs", "job", "careers", "career", "hiring",
                         "vacancies", "vacancy", "recruiter", "recruitment",
                         "apply", "apply now", "view all jobs", "search results",
                         "job openings", "job listing", "job postings",
-                        "senior", "junior", "fresher", "lead", "manager",
-                        "engineer", "designer", "drafter", "draftsman",
                         "indeed", "naukri", "glassdoor", "shine",
                         "linkedin", "foundit", "timesjobs", "instahyre",
                         "ambitionbox", "talentmate", "expertini",
@@ -262,7 +261,6 @@ class HiringAdapter(SourceAdapter):
                         not company
                         or len(_company_low) < 3
                         or _company_low in _BAD_COMPANY_NAMES
-                        or any(_company_low.startswith(b + " ") for b in _BAD_COMPANY_NAMES)
                     ):
                         log.debug(f"[hiring] skip (no company in title): {title[:80]}")
                         continue
