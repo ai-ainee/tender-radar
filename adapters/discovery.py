@@ -733,6 +733,7 @@ class DiscoveryAdapter(SourceAdapter):
                     # Skip vendor announcements detected via title
                     if _looks_like_vendor_announcement(r.get("title", ""), targets):
                         continue
+                    # Skip articles published by the vendor itself
                     if _is_vendor_source_url(r.get("source_url", ""),
                                               r.get("source_text", ""), targets):
                         continue
@@ -740,6 +741,7 @@ class DiscoveryAdapter(SourceAdapter):
 
         log.info(f"[discovery:google_news] {len(leads)} lead(s) collected")
         return leads[:100]
+
 
     # ── Bing News (disabled — returns 0) ────────────────────────────
     def _fetch_bing_news(self, settings):
