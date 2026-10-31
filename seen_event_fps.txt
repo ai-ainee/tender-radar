@@ -1482,3 +1482,15 @@ regulatory_disclosure|bhartiairtellimited|||2026-10|
 tender|cochinshipyardlimited|2026_CSL_296478_1|tender_id|2026-10|kochi
 tender|cochinshipyardlimited|2026_CSL_296477_1|tender_id|2026-10|kochi
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796670_1|tender_id|2026-10|india
+regulatory_filing|bajajelec|||2026-10|
+share_buyback|globaleducationlimited|||2026-10|
+job_posting|hays|||2026-10|
+market_news|iciciprudentialmutualfund|||2026-10|
+obituary_news|nbalasubramanyam|||2026-10|
+tender_perishable_items|ihqofmod(army)-(oscc)|2026_ARMY_793386_1|tender_id|2026-10|nabagram_india
+tender|ihqofmod(army)-(oscc)|Meat supply|contract|2026-10|india
+tender|ihqofmod(army)-(oscc)|Supply of Egg Fresh|contract|2026-10|sunderbani
+tender|ihqofmod(army)-(oscc)|Supply of Egg Fresh and Fish Fresh|contract|2026-10|barrackpore
+tender|ihqofmod(army)-(oscc)|Supply of Egg Fresh and Fish Fresh|contract|2026-10|panagarh
+tender|ihqofmod(army)-(oscc)|Supply of POG|contract|2026-10|barrackpore
+tender|ihqofmod(army)-(oscc)|Supply of POG|contract|2026-10|panagarh
