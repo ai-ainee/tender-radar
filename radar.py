@@ -1292,6 +1292,9 @@ def main():
         if _is_google_redirect(lead.url):
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
+        if lead.source != "hiring" and _is_job_portal_host(lead.url):
+            stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
+            continue
         # Job portals — filter everywhere EXCEPT the hiring adapter, which
         # legitimately returns job-portal URLs (site:naukri.com queries) that
         # carry the employer name in the SERP title. Those go to the AI,
