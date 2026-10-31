@@ -1506,3 +1506,25 @@ regulatory_approval|cci|||2026-10|
 incident|conradhotel|||2026-10|
 contract_award|signatureglobal|496|crore inr|2026-10|gurugram
 regulatory_update|ibbi|||2026-10|
+hiring|adityabirlagroup|Assistant Manager|role|2026-10|uttarakhand
+market_report|jivialcomposite|FRP Market|analysis|2026-10|india
+tender|dgde|Solar Power Plant|project|2026-10|ahilayanagar,maharashtra
+tender_aggregate|seci|BESS Tenders|weekly brief|2026-10|india
+news|foxtale|Revenue Growth|fy26|2026-10|bengaluru
+news|hdfcmutualfund|SIP Growth|30 years|2026-10|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796222_1|tender_id|2026-10|kalakote
+tender|ihqofmod(army)-(oscc)|2026_ARMY_795887_1|tender_id|2026-10|akhnoor
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796057_1|tender_id|2026-10|poonch
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796050_1|tender_id|2026-10|knallah
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796028_1|tender_id|2026-10|sunderbani
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796062_1|tender_id|2026-10|nowshera
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796079_1|tender_id|2026-10|thalela
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796071_1|tender_id|2026-10|badraigala
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796065_1|tender_id|2026-10|rajouri
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796030_1|tender_id|2026-10|battal
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796035_1|tender_id|2026-10|mohar
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796223_1|tender_id|2026-10|thanamandi
+tender|cochinshipyardlimited|2026_CSL_296508_1|tender_id|2026-10|kochi
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796767_1|tender_id|2026-10|newdelhi
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796740_1|tender_id|2026-10|newdelhi
+tender|cochinshipyardlimited|2026_CSL_296486_1|tender_id|2026-10|kochi
