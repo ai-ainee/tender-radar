@@ -359,9 +359,10 @@ def reset():
 
 def _auto_register():
     adapter_modules = [
+        ("aggregator_tenders", "adapters.aggregator_tenders", "PipeworxAdapter"),
         ("discovery", "adapters.discovery", "DiscoveryAdapter"),
         ("filings",   "adapters.filings",   "FilingsAdapter"),
-        ("tenders",   "adapters.tenders",   "TendersAdapter"),   # ← ADD THIS
+        ("tenders",   "adapters.tenders",   "TendersAdapter"),  
         ("hiring",    "adapters.hiring",    "HiringAdapter"),
         ("expansion", "adapters.expansion", "ExpansionAdapter"),
         ("news",      "adapters.news",      "NewsAdapter"),
