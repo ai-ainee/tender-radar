@@ -603,25 +603,38 @@ class LLMRouter:
             return data["choices"][0]["message"]["content"] or ""
         except Exception: return ""
     def _call(self, provider, model, key, prompt):
-        try: r = self._http(provider, model, key, prompt)
-        except requests.RequestException: return "transient", ""
+        try: 
+            r = self._http(provider, model, key, prompt)
+        except requests.RequestException as e: 
+            log.warning(f"[llm] {provider}/{model} network: {str(e)[:80]}")
+            return "transient", ""
         code, body, low = r.status_code, (r.text or "")[:600], (r.text or "")[:600].lower()
+        
         if code == 200:
             text = self._text_from(provider, r)
             return ("ok", text) if text.strip() else ("transient", "")
+        
         if code == 429:
             compact = low.replace(" ", "").replace("_", "")
-            if "limit:0" in compact: return "dead", ""
+            if "limit:0" in compact: 
+                log.warning(f"[llm] {provider}/{model} DEAD (limit:0)")
+                return "dead", ""
             daily = "perday" in compact or "daily" in compact
-            try: retry_after = float(r.headers.get("retry-after", "")) if r.headers.get("retry-after") else None
-            except ValueError: retry_after = None
+            log.warning(f"[llm] {provider}/{model} 429 {'DAILY' if daily else 'RATE'}: {body[:100]}")
             self._cool[(provider, key, model)] = time.time() + (6 * 3600 if daily else min(max(retry_after or 65, 5), 300))
             return "rate", ""
-        if code == 404: return "dead", ""
-        if code in (401, 403) or (code == 400 and ("api key not valid" in low or "api_key_invalid" in low)):
+        
+        if code == 404: 
+            log.warning(f"[llm] {provider}/{model} 404 (dead)")
+            return "dead", ""
+        if code in (401, 403) or (code == 400 and ("api key not valid" in low or "api_key_invalid" in low)): 
+            log.warning(f"[llm] {provider}/{model} BADKEY")
             self._cool[(provider, key, "*")] = time.time() + 24 * 3600
             return "badkey", ""
-        if code == 400 and any(x in low for x in ("json mode", "not supported", "unsupported", "not enabled")): return "dead", ""
+        if code == 400 and any(x in low for x in ("json mode", "not supported", "unsupported", "not enabled")): 
+            log.warning(f"[llm] {provider}/{model} 400 (no json mode)")
+            return "dead", ""
+        log.warning(f"[llm] {provider}/{model} HTTP {code}: {body[:100]}")
         return "transient", ""
     def generate_json(self, prompt, validator=None, max_rounds=2):
         validator = validator or (lambda d: d is not None)
