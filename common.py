@@ -536,10 +536,42 @@ class LLMRouter:
                 if ids: return ids
         except Exception: pass
         return ["meta-llama/llama-3.3-70b-instruct:free"]
+    def _discover_groq(self):
+        """Auto-discover available Groq models (they change frequently)."""
+        override = env_list("GROQ_MODELS")
+        if override:
+            return override
+        models = []
+        for key in self.groq.ordered()[:2]:
+            try:
+                r = requests.get(f"{self.base['groq']}/models",
+                                 headers={"Authorization": f"Bearer {key}"},
+                                 timeout=20)
+                if r.status_code != 200:
+                    continue
+                for m in r.json().get("data", []):
+                    mid = m.get("id", "")
+                    low = mid.lower()
+                    # Skip non-chat models
+                    if any(x in low for x in ("whisper", "tts", "vision", "guard", "moderation", "embed")):
+                        continue
+                    models.append(mid)
+                break  # one successful call gives us the full list
+            except Exception:
+                continue
+        
+        # Rank: prefer larger / newer models
+        def rank(mid):
+            low = mid.lower()
+            if "70b" in low or "versatile" in low: return 3
+            if "mixtral" in low or "90b" in low: return 2
+            if "8b" in low or "instant" in low: return 1
+            return 0
+        return sorted(set(models), key=rank, reverse=True)[:4] or ["llama-3.3-70b-versatile"]
     def _models_for(self, provider):
         if provider in self._models: return self._models[provider]
         if provider == "gemini": m = self._discover_gemini()
-        elif provider == "groq": m = env_list("GROQ_MODELS") or ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        elif provider == "groq": m = self._discover_groq()
         elif provider == "openrouter": m = self._discover_openrouter()
         elif provider == "extra": m = env_list("EXTRA_LLM_MODELS")
         else: m = env_list("OPENAI_MODELS") or ["gpt-4o-mini"]
