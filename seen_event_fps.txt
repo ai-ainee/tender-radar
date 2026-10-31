@@ -1528,3 +1528,12 @@ tender|cochinshipyardlimited|2026_CSL_296508_1|tender_id|2026-10|kochi
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796767_1|tender_id|2026-10|newdelhi
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796740_1|tender_id|2026-10|newdelhi
 tender|cochinshipyardlimited|2026_CSL_296486_1|tender_id|2026-10|kochi
+exchange intimation|pcjewellerlimited|||2026-10|
+tender listing|pwdtamilnadu|||2026-10|
+professional profile|muthukrishnans|||2026-10|
+project approval|governmentofkerala|989|crore inr|2026-10|kerala
+policy announcement|ministryofcommerce|||2026-10|
+policy launch|meity|||2026-10|
+tender|directorategeneraldefenceestates|Parking Fees Collection|service|2026-10|belgaum
+tender|ihqofmod(army)-(oscc)|Supply of Fresh Vegetables|goods|2026-10|227coyascsup
+tender|cochinshipyardlimited|Additional works for Basic Design Office|construction/services|2026-10|kochi
