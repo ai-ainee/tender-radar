@@ -701,7 +701,15 @@ class LLMRouter:
                 retry_after = None
             log.warning(f"[llm] {provider}/{model} 429 {'DAILY' if daily else 'RATE'}: {body[:100]}")
             cooldown = 6 * 3600 if daily else min(max(retry_after or 65, 5), 300)
-            self._cool[(provider, key, model)] = time.time() + cooldown
+            retry_after = None
+try:
+    ra_header = r.headers.get("retry-after")
+    if ra_header:
+        retry_after = float(ra_header)
+except (ValueError, TypeError):
+    retry_after = None
+cooldown = 6 * 3600 if daily else min(max(retry_after or 65, 5), 300)
+self._cool[(provider, key, model)] = time.time() + cooldown
             return "rate", ""
         
         if code == 404: 
