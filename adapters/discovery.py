@@ -260,6 +260,40 @@ TRACK_4_COMMERCIAL_HIRING: companies hiring specialists.
 Return ONLY JSON with exactly those 4 keys, each an array of 2 strings."""
         return self._merge(self._ai_tracks(prompt), fb)
 
+    def build_combined_tracks(self):
+        """Templates for OR-combined mode: every query includes the product OR-expression.
+
+        The generic per-track queries ("public tenders", "team expansion") are
+        intentionally omitted here — they waste a search query each without
+        finding anything relevant to the target products.
+        """
+        if self.states:
+            day_offset = datetime.now().toordinal() % len(self.states)
+            state = self.states[(day_offset + self.combo_offset) % len(self.states)]
+        else:
+            state = ""
+        t = self.target
+        loc = state or self.country
+        loc_s = f" {loc}" if loc else ""
+        return {
+            "TRACK_1_PUBLIC_TENDERS": [
+                f"{t} tender{loc_s}",
+                f"{t} government bid{loc_s}",
+            ],
+            "TRACK_2_CORPORATE_PROCUREMENT": [
+                f"{t} RFQ{loc_s}",
+                f"{t} vendor empanelment{loc_s}",
+            ],
+            "TRACK_3_BUSINESS_EXPANSION": [
+                f"{t} project expansion{loc_s}",
+                f"{t} new facility{loc_s}",
+            ],
+            "TRACK_4_COMMERCIAL_HIRING": [
+                f"{t} hiring specialist{loc_s}",
+                f"{t} team expansion{loc_s}",
+            ],
+        }
+
     def build_tracks(self):
         if self.states:
             day_offset = datetime.now().toordinal() % len(self.states)
@@ -571,6 +605,8 @@ class DiscoveryAdapter(SourceAdapter):
             # correct Google syntax every time.
             gen = QueryGenerator(combined_target, "ALL_SECTORS", country, states,
                                  self._llm, use_ai=False, combo_offset=0)
+            # Override build_tracks so every query includes the product expression
+            gen.build_tracks = gen.build_combined_tracks
             campaigns.append((combined_target, "ALL_SECTORS", gen))
         else:
             # Single-product mode — keep original per-target logic
