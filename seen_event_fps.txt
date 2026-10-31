@@ -1537,3 +1537,29 @@ policy launch|meity|||2026-10|
 tender|directorategeneraldefenceestates|Parking Fees Collection|service|2026-10|belgaum
 tender|ihqofmod(army)-(oscc)|Supply of Fresh Vegetables|goods|2026-10|227coyascsup
 tender|cochinshipyardlimited|Additional works for Basic Design Office|construction/services|2026-10|kochi
+marketing|autodesk|Forma Design Collaboration||2026-11|india
+educational_material|autodesk|Generative Design in Civil 3D||2026-11|india
+content|websiteforengineers.com|Essential Software For Civil Engineers||2026-07|india
+publication|ijert|BIM Coordination and GIS Integration||2024-09|india
+service_offering|teacheron.com|3D Printing Tutor||2026-11|india
+hiring|sweco|Senior Civil Infra Structure Engineer|position|2026-10|bengaluru
+event|designindiaforwardforum|Design India Forward Forum||2026-11|pune
+hiring|arcadis|Principal Instrumentation Engineer|||india
+hiring|autodesk|Customer Success Manager|||india
+info|autodesk|AutoCAD Certified Graphics Hardware|||india
+hiring|sjgroup|BIM Modeller - Civil 3D|||india
+blog|sandipfoundation|BIM Career Scope for Civil Engineers|||india
+hiring|f5hiringsolutions|Remote CAD Drafter / BIM Specialist|positions||india
+hiring|autodesk|||2026-11|
+content|caddmentors|||2026-11|
+profile|tannubhardwaj|||2026-11|
+job_posting|uplers|||2026-11|
+content|amazingarchitecture|||2026-11|
+social_media|tiktok|||2026-11|
+publication|gurunanakinstitutionstechnicalcampus|||2026-04|
+seller_profile|seebuysolutions||||
+job_posting|jobstreet|||2026-10|
+news_article|airchiefmarshalashutoshdixit|||2026-10|
+tender|dtegeneralborderroadsorganisation|||2026-12|
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796099_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|||2026-11|
