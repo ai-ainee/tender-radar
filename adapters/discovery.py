@@ -545,7 +545,35 @@ class DiscoveryAdapter(SourceAdapter):
             gen = QueryGenerator(special, "Special Campaign", country, states,
                                  self._llm, use_ai_queries, combo_offset=0)
             campaigns.append((special, "Special Campaign", gen))
+        elif len(targets) > 1:
+            # NEW: Combined mode — OR all products into one query expression.
+            # Every query covers every product, so quota is spent on the
+            # full portfolio instead of just the first product. Saves 4x
+            # Serper calls AND fixes the starvation bug where Autocad
+            # consumed the entire MAX_LINKS_PER_RUN before other products
+            # got a chance to run.
+            #
+            # Quotes protect multi-word products ("Civil 3d"). Parens group
+            # the OR so Google applies it correctly with tender/RFQ suffixes.
+            product_terms = [
+                f'"{t}"' if " " in str(t) else str(t)
+                for t in targets[:6]
+            ]
+            combined_target = "(" + " OR ".join(product_terms) + ")"
+            log.info(
+                f"[discovery:serper] combined mode: "
+                f"{len(targets)} product(s) OR'd into one campaign"
+            )
+            log.info(f"[discovery:serper] target expression: {combined_target}")
+
+            # Force template query generation — AI can mangle OR/parens/quotes
+            # when asked to "include the product name". Templates produce
+            # correct Google syntax every time.
+            gen = QueryGenerator(combined_target, "ALL_SECTORS", country, states,
+                                 self._llm, use_ai=False, combo_offset=0)
+            campaigns.append((combined_target, "ALL_SECTORS", gen))
         else:
+            # Single-product mode — keep original per-target logic
             combos = [(t, i) for t in targets for i in industries]
             if len(combos) > max_combos:
                 offset = (datetime.now().toordinal() * max_combos) % len(combos)
