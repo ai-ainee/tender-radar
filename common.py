@@ -587,24 +587,25 @@ class LLMRouter:
 
         def rank(mid):
             low = mid.lower()
-            # Prefer known chat families, penalize large/small models
-            if "llama-3.3" in low:
-                return 100 if "70b" in low else 85
-            if "llama-3.1" in low:
-                return 90 if "70b" in low else 80
-            if "llama-4" in low:
-                return 95
-            if "mixtral" in low:
-                return 70
-            if "gemma" in low:
-                return 60
-            if "deepseek" in low:
-                return 50
+            # Explicit exclusions: models that return 429/400 on our batches
             if "qwen" in low:
-                return 30  # qwen models have small context, penalize
+                return -1000  # exclude entirely — small context, always rate-limited
+            if "gemma" in low:
+                return -1000  # too small for 6-lead batches
+            if "deepseek" in low:
+                return -500   # often slow or rate-limited
+            # Prefer established chat models
+            if "gpt-oss-120b" in low: return 100
+            if "gpt-oss-20b" in low:  return 90
+            if "llama-4" in low:      return 95
+            if "llama-3.3" in low:    return 80 if "70b" in low else 70
+            if "llama-3.1" in low:    return 75 if "70b" in low else 65
+            if "mixtral" in low:      return 60
             return 10
 
-        ranked = sorted(set(models), key=rank, reverse=True)[:4]
+        # Filter out models with rank < 0 (exclusions)
+        viable = [m for m in set(models) if rank(m) > 0]
+        ranked = sorted(viable, key=rank, reverse=True)[:4]
         log.info(f"[llm] groq auto-discovered: {ranked}")
         return ranked
     def _models_for(self, provider):
