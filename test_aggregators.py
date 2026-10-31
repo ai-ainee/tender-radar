@@ -1,61 +1,68 @@
-"""test_aggregators.py — check if Pipeworx and Bidrove MCP servers are live.
-
-This is a standalone test. It does not modify the pipeline or depend on
-our existing code. It sends a simple query to each service and prints
-the result. If both fail, the aggregator approach is not viable.
-"""
+"""test_aggregators.py — pass 2: discover tools + test multiple keywords."""
 import json
 import requests
 
-# Test a common, high-volume keyword.
-KEYWORD = "autocad"
+PIPEWORX_URL = "https://gateway.pipeworx.io/india-tenders/mcp"
+HEADERS = {"Content-Type": "application/json"}
 
-def test_pipeworx():
-    print("\n" + "="*60)
-    print("TESTING: Pipeworx (gateway.pipeworx.io)")
-    print("="*60)
+def rpc(method, params=None, req_id=1):
+    payload = {"jsonrpc": "2.0", "id": req_id, "method": method}
+    if params:
+        payload["params"] = params
+    try:
+        r = requests.post(PIPEWORX_URL, json=payload, headers=HEADERS, timeout=30)
+        return r.status_code, r.json() if r.text else {}
+    except Exception as e:
+        return -1, {"error": str(e)}
 
-    # Pipeworx uses an MCP-compliant JSON-RPC endpoint.
-    url = "https://gateway.pipeworx.io/india-tenders/mcp"
+print("=" * 60)
+print("STEP 1: List available MCP tools")
+print("=" * 60)
+status, resp = rpc("tools/list")
+print(f"HTTP {status}")
+if "result" in resp and "tools" in resp["result"]:
+    for tool in resp["result"]["tools"]:
+        print(f"  • {tool.get('name')}")
+        print(f"    {tool.get('description', '')[:200]}")
+else:
+    print(f"Unexpected response: {str(resp)[:500]}")
+
+print("\n" + "=" * 60)
+print("STEP 2: Test multiple keywords against india_search_tenders")
+print("=" * 60)
+
+KEYWORDS = ["cad", "software", "revit", "autodesk", "bim", "design"]
+
+for kw in KEYWORDS:
     payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
             "name": "india_search_tenders",
-            "arguments": {"query": KEYWORD, "limit": 5}
+            "arguments": {"query": kw, "limit": 3}
         }
     }
-    headers = {"Content-Type": "application/json"}
     try:
-        print(f"Sending POST to {url}...")
-        resp = requests.post(url, json=payload, headers=headers, timeout=30)
-        print(f"Status Code: {resp.status_code}")
-        # Print the full response text to see exactly what came back.
-        print("Response Body:")
-        print(resp.text[:2000]) # Limit to 2000 chars for readability
+        r = requests.post(PIPEWORX_URL, json=payload, headers=HEADERS, timeout=30)
+        data = r.json()
+        content = data.get("result", {}).get("content", [])
+        if content and content[0].get("text"):
+            inner = json.loads(content[0]["text"])
+            matched = inner.get("matched", 0)
+            returned = inner.get("returned", 0)
+            scanned = len(inner.get("organisations_scanned", []))
+            print(f"\n[{kw.upper()}] matched={matched}, returned={returned}, orgs_scanned={scanned}")
+
+            # Show first 3 tender titles if any
+            for i, t in enumerate(inner.get("tenders", [])[:3]):
+                title = (t.get("title") or "")[:100]
+                closing = t.get("closing_date") or ""
+                print(f"    {i+1}. {title!r}")
+                if closing:
+                    print(f"       closing={closing}")
+        else:
+            print(f"\n[{kw.upper()}] empty response")
     except Exception as e:
-        print(f"ERROR: Request failed. {e}")
+        print(f"\n[{kw.upper()}] ERROR: {e}")
 
-def test_bidrove():
-    print("\n" + "="*60)
-    print("TESTING: Bidrove (bidrove-mcp via npm)")
-    print("="*60)
-    print("Note: The bidrove-mcp package is a local stdio server, not a")
-    print("      public HTTP endpoint. A direct HTTP test is not possible.")
-    print("      We are checking if the NPM package can be fetched,")
-    print("      which indicates the package is live, but we cannot")
-    print("      test the actual Bidrove API from this script without")
-    print("      installing the package and running it as a subprocess.")
-    print("      Given the paid-plan requirement, this is likely a dead end")
-    print("      for a 100% free setup.")
-    print("\nSkipping actual API test for Bidrove.")
-    print("Verdict: Assume NOT VIABLE for a free pipeline.")
-
-# --- Run the tests ---
-if __name__ == "__main__":
-    test_pipeworx()
-    test_bidrove()
-    print("\n" + "="*60)
-    print("DIAGNOSTIC COMPLETE")
-    print("="*60)
+print("\n" + "=" * 60)
+print("DONE")
