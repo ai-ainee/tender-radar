@@ -29,6 +29,7 @@ jobs:
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}    # ← ADD THIS LINE
         run: python test_gem_serper.py
 
       - name: Upload result as artifact
