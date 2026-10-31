@@ -30,7 +30,7 @@ jobs:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
           SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}    # ← ADD THIS LINE
-        run: python test_gem_serper.py
+        run: python test_gepnic.py
 
       - name: Upload result as artifact
         if: always()
