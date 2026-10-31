@@ -1,68 +1,81 @@
-"""test_aggregators.py — pass 2: discover tools + test multiple keywords."""
+"""test_aggregators.py — pass 3: test the RIGHT tools."""
 import json
 import requests
 
-PIPEWORX_URL = "https://gateway.pipeworx.io/india-tenders/mcp"
+URL = "https://gateway.pipeworx.io/india-tenders/mcp"
 HEADERS = {"Content-Type": "application/json"}
 
-def rpc(method, params=None, req_id=1):
-    payload = {"jsonrpc": "2.0", "id": req_id, "method": method}
-    if params:
-        payload["params"] = params
-    try:
-        r = requests.post(PIPEWORX_URL, json=payload, headers=HEADERS, timeout=30)
-        return r.status_code, r.json() if r.text else {}
-    except Exception as e:
-        return -1, {"error": str(e)}
-
-print("=" * 60)
-print("STEP 1: List available MCP tools")
-print("=" * 60)
-status, resp = rpc("tools/list")
-print(f"HTTP {status}")
-if "result" in resp and "tools" in resp["result"]:
-    for tool in resp["result"]["tools"]:
-        print(f"  • {tool.get('name')}")
-        print(f"    {tool.get('description', '')[:200]}")
-else:
-    print(f"Unexpected response: {str(resp)[:500]}")
-
-print("\n" + "=" * 60)
-print("STEP 2: Test multiple keywords against india_search_tenders")
-print("=" * 60)
-
-KEYWORDS = ["cad", "software", "revit", "autodesk", "bim", "design"]
-
-for kw in KEYWORDS:
+def call_tool(name, args, timeout=60):
     payload = {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {
-            "name": "india_search_tenders",
-            "arguments": {"query": kw, "limit": 3}
-        }
+        "params": {"name": name, "arguments": args}
     }
     try:
-        r = requests.post(PIPEWORX_URL, json=payload, headers=HEADERS, timeout=30)
+        r = requests.post(URL, json=payload, headers=HEADERS, timeout=timeout)
         data = r.json()
         content = data.get("result", {}).get("content", [])
         if content and content[0].get("text"):
-            inner = json.loads(content[0]["text"])
-            matched = inner.get("matched", 0)
-            returned = inner.get("returned", 0)
-            scanned = len(inner.get("organisations_scanned", []))
-            print(f"\n[{kw.upper()}] matched={matched}, returned={returned}, orgs_scanned={scanned}")
-
-            # Show first 3 tender titles if any
-            for i, t in enumerate(inner.get("tenders", [])[:3]):
-                title = (t.get("title") or "")[:100]
-                closing = t.get("closing_date") or ""
-                print(f"    {i+1}. {title!r}")
-                if closing:
-                    print(f"       closing={closing}")
-        else:
-            print(f"\n[{kw.upper()}] empty response")
+            return json.loads(content[0]["text"])
+        return {"_error": "empty response", "_raw": str(data)[:300]}
     except Exception as e:
-        print(f"\n[{kw.upper()}] ERROR: {e}")
+        return {"_error": str(e)}
+
+print("=" * 60)
+print("TEST 1: india_cppp_latest_tenders (the real aggregator)")
+print("=" * 60)
+
+for mode in ["cppp", "central"]:
+    print(f"\n--- mode={mode} ---")
+    result = call_tool("india_cppp_latest_tenders", {"mode": mode})
+    if "_error" in result:
+        print(f"ERROR: {result['_error']}")
+        continue
+    tenders = result.get("tenders", [])
+    print(f"Returned: {len(tenders)} tenders")
+    print(f"Total active (from meta): {result.get('portal_active_tenders', '?')}")
+    for i, t in enumerate(tenders[:5]):
+        title = (t.get("title") or "")[:100]
+        closing = t.get("closing_date") or ""
+        print(f"  {i+1}. {title!r}")
+        if closing:
+            print(f"     closing={closing}")
+        # Check for description body
+        desc = (t.get("description") or t.get("tender_description") or "")[:150]
+        if desc:
+            print(f"     desc={desc!r}")
+
+print("\n" + "=" * 60)
+print("TEST 2: india_defence_tenders (defence buyer)")
+print("=" * 60)
+
+result = call_tool("india_defence_tenders", {})
+if "_error" in result:
+    print(f"ERROR: {result['_error']}")
+else:
+    tenders = result.get("tenders", [])
+    print(f"Returned: {len(tenders)} tenders")
+    for i, t in enumerate(tenders[:3]):
+        title = (t.get("title") or "")[:100]
+        print(f"  {i+1}. {title!r}")
+
+print("\n" + "=" * 60)
+print("TEST 3: india_tender_organisations (target CAD-friendly buyers)")
+print("=" * 60)
+
+result = call_tool("india_tender_organisations", {})
+if "_error" in result:
+    print(f"ERROR: {result['_error']}")
+else:
+    # Look for departments likely to buy CAD
+    orgs = result.get("organisations", [])
+    print(f"Total orgs: {len(orgs)}")
+    CAD_FRIENDLY = ("railway", "rail", "metro", "defence", "pwd", "cpwd",
+                    "nhai", "bsnl", "works", "engineer", "construction",
+                    "infrastructure", "ministry of road", "highway")
+    hits = [o for o in orgs if any(k in (o.get("organisation", "")).lower() for k in CAD_FRIENDLY)]
+    print(f"CAD-friendly orgs found: {len(hits)}")
+    for o in hits[:10]:
+        print(f"  • {o.get('organisation')}: {o.get('active_tenders_listed')} tenders")
 
 print("\n" + "=" * 60)
 print("DONE")
