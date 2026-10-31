@@ -1479,3 +1479,6 @@ expressway_construction_tender|uttarpradeshexpresswaysindustrialdevelopmentautho
 corporate_filing|signatureglobal|||2026-10|
 regulatory_inspection|granulesindialimited|11|observations|2026-10|gagillapur
 regulatory_disclosure|bhartiairtellimited|||2026-10|
+tender|cochinshipyardlimited|2026_CSL_296478_1|tender_id|2026-10|kochi
+tender|cochinshipyardlimited|2026_CSL_296477_1|tender_id|2026-10|kochi
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796670_1|tender_id|2026-10|india
