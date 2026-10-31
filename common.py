@@ -537,10 +537,20 @@ class LLMRouter:
         except Exception: pass
         return ["meta-llama/llama-3.3-70b-instruct:free"]
     def _discover_groq(self):
-        """Auto-discover available Groq models (they change frequently)."""
+        """Auto-discover Groq chat models. Excludes TTS/voice/vision/guard
+        models AND models with context windows too small for 6-lead batches.
+        """
         override = env_list("GROQ_MODELS")
         if override:
             return override
+
+        # Non-chat model families — never usable for our JSON extraction
+        NON_CHAT = (
+            "whisper", "tts", "voice", "audio", "speech",
+            "vision", "guard", "moderation", "embed",
+            "rerank", "orpheus", "playai", "canopylabs",
+        )
+
         models = []
         for key in self.groq.ordered()[:2]:
             try:
@@ -551,23 +561,52 @@ class LLMRouter:
                     continue
                 for m in r.json().get("data", []):
                     mid = m.get("id", "")
-                    low = mid.lower()
-                    # Skip non-chat models
-                    if any(x in low for x in ("whisper", "tts", "vision", "guard", "moderation", "embed")):
+                    if not mid:
                         continue
+                    low = mid.lower()
+
+                    # Skip non-chat families
+                    if any(x in low for x in NON_CHAT):
+                        continue
+
+                    # Skip models with context window < 8000 tokens
+                    # (our batch prompt uses ~6000 tokens before output)
+                    ctx = m.get("context_window", 0)
+                    if ctx and ctx < 8000:
+                        log.debug(f"[llm] groq skip {mid}: context_window={ctx}")
+                        continue
+
                     models.append(mid)
-                break  # one successful call gives us the full list
+                break
             except Exception:
                 continue
-        
-        # Rank: prefer larger / newer models
+
+        if not models:
+            log.warning("[llm] groq discovery found 0 viable chat models")
+            return ["llama-3.1-8b-instant"]
+
         def rank(mid):
             low = mid.lower()
-            if "70b" in low or "versatile" in low: return 3
-            if "mixtral" in low or "90b" in low: return 2
-            if "8b" in low or "instant" in low: return 1
-            return 0
-        return sorted(set(models), key=rank, reverse=True)[:4] or ["llama-3.3-70b-versatile"]
+            # Prefer known chat families, penalize large/small models
+            if "llama-3.3" in low:
+                return 100 if "70b" in low else 85
+            if "llama-3.1" in low:
+                return 90 if "70b" in low else 80
+            if "llama-4" in low:
+                return 95
+            if "mixtral" in low:
+                return 70
+            if "gemma" in low:
+                return 60
+            if "deepseek" in low:
+                return 50
+            if "qwen" in low:
+                return 30  # qwen models have small context, penalize
+            return 10
+
+        ranked = sorted(set(models), key=rank, reverse=True)[:4]
+        log.info(f"[llm] groq auto-discovered: {ranked}")
+        return ranked
     def _models_for(self, provider):
         if provider in self._models: return self._models[provider]
         if provider == "gemini": m = self._discover_gemini()
@@ -648,12 +687,21 @@ class LLMRouter:
         
         if code == 429:
             compact = low.replace(" ", "").replace("_", "")
-            if "limit:0" in compact: 
+            if "limit:0" in compact:
                 log.warning(f"[llm] {provider}/{model} DEAD (limit:0)")
                 return "dead", ""
             daily = "perday" in compact or "daily" in compact
+            # Parse retry-after header safely
+            retry_after = None
+            try:
+                ra_header = r.headers.get("retry-after")
+                if ra_header:
+                    retry_after = float(ra_header)
+            except (ValueError, TypeError):
+                retry_after = None
             log.warning(f"[llm] {provider}/{model} 429 {'DAILY' if daily else 'RATE'}: {body[:100]}")
-            self._cool[(provider, key, model)] = time.time() + (6 * 3600 if daily else min(max(retry_after or 65, 5), 300))
+            cooldown = 6 * 3600 if daily else min(max(retry_after or 65, 5), 300)
+            self._cool[(provider, key, model)] = time.time() + cooldown
             return "rate", ""
         
         if code == 404: 
