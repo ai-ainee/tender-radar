@@ -36,7 +36,7 @@ KEYWORDS = [
 class PipeworxAdapter(SourceAdapter):
     name = "pipeworx_tenders"
     category = "tender"
-    priority = 8
+    priority = 85
 
     def is_enabled(self, settings):
         return bool(settings.get("targets"))
