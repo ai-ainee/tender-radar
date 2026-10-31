@@ -1,81 +1,73 @@
-"""test_aggregators.py — pass 3: test the RIGHT tools."""
+"""test_aggregators.py — pass 4: dump raw JSON for parsing fixes."""
 import json
 import requests
 
 URL = "https://gateway.pipeworx.io/india-tenders/mcp"
 HEADERS = {"Content-Type": "application/json"}
 
-def call_tool(name, args, timeout=60):
+def call_tool_raw(name, args):
     payload = {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": name, "arguments": args}
     }
     try:
-        r = requests.post(URL, json=payload, headers=HEADERS, timeout=timeout)
+        r = requests.post(URL, json=payload, headers=HEADERS, timeout=60)
         data = r.json()
         content = data.get("result", {}).get("content", [])
         if content and content[0].get("text"):
             return json.loads(content[0]["text"])
-        return {"_error": "empty response", "_raw": str(data)[:300]}
+        return {"_error": "empty content", "_raw": str(data)[:500]}
     except Exception as e:
         return {"_error": str(e)}
 
 print("=" * 60)
-print("TEST 1: india_cppp_latest_tenders (the real aggregator)")
+print("TEST A: india_cppp_latest_tenders — dump full raw response")
 print("=" * 60)
-
-for mode in ["cppp", "central"]:
-    print(f"\n--- mode={mode} ---")
-    result = call_tool("india_cppp_latest_tenders", {"mode": mode})
+# Try with no args first — many MCP tools have all-optional args
+for args in [{}, {"limit": 10}, {"feed": "all"}, {"mode": "all"}]:
+    print(f"\n--- args={args} ---")
+    result = call_tool_raw("india_cppp_latest_tenders", args)
     if "_error" in result:
-        print(f"ERROR: {result['_error']}")
+        print(f"  ERROR: {result['_error']}")
         continue
-    tenders = result.get("tenders", [])
-    print(f"Returned: {len(tenders)} tenders")
-    print(f"Total active (from meta): {result.get('portal_active_tenders', '?')}")
-    for i, t in enumerate(tenders[:5]):
-        title = (t.get("title") or "")[:100]
-        closing = t.get("closing_date") or ""
-        print(f"  {i+1}. {title!r}")
-        if closing:
-            print(f"     closing={closing}")
-        # Check for description body
-        desc = (t.get("description") or t.get("tender_description") or "")[:150]
-        if desc:
-            print(f"     desc={desc!r}")
+    # Print full JSON so we see EVERY field
+    print(f"  Response: {json.dumps(result, indent=2)[:1500]}")
 
 print("\n" + "=" * 60)
-print("TEST 2: india_defence_tenders (defence buyer)")
+print("TEST B: india_defence_tenders — dump first tender's FULL schema")
 print("=" * 60)
-
-result = call_tool("india_defence_tenders", {})
+result = call_tool_raw("india_defence_tenders", {})
 if "_error" in result:
     print(f"ERROR: {result['_error']}")
 else:
     tenders = result.get("tenders", [])
-    print(f"Returned: {len(tenders)} tenders")
-    for i, t in enumerate(tenders[:3]):
-        title = (t.get("title") or "")[:100]
-        print(f"  {i+1}. {title!r}")
+    if tenders:
+        print(f"Total tenders: {len(tenders)}")
+        print(f"First tender (full JSON, all fields):")
+        print(json.dumps(tenders[0], indent=2)[:1500])
+        print(f"\nSample of next 4 titles:")
+        for t in tenders[1:5]:
+            print(f"  • {t.get('title', '')[:80]}")
 
 print("\n" + "=" * 60)
-print("TEST 3: india_tender_organisations (target CAD-friendly buyers)")
+print("TEST C: india_tender_organisations — dump first org's FULL schema")
 print("=" * 60)
-
-result = call_tool("india_tender_organisations", {})
+result = call_tool_raw("india_tender_organisations", {})
 if "_error" in result:
     print(f"ERROR: {result['_error']}")
 else:
-    # Look for departments likely to buy CAD
-    orgs = result.get("organisations", [])
-    print(f"Total orgs: {len(orgs)}")
-    CAD_FRIENDLY = ("railway", "rail", "metro", "defence", "pwd", "cpwd",
-                    "nhai", "bsnl", "works", "engineer", "construction",
-                    "infrastructure", "ministry of road", "highway")
-    hits = [o for o in orgs if any(k in (o.get("organisation", "")).lower() for k in CAD_FRIENDLY)]
-    print(f"CAD-friendly orgs found: {len(hits)}")
-    for o in hits[:10]:
-        print(f"  • {o.get('organisation')}: {o.get('active_tenders_listed')} tenders")
+    orgs = result.get("organisations", result.get("orgs", []))
+    print(f"Total orgs (found key: {'organisations' if 'organisations' in result else 'orgs'}): {len(orgs)}")
+    if orgs:
+        print(f"First org (full JSON, all fields):")
+        print(json.dumps(orgs[0], indent=2))
+    print(f"\nTop 10 orgs by active tender count:")
+    try:
+        sorted_orgs = sorted(orgs, key=lambda x: x.get("active_tenders_listed", 0), reverse=True)
+        for o in sorted_orgs[:10]:
+            print(f"  • {o}")
+    except Exception as e:
+        print(f"  Could not sort: {e}")
 
 print("\n" + "=" * 60)
 print("DONE")
