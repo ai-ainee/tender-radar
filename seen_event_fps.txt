@@ -1494,3 +1494,15 @@ tender|ihqofmod(army)-(oscc)|Supply of Egg Fresh and Fish Fresh|contract|2026-10
 tender|ihqofmod(army)-(oscc)|Supply of Egg Fresh and Fish Fresh|contract|2026-10|panagarh
 tender|ihqofmod(army)-(oscc)|Supply of POG|contract|2026-10|barrackpore
 tender|ihqofmod(army)-(oscc)|Supply of POG|contract|2026-10|panagarh
+capex|acmesolarholdingslimited|||2026-10|
+capex|shyammetalicsandenergylimited|360|crores inr|2026-10|india
+acquisition|apcotexindustrieslimited|||2026-10|
+financing|nabard|200|million usd|2026-09|india
+tender|sail|||2026-10|
+political_event|hardeepsinghpuri|||2026-10|
+regulatory_update|sebi|||2026-10|
+event_speech|saurabhmukherjea|||2026-10|
+regulatory_approval|cci|||2026-10|
+incident|conradhotel|||2026-10|
+contract_award|signatureglobal|496|crore inr|2026-10|gurugram
+regulatory_update|ibbi|||2026-10|
