@@ -1579,3 +1579,14 @@ tender|ihqofmod(army)-(oscc)|2026_ARMY_796240_1||2026-11|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796229_1||2026-11|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796227_1||2026-11|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796252_1||2026-11|kalakote
+announcement|solexenergy|||2026-11|
+announcement|lodhadevelopers|||2026-11|
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796225_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796221_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796233_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796238_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796232_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796260_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796231_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796230_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796248_1||2026-11|india
