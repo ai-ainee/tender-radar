@@ -1563,3 +1563,19 @@ news_article|airchiefmarshalashutoshdixit|||2026-10|
 tender|dtegeneralborderroadsorganisation|||2026-12|
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796099_1||2026-11|india
 tender|ihqofmod(army)-(oscc)|||2026-11|
+hiring|ramboll||||
+content|daymarkengineers|AutoCAD vs Revit Comparison||2026-11|india
+content|softwaresuggest|Civil Engineering Software List||2026-11|india
+content|getrenewedtech|AutoCAD vs Revit vs Civil 3D Comparison||2026-01|india
+hiring|atkinsréalis|Assistant Technical Manager - Civil 3D Highways||2026-11|india
+content|pinnacleiit|BIM Certification Guide 2026||2026-11|india
+content|dhyanacademy|AutoCAD & Revit Internships Hyderabad||2025-06|india
+tender|ihqofmod(army)-(oscc)|Egg Fresh||2026-11|
+tender|ihqofmod(army)-(oscc)|Veg/Fruit Fresh||2026-11|
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796179_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796144_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796206_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796240_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796229_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796227_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796252_1||2026-11|kalakote
