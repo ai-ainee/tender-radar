@@ -1619,3 +1619,28 @@ tender|ihqofmod(army)-(oscc)|2026_ARMY_796311_1||2026-11|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_795993_1||2026-11|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796298_1||2026-11|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796122_1||2026-11|india
+hiring|aecom|BIM Specialist||2026-10|gurugram
+contract_award|indianrailways|Wagon Procurement||2026-11|
+news|firesideventures|||2026-11|
+news|pixxel|||2026-11|
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_796665_1||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_796890_1||2026-11|india
+tender|munitionsindialimited|2026_MIL_296660_1||2026-11|india
+tender|directorategeneraldefenceestates|2026_DGDE_796928_1||2026-11|india
+tender|directorategeneraldefenceestates|||2026-11|
+tender|armouredvehiclesnigamlimited|||2026-11|
+tender|munitionsindialimited|2026_MIL_296498_1||2026-11|
+tender|defenceresearchanddevelopmentorganisation|2026_DRDO_932713_1||2026-11|
+tender|defenceresearchanddevelopmentorganisation|2026_DRDO_932761_1||2026-11|
+tender|cochinshipyardlimited|2026_CSL_296674_1||2026-11|
+tender|indianairforce|2026_IAF_796941_1||2027-01|
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_795730_1||2026-12|
+tender|directorategeneraldefenceestates|2026_DGDE_796938_1||2026-11|india
+tender|ihqofmod(navy)|2026_NAVY_796871_1||2026-11|india
+tender|indianairforce|2026_IAF_796893_1||2026-12|india
+tender|indianairforce|2026_IAF_796921_1||2026-12|india
+tender|indianairforce|2026_IAF_796905_1||2027-01|india
+tender|advancedweaponsandequipmentindialtd-aweil|2026_AWEIL_296636_1||2026-11|india
+tender|yantraindialimited|2026_YIL_296571_1||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_796895_1||2026-11|india
+tender|directorategeneraldefenceestates|2026_DGDE_796910_1||2026-11|india
