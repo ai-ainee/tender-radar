@@ -45,10 +45,13 @@ def fingerprint_key(fp):
     if not event_type or not actor:
         return ""
 
-    # If we have no numeric magnitude, drop location to avoid over-deduping
-    if not value:
-        location = ""
-
+    # A generic actor+type+month key merges unrelated tenders, hiring and
+    # projects. Without a distinctive value/location, do not event-dedupe.
+    # URL and tender-ID caches still provide exact-match deduplication.
+    if not value and not location:
+        return ""
+    if not month:
+        return ""
     return "|".join([event_type, actor, value, unit, month, location])
 
 
