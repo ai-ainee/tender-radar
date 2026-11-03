@@ -1644,3 +1644,14 @@ tender|advancedweaponsandequipmentindialtd-aweil|2026_AWEIL_296636_1||2026-11|in
 tender|yantraindialimited|2026_YIL_296571_1||2026-11|india
 tender|departmentofdefenceresearchanddevelopment|2026_DRDO_796895_1||2026-11|india
 tender|directorategeneraldefenceestates|2026_DGDE_796910_1||2026-11|india
+liquidation|cams|||2026-11|india
+product_page|autodesk|||2026-11|india
+research_paper|veermatajijabaitechnologicalinstitute|||2020-05|india
+hiring|wspcarrières|BIM Engineer - Fire & Life Safety|position|2026-11|
+content|rishabhproengineering|Autodesk 3D Design Suite|product_mention|2026-11|
+training|smartcadindia|AutoCAD Coaching|course|2026-11|hyderabad
+hiring|aecom|Designer - BIM HVAC|position|2026-11|gurugram
+training|dreamindiatechnologies|Civil 3D Course|course|2026-11|guntur
+news|rapido|Gross Order Value|value|2026-11|
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796906_1||2026-11|manipur
+tender|ihqofmod(army)-(oscc)|2026_ARMY_796990_1||2026-11|india
