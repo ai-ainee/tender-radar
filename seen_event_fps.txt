@@ -1655,3 +1655,15 @@ training|dreamindiatechnologies|Civil 3D Course|course|2026-11|guntur
 news|rapido|Gross Order Value|value|2026-11|
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796906_1||2026-11|manipur
 tender|ihqofmod(army)-(oscc)|2026_ARMY_796990_1||2026-11|india
+hiring|wsp|BIM Engineer|position|2026-11|
+contract|tataprojects|||2026-11|maharashtra
+plan|governmentofchhattisgarh|||2026-11|chhattisgarh
+news|inc42|LenDenClub Parent Vartis Platforms Launches UdhaarSaathi For Small Business Loans||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_796897_1||2026-11|india
+tender|armouredvehiclesnigamlimited|2026_AVNL_296694_1||2026-11|india
+tender|cochinshipyardlimited|2026_CSL_296712_1||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_797020_1||2026-11|india
+tender|dtegeneralborderroadsorganisation|2026_BRO_797022_1||2026-12|india
+tender|dtegeneralborderroadsorganisation|2026_BRO_797030_1||2026-12|
+tender|advancedweaponsandequipmentindialtd-aweil|2026_AWEIL_296705_1||2026-11|
+tender|advancedweaponsandequipmentindialtd-aweil|2026_AWEIL_296691_1||2026-11|
