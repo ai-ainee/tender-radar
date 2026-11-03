@@ -510,13 +510,15 @@ def apply_quality_gates(lead, allowed_countries):
         else:
             flags.append(f"EXPIRED: {evidence[:80]}")
     genuine = str(lead.genuineness or "GENUINE").upper()
-    if genuine not in ("GENUINE", "") and genuine != "RESELLER":
+    if genuine not in ("GENUINE", "", "RESELLER"):
+        # Hiring portals and articles can provide valid buyer intelligence.
+        # Their evidence requires review, not automatic disqualification.
         flags.append(f"NOT GENUINE: {genuine}")
 
     return lead, flags
 
 def _classify_gates(gate_flags):
-    SOFT = ("HIRING_SIGNAL",)
+    SOFT = ("HIRING_SIGNAL", "JOB_PORTAL", "BLOG", "COUNTRY UNKNOWN", "PRODUCT-AS-LOCATION")
     HARD = ("FOREIGN URL", "WRONG COUNTRY", "EXPIRED", "COMPLETED")
     soft, hard = [], []
     for f in gate_flags or []:
@@ -788,14 +790,31 @@ When the product appears ONLY as a location/department/room name:
   → OR set confidence="LOW" and score ≤60 (will route to Review)
 
 Never score 70+ when the target product is incidental context.
+═══ INDIRECT BUYER SIGNALS — IMPORTANT ═══
+The sales mission includes BOTH direct software procurement AND potential
+Autodesk customers. Classify genuine named Indian organizations as valid when
+there is credible evidence of: (a) CAD/BIM/design software hiring, (b) new
+construction/engineering projects, (c) capacity/factory/design-centre
+expansion, (d) BIM/CDE/digital-transformation adoption, or (e) software RFQs.
+Do NOT require an Autodesk product name for project/expansion signals if the
+company has a plausible engineering/design/construction use case.
+HIRING_SIGNAL and JOB_PORTAL describe the evidence SOURCE, not a fake buyer.
+Use the EMPLOYER as organization, not the job-board operator. Use
+entity_role=BUYER or PROJECT_BUYER and is_valid=true when supported.
+A named buyer with a credible but indirect signal should have confidence=LOW
+or MEDIUM and go to Review, not Trash. Do not invent an organization.
+Set is_valid=false only for unrelated items, non-buyers, or unsupported claims.
+For tenders, distinguish actual software procurement from a product merely
+mentioned as the location of unrelated purchases.
 ═══ EVALUATION RULES ═══
 1. INBOX (is_valid=true, confidence="HIGH"):
-   - Text mentions ANY product in TARGET PORTFOLIO
+   - Direct product procurement OR strong verified project/adoption signal
    - Aligns with Directives OR Industries
    - Passes all 3 QUALITY GATES below
    - NOT a vendor page, NOT a blog/article/resources page
 
 2. REVIEW (is_valid=true, confidence="LOW"):
+   - Credible hiring, expansion, project or technology-adoption signal
    - Matches directive/industry but doesn't name portfolio product
    - Names competitor product or related service
    - Is a content page (blog/article/insights)
@@ -971,6 +990,10 @@ class Router:
         role = str(lead.entity_role or "IRRELEVANT").upper()
         if role == "IRRELEVANT":
             is_valid = False
+        # AI may label a valid employer as SERVICE_USER: that is still a prospect.
+        if role == "SERVICE_USER" and is_valid:
+            role = "BUYER"
+            lead.entity_role = role
 
         _AGG = re.compile(
             r"\b(survey|report|study|aggregate|analysis|trend|index|forecast|review|"
@@ -1044,9 +1067,6 @@ class Router:
         if fp_key and fp_key in self.event_fps:
             log.info(f"[EVENT-DUPE] {fp_key}")
             return "DUPLICATE", lead.buyer_org, "event_fp"
-        if fp_key:
-            _mark_fp_cache(EVENT_FP_FILE, fp_key)
-            self.event_fps.add(fp_key)
 
         score = str(lead.lead_score or 50)
         why = f"🔥 [SCORE: {score}/100] " + str(lead.why_engage_now or "")
@@ -1110,7 +1130,7 @@ class Router:
             row = [lead_id, capture, lead.buyer_org, lead.city or "", lead.state or "",
                    solution, lead.url, "", "", "", ""]
         elif not is_valid:
-            # FIX 1: AI-rejected → Trash (not Review)
+            # Invalid or unrelated signals only. Valid indirect signals stay eligible.
             sheet_name, outcome, reason = SHEET_TRASH, "TRASH", "rejected"
             why = f"[AI REJECTED — {role}] " + why
             row = [capture, lead.upcoming_events or "Unknown", role, industry,
@@ -1131,7 +1151,7 @@ class Router:
                    lead.state or "N/A", lead.city or "N/A",
                    lead.buyer_org, solution, why, lead.url,
                    lead.product_usage or "Unknown", "", lead_id]
-        elif not gate_ok or freshness == "STALE":
+        elif hard_gates or soft_gates or freshness == "STALE":
             sheet_name, outcome = SHEET_REVIEW, "REVIEW"
             reasons = gate_flags + ([f"STALE ({freshness})"] if freshness == "STALE" else [])
             why = f"[GATE: {' | '.join(reasons)}] " + why
@@ -1189,6 +1209,13 @@ class Router:
             log.error(f"insert_lead failed for {lead.buyer_org}: {e}")
             return "FAILED", lead.buyer_org, "sheet_error"
 
+        # Persist event identity only after the sheet confirms the write.
+        if res.get("status") not in ("success", "duplicate") and not res.get("duplicate"):
+            log.error(f"insert_lead unexpected response: {res}")
+            return "FAILED", lead.buyer_org, "sheet_response"
+        if fp_key:
+            _mark_fp_cache(EVENT_FP_FILE, fp_key)
+            self.event_fps.add(fp_key)
         if self.company_dedup and lead.buyer_org and \
            not lead.buyer_org.lower().startswith("unidentified"):
             self.company_dedup.mark(lead.buyer_org)
@@ -1299,9 +1326,6 @@ def main():
         # legitimately returns job-portal URLs (site:naukri.com queries) that
         # carry the employer name in the SERP title. Those go to the AI,
         # which extracts the real company and routes to Review/Inbox.
-        if lead.source != "hiring" and _is_job_portal_host(lead.url):
-            stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
-            continue
         # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
         if not lead.metadata.get("is_job_url"):
             _halluc_hay = (lead.buyer_org or "") + " | " + (lead.title or "")
@@ -1440,8 +1464,8 @@ def main():
 
             outcome, company, reason = router.push(
                 lead, verdict,
-                batch[0].metadata.get("target_product") or "General",
-                batch[0].metadata.get("industry") or "ALL_SECTORS"
+                lead.metadata.get("target_product") or "General",
+                lead.metadata.get("industry") or "ALL_SECTORS"
             )
 
             # FIX 3: mark_seen guard — only mark on definitive outcomes.
