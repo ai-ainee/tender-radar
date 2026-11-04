@@ -1705,3 +1705,36 @@ tender|departmentofdefenceresearchanddevelopment|2026_DRDO_797079_1||2026-11|ind
 tender|dir.gen.defenceestates,hq|2026_DGDE_932790_1||2026-11|india
 tender|ihqofmod(navy)|2026_NAVY_797033_1||2026-11|india
 tender|ihqofmod(navy)|2026_NAVY_797039_1||2026-11|india
+marketing|autodesk|Civil 3D campaign||2026-11|india
+marketing|autodesk|Infrastructure Design Solutions campaign||2026-11|india
+hiring|bayt.com|Autocad Revit Civil 3D jobs||2026-11|india
+hiring|jobleads.com|Senior Civil Infra Structure Engineer role||2026-11|india
+profile|gulftalent|Civil Structural Draughtsman profile||2026-11|india
+hiring|wsp|BIM Modeller – Airfield||2026-11|india
+hiring|pinnacle|Civil 3D Specialist|role|2026-07|durgapur
+hiring|veolia|Design Engineer|role|2026-08|chennai
+hiring|cisin|Junior AutoCAD Designer|position|2026-11|india
+hiring|cisin|Junior AutoCAD Designer|position|2026-11|indore
+hiring|nvidia|Senior CAD Engineer|position|2026-11|bengaluru
+news|bhel|||2026-11|india
+news|hegadvancedmaterials|||2026-11|india
+news|thesingletonsocial|||2026-11|india
+news|pinelabs|||2026-11|india
+news|peppermintrobotics|||2026-11|india
+tender|munitionsindialimited|2026_MIL_296931_1|tender_id|2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_797087_1||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_797294_1||2026-12|india
+tender|cochinshipyardlimited|2026_CSL_296909_1||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_797209_1||2026-12|india
+tender|indianairforce|2026_IAF_797073_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797240_1||2026-11|india
+tender|ihqofmod(navy)|2026_NAVY_797226_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797181_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797143_1||2026-11|india
+tender|ihqofmod(navy)|2026_NAVY_797212_1||2026-11|india
+tender|munitionsindialimited|2026_MIL_296861_1||2026-11|india
+tender|munitionsindialimited|2026_MIL_296841_1||2026-11|india
+tender|directorategeneraldefenceestates|||2026-11|ferozepur
+tender|indianairforce|||2026-11|nagpur
+tender|ihqofmod(navy)|||2026-11|kochi
+tender|indianairforce|||2026-11|delhi
