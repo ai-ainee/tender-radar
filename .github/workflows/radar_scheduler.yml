@@ -79,7 +79,13 @@ jobs:
           cache: 'pip'
 
       - name: Install OCR tools (scanned tender PDFs)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends tesseract-ocr poppler-utils
+        # OCR is optional: apt repository failures must not prevent harvesting.
+        continue-on-error: true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr poppler-utils
+          command -v tesseract || echo "WARNING: OCR unavailable; scanned PDFs may not be readable"
+          command -v pdftotext || echo "WARNING: poppler unavailable; PDF text fallback may be limited"
 
       - name: Install dependencies
         run: |
