@@ -1068,8 +1068,8 @@ class Router:
             log.info(f"[EVENT-DUPE] {fp_key}")
             return "DUPLICATE", lead.buyer_org, "event_fp"
 
-        score = str(lead.lead_score or 50)
-        why = f"🔥 [SCORE: {score}/100] " + str(lead.why_engage_now or "")
+        score = str(lead.lead_score if lead.lead_score is not None else 0)
+        why = f"🔥 [AI SCORE: {score}/100] " + str(lead.why_engage_now or "")
 
         if lead.metadata.get("snippet_only") and is_valid:
             confidence = "LOW"
@@ -1319,9 +1319,14 @@ def main():
         if _is_google_redirect(lead.url):
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
-        if lead.source != "hiring" and _is_job_portal_host(lead.url):
-            stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
-            continue
+        if _is_job_portal_host(lead.url):
+            # A job listing can be evidence of an Autodesk buyer even when
+            # discovered by Serper/news rather than the dedicated hiring adapter.
+            # Keep it for AI verification; do not assume the job board is buyer.
+            lead.metadata = lead.metadata or {}
+            lead.metadata["is_job_url"] = True
+            lead.metadata["hiring_signal_candidate"] = True
+            log.info(f"[HIRING-CANDIDATE] source={lead.source} url={lead.url[:100]}")
         # Job portals — filter everywhere EXCEPT the hiring adapter, which
         # legitimately returns job-portal URLs (site:naukri.com queries) that
         # carry the employer name in the SERP title. Those go to the AI,
@@ -1357,6 +1362,7 @@ def main():
     log.info(f"  tender_dupe={stats['gate_tender_dupe']} "
              f"url_seen={stats['gate_url_seen']} "
              f"fp_dupe={stats['gate_fp_dupe']} "
+             f"job_redirect={stats['gate_job_portal']} "
              f"budget_exceeded={stats['gate_budget']}")
 
     if DRY_RUN:
