@@ -1780,3 +1780,21 @@ tender|ihqofmod(army)-(oscc)|2026_ARMY_797390_1||2026-11|india
 tender|directorategeneraldefenceestates|2026_DGDE_797397_1||2026-11|india
 tender|indianairforce|2026_IAF_797386_1||2026-12|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_797385_1||2026-11|india
+acquisition|adaniports|2.56|billion eur|2026-11|india
+award|evalongoria|50|million usd|2024-03|india
+investigation|bvkpensionfund|||2026-11|india
+policy|westbengalgovernment|||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_793803_1||2026-11|india
+tender|dtegeneralborderroadsorganisation|2026_BRO_797539_1||2026-12|india
+tender|defenceresearchanddevelopmentorganisation|2026_DRDO_933171_1||2026-11|india
+tender|sitar|2026_SITAR_797481_1||2026-11|india
+tender|directorategeneraldefenceestates|2026_DGDE_797540_1||2026-11|india
+tender|directorategeneraldefenceestates|2026_DGDE_797547_1||2026-11|india
+tender|directorategeneraldefenceestates|2026_DGDE_797551_1||2026-11|india
+tender|directorategeneraldefenceestates|2026_DGDE_797526_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797354_1||2026-12|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797352_1||2026-12|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797376_1||2026-12|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797276_1||2026-12|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797285_1||2026-12|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797415_1||2026-12|india
