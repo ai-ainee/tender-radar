@@ -10,7 +10,9 @@ Rate limit: 50 calls/day anonymous. This adapter uses 7 calls per run
 Verified against live Pipeworx endpoint 2026-10-31.
 """
 import json
+import os
 import requests
+from urllib.parse import urlparse, parse_qs
 
 from adapters import SourceAdapter, register
 from standard_lead import StandardLead
@@ -19,18 +21,8 @@ from common import log
 MCP_URL = "https://gateway.pipeworx.io/india-tenders/mcp"
 MCP_HEADERS = {"Content-Type": "application/json"}
 
-# Keywords chosen to match how Indian government titles actually describe
-# software procurement. Verified against live data:
-#   'autocad' / 'revit' / 'bim' → 0 matches (titles use buyer shorthand)
-#   'software' → 3 matches per 1,265 scanned
-KEYWORDS = [
-    "software",
-    "software license",
-    "amc software",
-    "cad software",
-    "engineering software",
-    "design software",
-]
+# No static portfolio keywords. A campaign for pumps, medical equipment, BIM,
+# or cloud services must query the user's configured targets, not CAD alone.
 
 
 class PipeworxAdapter(SourceAdapter):
@@ -45,21 +37,21 @@ class PipeworxAdapter(SourceAdapter):
         leads = []
         seen_tids = set()
 
-        # ── Phase 1: Defence tenders (25/run, no keyword) ──
-        result = self._call_tool("india_defence_tenders", {})
-        if result and isinstance(result.get("tenders"), list):
-            added = 0
-            for t in result["tenders"]:
-                tid = (t.get("tender_id") or "").strip()
-                if not tid or tid in seen_tids:
-                    continue
-                seen_tids.add(tid)
-                leads.append(self._to_lead(t))
-                added += 1
-            log.info(f"[pipeworx] defence: {len(result['tenders'])} returned, {added} added")
+        # Unfiltered defence notices produced most of the previous AI Trash.
+        # Keep that broad feed as an explicit option, not the default.
+        if os.getenv("RADAR_PIPEWORX_DEFENCE_FEED", "0") == "1":
+            result = self._call_tool("india_defence_tenders", {})
+            if result and isinstance(result.get("tenders"), list):
+                for t in result["tenders"]:
+                    tid = (t.get("tender_id") or "").strip()
+                    if tid and tid not in seen_tids and t.get("source_url"):
+                        seen_tids.add(tid)
+                        leads.append(self._to_lead(t))
 
         # ── Phase 2: Keyword search (CPPP + all portals) ──
-        for kw in KEYWORDS:
+        configured = settings.get("targets") or []
+        keywords = list(dict.fromkeys(str(s).strip()[:70] for s in configured if str(s).strip()))[:6]
+        for kw in keywords:
             result = self._call_tool("india_search_tenders",
                                      {"query": kw, "limit": 20})
             if not result or not isinstance(result.get("tenders"), list):
@@ -67,7 +59,7 @@ class PipeworxAdapter(SourceAdapter):
             kw_added = 0
             for t in result["tenders"]:
                 tid = (t.get("tender_id") or "").strip()
-                if not tid or tid in seen_tids:
+                if not tid or tid in seen_tids or not t.get("source_url"):
                     continue
                 seen_tids.add(tid)
                 leads.append(self._to_lead(t))
@@ -98,8 +90,12 @@ class PipeworxAdapter(SourceAdapter):
     def _to_lead(self, t):
         tid = (t.get("tender_id") or "").strip()
         source_url = (t.get("source_url") or "").strip()
-        # Append tid to make URL unique in dedup cache
-        url = f"{source_url}&tid={tid}" if source_url and tid else source_url
+        # Do not append a second tid= parameter to portal URLs already carrying
+        # a distinct tender ID: that can break official tender detail pages.
+        query_ids = parse_qs(urlparse(source_url).query)
+        has_id = any(k.lower() in ("tid", "tenderid", "tender_id", "bidid") for k in query_ids)
+        url = (source_url + ("&" if "?" in source_url else "?") + "tid=" + tid) \
+            if source_url and tid and not has_id else source_url
 
         return StandardLead(
             source="pipeworx",
@@ -124,6 +120,7 @@ class PipeworxAdapter(SourceAdapter):
             metadata={
                 "internal_source": "pipeworx",
                 "portal": t.get("portal", ""),
+                "target_product": "",  # specific match assessed from the tender title
             },
         )
 
