@@ -1818,3 +1818,7 @@ tender|indianairforce|2026_IAF_797587_1||2026-12|india
 tender|departmentofdefenceresearchanddevelopment|2026_DRDO_797559_1||2026-11|india
 tender|cochinshipyardlimited|2026_CSL_297055_1||2026-11|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_797454_1||2026-12|india
+capex|lanxess|750|crore inr|2026-05|jhagadia,gujarat
+capex|ballcorporation|(unspecified)||2026-09|uttarpradesh
+expansion|haleon|2000 Crore|inr|2026-06|pithampur,madhyapradesh
+partnership|prestigegroup|digitaltransformationinitiative||2026-04|india
