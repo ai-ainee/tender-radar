@@ -1798,3 +1798,23 @@ tender|ihqofmod(army)-(oscc)|2026_ARMY_797376_1||2026-12|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_797276_1||2026-12|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_797285_1||2026-12|india
 tender|ihqofmod(army)-(oscc)|2026_ARMY_797415_1||2026-12|india
+acquisition|techmahindralimited|||2026-11|india
+hiring|cadcrowd|CAD Design||2026-11|india
+news|telanganagovernment|||2026-11|india
+capex|unominda|||2026-11|india
+news|cashfreepayments|||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|||2026-12|india
+tender|ihqofmod(army)-(oscc)|||2026-11|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_791901_2||2026-11|
+tender|indiancoastguard|2026_ICG_797627_1||2026-11|
+tender|cochinshipyardlimited|2026_CSL_297096_1||2026-11|
+tender|troopcomfortslimited|2026_TCL_296913_1||2026-11|
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797645_1||2026-11|
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797635_1||2026-11|
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797619_1||2026-11|india
+tender|armouredvehiclesnigamlimited|2026_AVNL_297116_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797610_1||2026-11|india
+tender|indianairforce|2026_IAF_797587_1||2026-12|india
+tender|departmentofdefenceresearchanddevelopment|2026_DRDO_797559_1||2026-11|india
+tender|cochinshipyardlimited|2026_CSL_297055_1||2026-11|india
+tender|ihqofmod(army)-(oscc)|2026_ARMY_797454_1||2026-12|india
