@@ -26,25 +26,10 @@ log = logging.getLogger("RadarScout")
 # SHARED CONSTANTS — vendor domain + content page detection
 # ═══════════════════════════════════════════════════════════════════════
 
-# Vendor domains — a URL on any of these is a VENDOR of a target product,
-# never a buyer. Route to Partners, not Inbox.
-VENDOR_DOMAIN_KEYWORDS = (
-    # Autodesk family (the vendors of your target portfolio)
-    "autodesk.com", "autocad.com", "revit.com",
-    "navisworks.autodesk", "bim360.autodesk", "forge.autodesk",
-    "inventor.autodesk", "construction.autodesk",
-    # Other CAD/BIM software vendors
-    "d5render.com",
-    "sofistik.com",
-    "imaginit.com",
-    "grabcad.com",
-    "bentley.com",
-    "12d.com",
-    "vectorworks.net",
-    "rhino3d.com",
-    "sketchup.com",
-    "archicad.com",
-  )
+# There is no permanent product/vendor list: Radar Scout is general purpose.
+# A seller is identified from the evidence and the configured campaign, not
+# simply because the article is hosted on a known technology company's site.
+VENDOR_DOMAIN_KEYWORDS = ()
 
 # Content-page URL patterns — blog / article / resources etc.
 # These CAN contain useful signals but are never procurement notices.
@@ -63,13 +48,17 @@ _LEARNED_VENDORS = set()
 
 
 def sync_vendor_domains_from_crm(sheet):
-    """Load vendor domains from the Partners & Suppliers tab.
+    """Optional seller-domain hints, disabled by default.
 
-    Called once at startup from radar.py main(). Populates _LEARNED_VENDORS
-    from the CRM's Partners tab so _is_vendor_domain() can catch those URLs
-    on subsequent runs without AI.
+    Legacy Partners rows can contain news publishers, aggregators, and tender
+    portals. Learning all of them as sellers misroutes later buyer stories.
+    Only enable after manually cleaning the Partners tab.
     """
     global _LEARNED_VENDORS
+    _LEARNED_VENDORS.clear()
+    if os.getenv("RADAR_USE_PARTNER_VENDOR_DOMAINS", "0") != "1":
+        log.info("Vendor-domain learning disabled (general-purpose safe mode)")
+        return
     try:
         data = sheet.get("get_vendor_domains")
         domains = data.get("domains") or []
@@ -78,7 +67,7 @@ def sync_vendor_domains_from_crm(sheet):
                 _LEARNED_VENDORS.add(d.strip().lower().replace("www.", ""))
         log.info(f"Vendor domains synced from Partners tab: {len(_LEARNED_VENDORS)}")
     except Exception as e:
-        log.info(f"Vendor domain sync unavailable ({str(e)[:80]}) — using static list only")
+        log.info(f"Vendor domain sync unavailable ({str(e)[:80]})")
 
 
 def _is_vendor_domain(url):
@@ -367,6 +356,7 @@ def _auto_register():
         ("expansion", "adapters.expansion", "ExpansionAdapter"),
         ("news",      "adapters.news",      "NewsAdapter"),
         ("company",   "adapters.company",   "CompanyAdapter"),
+        ("hybrid_intelligence", "adapters.hybrid_intelligence", "HybridIntelligenceAdapter"),
     ]
     for slug, module_path, class_name in adapter_modules:
         try:
