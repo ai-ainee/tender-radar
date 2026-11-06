@@ -20,6 +20,10 @@ on:
           - harvest
           - enrich
           - health
+      dry_run:
+        description: 'Harvester preview only (no AI or CRM writes); use job=harvest'
+        type: boolean
+        default: false
 
 permissions:
   contents: write          # lets the bot commit the cache files
@@ -67,6 +71,9 @@ jobs:
       SELLER_PROOF: ${{ vars.SELLER_PROOF }}
       SELLER_ELIGIBILITY: ${{ vars.SELLER_ELIGIBILITY }}
       ENRICH_RETRY_ON_AI_FAIL: '1'
+      RADAR_HYBRID_ENABLED: '1'
+      RADAR_V32_MAX_QUERIES: '12'
+      RADAR_V32_MAX_RESULTS: '60'
 
     steps:
       - name: Checkout code
@@ -92,19 +99,22 @@ jobs:
           pip install --disable-pip-version-check -r requirements.txt || (sleep 20 && pip install --disable-pip-version-check -r requirements.txt)
 
       - name: Install Playwright Chromium (GeM scraping)
-        # Playwright needs the browser binary separately from pip — --with-deps
-        # also installs system libs (libnss3, fonts, etc.) that Chromium needs.
-        run: python -m playwright install chromium --with-deps
+        # The harvester has non-browser fallbacks. A runner's broken apt
+        # repository must not prevent every other adapter from running.
+        continue-on-error: true
+        run: |
+          python -m playwright install chromium || echo "WARNING: Chromium unavailable; GeM browser fallback disabled"
 
       - name: Run harvester
         if: >-
           (github.event_name == 'schedule' && (github.event.schedule == '30 1 * * *' || github.event.schedule == '30 14 * * *')) ||
           (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'harvest'))
         env:
+          RADAR_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           MAX_RUNTIME_MIN: '70'
           AI_BATCH_SIZE: '6'          # fewer batches total
           LLM_MIN_INTERVAL: '10'      # 15s between calls, not 5
-          MAX_LINKS_PER_RUN: '80'
+          MAX_LINKS_PER_RUN: '100'
         run: python radar.py
 
       - name: Run enrichment worker
@@ -132,7 +142,7 @@ jobs:
         run: |
           git config user.name "Radar Scout Bot"
           git config user.email "bot@radarscout.local"
-          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt seen_companies.txt enrich_attempts.json ai_drop_attempts.json; do
+          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt seen_companies.txt enrich_attempts.json ai_drop_attempts.json radar_rejected_audit.jsonl; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
           if git diff --cached --quiet; then
