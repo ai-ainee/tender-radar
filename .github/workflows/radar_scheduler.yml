@@ -1,22 +1,170 @@
-name: Test Radar Scout Logic (offline)
+name: Radar Scout Automation Engine
 
 on:
+  schedule:
+    # HARVESTER (7:00 AM and 8:00 PM IST)
+    - cron: '30 1 * * *'
+    - cron: '30 14 * * *'
+    # ENRICHMENT (9:00 AM, 1:00 PM, 5:00 PM, 9:00 PM IST)
+    - cron: '30 3,7,11,15 * * *'
+    # WEEKLY HEALTH CHECK (Monday 7:30 AM IST): keys, libraries, webhook, live LLM + search, Telegram
+    - cron: '0 2 * * 1'
   workflow_dispatch:
+    inputs:
+      job:
+        description: 'What to run'
+        type: choice
+        default: both
+        options:
+          - both
+          - harvest
+          - enrich
+          - health
+      dry_run:
+        description: 'Harvester preview only (no AI or CRM writes); use job=harvest'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write          # lets the bot commit the cache files
+
+concurrency:
+  group: radar-scout
+  cancel-in-progress: false
+
+env:
+  TZ: 'Asia/Kolkata'
+  PYTHONUNBUFFERED: '1'
 
 jobs:
-  test:
+  run-radar-scout:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Raised from 120 → 140 to fit Playwright install (~30s) + GeM Playwright run
+    # (2-4 min) + CPPP fallbacks (~30s) + the existing 70-min harvester budget.
+    timeout-minutes: 140
+    env:
+      WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+      WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+      GROQ_API_KEYS: ${{ secrets.GROQ_API_KEYS }}
+      OPENROUTER_API_KEYS: ${{ secrets.OPENROUTER_API_KEYS }}
+      SERPER_API_KEYS: ${{ secrets.SERPER_API_KEYS }}
+      BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+      JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}   # leave the secret unset to stay 100% free
+      COUNTRY_CONTEXT_SKIP_LLM: ${{ vars.COUNTRY_CONTEXT_SKIP_LLM }}
+      MAX_RUNTIME_MIN: ${{ secrets.MAX_RUNTIME_MIN }}
+      EXTRA_LLM_BASE_URL: ${{ secrets.EXTRA_LLM_BASE_URL }}
+      EXTRA_LLM_API_KEYS: ${{ secrets.EXTRA_LLM_API_KEYS }}
+      EXTRA_LLM_MODELS: ${{ secrets.EXTRA_LLM_MODELS }}
+      # Provider order: Groq first — it returns structured JSON in 8-15 sec/call
+      # vs Gemini's 30-60 sec/call (even with thinkingBudget: 0). Gemini is
+      # second as backup when Groq's single-key quota is exhausted. OpenRouter
+      # is last. Set this to "" (empty) to use the code default.
+      LLM_PROVIDER_ORDER: 'groq,gemini,openrouter'
+      # Deal-closing context (Settings -> Secrets and variables -> Actions -> Variables). All optional.
+      SELLER_COMPANY: ${{ vars.SELLER_COMPANY }}
+      SELLER_OFFER: ${{ vars.SELLER_OFFER }}
+      SELLER_NAME: ${{ vars.SELLER_NAME }}
+      SELLER_PROOF: ${{ vars.SELLER_PROOF }}
+      SELLER_ELIGIBILITY: ${{ vars.SELLER_ELIGIBILITY }}
+      ENRICH_RETRY_ON_AI_FAIL: '1'
+      RADAR_HYBRID_ENABLED: '1'
+      RADAR_V32_MAX_QUERIES: '12'
+      RADAR_V32_MAX_RESULTS: '60'
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Check Python syntax
-        run: python -m compileall -q .
-      - name: Run offline regression tests
-        run: python -m unittest discover -s tests -v
-      - name: Check Apps Script syntax and CRM dedupe rules
+          cache: 'pip'
+
+      - name: Install OCR tools (scanned tender PDFs)
+        # OCR is optional: apt repository failures must not prevent harvesting.
+        continue-on-error: true
         run: |
-          node --check < Code.gs
-          node tests/test_apps_script.js
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr poppler-utils
+          command -v tesseract || echo "WARNING: OCR unavailable; scanned PDFs may not be readable"
+          command -v pdftotext || echo "WARNING: poppler unavailable; PDF text fallback may be limited"
+
+      - name: Install dependencies
+        run: |
+          pip install --disable-pip-version-check -r requirements.txt || (sleep 20 && pip install --disable-pip-version-check -r requirements.txt)
+
+      - name: Install Playwright Chromium (GeM scraping)
+        # The harvester has non-browser fallbacks. A runner's broken apt
+        # repository must not prevent every other adapter from running.
+        continue-on-error: true
+        run: |
+          python -m playwright install chromium || echo "WARNING: Chromium unavailable; GeM browser fallback disabled"
+
+      - name: Run harvester
+        if: >-
+          (github.event_name == 'schedule' && (github.event.schedule == '30 1 * * *' || github.event.schedule == '30 14 * * *')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'harvest'))
+        env:
+          RADAR_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          MAX_RUNTIME_MIN: '70'
+          AI_BATCH_SIZE: '6'          # fewer batches total
+          LLM_MIN_INTERVAL: '10'      # 15s between calls, not 5
+          MAX_LINKS_PER_RUN: '100'
+        run: python radar.py
+
+      - name: Run enrichment worker
+        if: >-
+          (github.event_name == 'schedule' && github.event.schedule == '30 3,7,11,15 * * *') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'enrich'))
+        run: python enrichment_worker.py
+
+      - name: Run health check
+        if: >-
+          (github.event_name == 'schedule' && github.event.schedule == '0 2 * * 1') ||
+          (github.event_name == 'workflow_dispatch' && inputs.job == 'health')
+        run: python healthcheck.py
+
+      # Persist the de-duplication cache and retry counters even if a step above failed.
+      # seen_tenders.txt  = tender-ID dedup (same tender across GeM/CPPP/state/aggregator → 1 row)
+      # seen_event_fps.txt = event-fingerprint dedup (4 news articles about the same capex → 1 row)
+      # seen_companies.txt = CompanyDedup local cache (regenerated from CRM each run, but
+      #                      saving avoids re-writing it from scratch on cold starts)
+      # enrich_attempts.json = enrichment worker retry counters
+      # ai_drop_attempts.json = future — per-URL AI-drop counter (no-op if file missing)
+      # All files are created on first run; the `-f` guard skips missing ones.
+      - name: Save cache and fingerprints
+        if: always()
+        run: |
+          git config user.name "Radar Scout Bot"
+          git config user.email "bot@radarscout.local"
+          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt seen_companies.txt enrich_attempts.json ai_drop_attempts.json radar_rejected_audit.jsonl; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
+          if git diff --cached --quiet; then
+            echo "No cache changes."
+          else
+            git commit -m "chore: update cache and fingerprints [skip ci]"
+            BRANCH="${{ github.ref_name }}"
+            pushed=""
+            for i in 1 2 3; do
+              git pull --rebase --autostash origin "$BRANCH" || git rebase --abort || true
+              if git push; then pushed=1; break; fi
+              sleep $((i * 5))
+            done
+            if [ -z "$pushed" ]; then echo "::warning::Cache push failed after 3 tries; links will be re-checked next run"; fi
+          fi
+
+      # Tells you when the pipeline breaks before Python even starts (pip, checkout, OCR install ...)
+      - name: Alert on failure
+        if: failure()
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -m 20 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=Radar Scout workflow FAILED: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > /dev/null || true
+          fi
