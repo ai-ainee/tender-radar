@@ -285,15 +285,11 @@ class SearchEngine:
         self.calls = {"serper": 0, "brave": 0, "ddgs": 0}
     @staticmethod
     def clean_query(query):
-        q = re.sub(r"(site:|intitle:|inurl:)\S+", " ", str(query or ""), flags=re.I)
-        # Preserve -word (Google negative operator) but normalise other punctuation.
-        # (1) hyphen between two word chars → just a separator
-        q = re.sub(r"(\w)-(\w)", r"\1 \2", q)
-        # (2) isolated hyphens (space on both sides) → space
-        q = re.sub(r"(?<!\w)-(?!\w)", " ", q)
-        # (3) quotes and parens → space
-        q = re.sub(r'"|\(|\)', " ", q)
-        return " ".join(re.sub(r"\bOR\b", " ", q).split())[:300]
+        # Keep quoted phrases, OR, site:, intitle:, and -exclusions intact.
+        # Stripping these in older builds widened searches and filled the
+        # evaluation budget with irrelevant directory and job-board results.
+        q = re.sub(r"[\x00-\x1f\x7f]", " ", str(query or ""))
+        return " ".join(q.split())[:300]
     @staticmethod
     def gl_code(country):
         c = (country or "").strip().lower()
