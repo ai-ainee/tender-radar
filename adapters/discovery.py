@@ -575,10 +575,14 @@ class DiscoveryAdapter(SourceAdapter):
         use_ai_queries = os.getenv("AI_QUERIES", "1").strip() != "0"
 
         campaigns = []
-        if special:
-            gen = QueryGenerator(special, "Special Campaign", country, states,
+        if special and not targets:
+            # A special instruction is not necessarily a product phrase.
+            # Use it as a last-resort search seed only when there are no
+            # configured product/solution targets at all.
+            seed = " ".join(special.split())[:95]
+            gen = QueryGenerator(seed, "Special Campaign", country, states,
                                  self._llm, use_ai_queries, combo_offset=0)
-            campaigns.append((special, "Special Campaign", gen))
+            campaigns.append((seed, "Special Campaign", gen))
         elif len(targets) > 1:
             # NEW: Combined mode — OR all products into one query expression.
             # Every query covers every product, so quota is spent on the
@@ -637,7 +641,8 @@ class DiscoveryAdapter(SourceAdapter):
         for target, industry, gen in campaigns:
             if len(leads) >= max_links:
                 break
-            tracks = gen.build_special_tracks(special) if special else gen.build_tracks()
+            tracks = (gen.build_special_tracks(target)
+                      if industry == "Special Campaign" else gen.build_tracks())
             for track_name, queries in tracks.items():
                 for query in queries:
                     if len(leads) >= max_links:
@@ -724,7 +729,7 @@ class DiscoveryAdapter(SourceAdapter):
                                 title=title_raw,
                                 snippet=snippet_raw,
                                 raw_text=content,
-                                country=country,
+                                country="",  # buyer country is not proven by search geotargeting
                                 tender_id=tid,
                                 metadata={
                                     "track": track_name,
@@ -746,7 +751,7 @@ class DiscoveryAdapter(SourceAdapter):
                                     title=title_raw,
                                     snippet=snippet_raw,
                                     raw_text="[PAGE COULD NOT BE READ - SEARCH SNIPPET ONLY]\n" + snip,
-                                    country=country,
+                                    country="",  # AI must verify buyer geography
                                     tender_id=tid,
                                     metadata={
                                         "track": track_name,
