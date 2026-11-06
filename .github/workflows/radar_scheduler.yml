@@ -114,7 +114,7 @@ jobs:
           MAX_RUNTIME_MIN: '70'
           AI_BATCH_SIZE: '6'          # fewer batches total
           LLM_MIN_INTERVAL: '10'      # 15s between calls, not 5
-          MAX_LINKS_PER_RUN: '100'
+          MAX_LINKS_PER_RUN: '30'
         run: python radar.py
 
       - name: Run enrichment worker
