@@ -19,11 +19,8 @@ def fingerprint_key(fp):
     Returns '' if the fingerprint is not usable for dedupe (missing
     event_type or primary_actor).
 
-    Fallback behaviour: if no key_value (numeric magnitude) is present,
-    the location is dropped from the key. This prevents over-deduping
-    of small events that share the same actor + type + month but are
-    actually different (e.g. "RIL opens 2 offices" vs "RIL opens 3 offices"
-    on the same day — without a number, we can't tell if they're the same).
+    Without a distinctive value (or named project), unrelated events from
+    the same actor and month must NOT collapse into one opportunity.
     """
     if not isinstance(fp, dict):
         return ""
@@ -45,14 +42,15 @@ def fingerprint_key(fp):
     if not event_type or not actor:
         return ""
 
-    # A generic actor+type+month key merges unrelated tenders, hiring and
-    # projects. Without a distinctive value/location, do not event-dedupe.
-    # URL and tender-ID caches still provide exact-match deduplication.
-    if not value and not location:
+    project = str(fp.get("project_key") or "").lower().strip()
+    project = "".join(c for c in project if c.isalnum())[:70]
+    # A location alone is far too broad (e.g. one company may post several
+    # jobs and open several stores in Delhi during the same month).
+    if not value and len(project) < 8:
         return ""
     if not month:
         return ""
-    return "|".join([event_type, actor, value, unit, month, location])
+    return "|".join([event_type, actor, value or project, unit, month, location])
 
 
 def load_cache(path):
