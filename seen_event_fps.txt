@@ -1825,3 +1825,5 @@ partnership|prestigegroup|digitaltransformationinitiative||2026-04|india
 tender|indianarmy|1.02e+06|inr|2026-11|pune,maharashtra
 hiring|harket|Civil Engineer||2026-11|mohali,punjab
 tender|ministryofpower|6|units|2026-10|india
+hiring|aecomindiaprivatelimited|BIM Specialist|position|2026-11|chennai
+tender|meconlimited|100|licenses|2026-11|
