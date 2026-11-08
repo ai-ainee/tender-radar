@@ -1827,3 +1827,7 @@ hiring|harket|Civil Engineer||2026-11|mohali,punjab
 tender|ministryofpower|6|units|2026-10|india
 hiring|aecomindiaprivatelimited|BIM Specialist|position|2026-11|chennai
 tender|meconlimited|100|licenses|2026-11|
+capex|jtlindustrieslimited|facilityexpansionpicklinglineandgpline||2026-11|maharashtra
+tender|nfrconstruction|AutoCAD 2027 Commercial||2026-11|assam
+tender|northeastfrontierrailway|8|users|2026-11|assam
+tender|ministryofrailways|AutoCAD software||2026-10|india
