@@ -1831,3 +1831,10 @@ capex|jtlindustrieslimited|facilityexpansionpicklinglineandgpline||2026-11|mahar
 tender|nfrconstruction|AutoCAD 2027 Commercial||2026-11|assam
 tender|northeastfrontierrailway|8|users|2026-11|assam
 tender|ministryofrailways|AutoCAD software||2026-10|india
+contract_award|southcentralrailway|4.99|lakh inr|2026-10|india
+tender|rsrdcltd.|6.59|l|2026-11|jaipur,rajasthan
+tender|isro|avionicsmechanicaldesignandanalysiscadcaeactivities||2026-11|bengaluru,karnataka
+tender|indianarmy|1.5|l|2026-11|haryana
+hiring|rajasthanstateroaddevelopmentandconstructioncooperation|6|inr (crore) approx.|2026-10|rajasthan
+contract|devinformationtechnology|26|lakh inr|2026-01|india
+order_win|gift|AutoCAD License|license|2026-02|giftcity,gujarat
