@@ -1843,3 +1843,5 @@ loa|mmrda|5.5|cr|2025-05|mumbai,maharashtra
 capex|abinbevindia|200|crore inr|2026-09|rajasthan
 hiring|swecoindia|revitteamexpansion||2026-11|
 hiring|terramodusindiapvt.ltd.|autocaddrafter||2026-11|delhi
+hiring|ssrninfraconllp|1|position|2026-11|allindia
+hiring|ssrninfraconllp|1|position|2026-11|noida
