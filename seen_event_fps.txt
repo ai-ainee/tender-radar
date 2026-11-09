@@ -1838,3 +1838,8 @@ tender|indianarmy|1.5|l|2026-11|haryana
 hiring|rajasthanstateroaddevelopmentandconstructioncooperation|6|inr (crore) approx.|2026-10|rajasthan
 contract|devinformationtechnology|26|lakh inr|2026-01|india
 order_win|gift|AutoCAD License|license|2026-02|giftcity,gujarat
+loa|mmrda|5.5|cr|2026-11|mumbai,maharashtra
+loa|mmrda|5.5|cr|2025-05|mumbai,maharashtra
+capex|abinbevindia|200|crore inr|2026-09|rajasthan
+hiring|swecoindia|revitteamexpansion||2026-11|
+hiring|terramodusindiapvt.ltd.|autocaddrafter||2026-11|delhi
