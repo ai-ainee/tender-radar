@@ -326,3 +326,121 @@ jobs:
                 official[0]['metadata']['active_tender_verified'] is False)
           print(f'ALL {passed} STEP36 CHECKS PASSED')
           PY
+      - name: Test Step44 bounded GeM recheck cooldown and persistence (offline)
+        run: |
+          python - <<'PY'
+          """Isolated, offline Step 44 gate/cache regression tests. Does not import radar.py or call live services."""
+          from pathlib import Path
+          from types import SimpleNamespace
+          from datetime import datetime, date, timedelta
+          import ast, json, os, logging, hashlib, re, tempfile
+
+          ROOT = Path.cwd()
+          SOURCE = (ROOT / 'radar.py').read_text(encoding='utf-8')
+          TREE = ast.parse(SOURCE)
+          log = logging.getLogger('step44-tests')
+          checks = 0
+
+          def check(condition, description):
+              global checks
+              assert condition, description
+              checks += 1
+              print('PASS:', description)
+
+          # Compile the exact helpers from the replacement, without running imports or main().
+          helper_names = {'_unverified_gem_reference', '_can_cache_tender_id', '_provisional_gem_id',
+                          'load_gem_recheck_state', '_gem_recheck_due', '_record_gem_attempt'}
+          funcs = [x for x in TREE.body if isinstance(x, ast.FunctionDef) and x.name in helper_names]
+          check(len(funcs) == 6, 'all six GeM cache/provenance helpers are present')
+          namespace = {'re':re, 'json':json, 'os':os, 'datetime':datetime, 'log':log,
+                       'GEM_RECHECK_FILE':str(ROOT/'test_gem_recheck_state.json'), 'DRY_RUN':True}
+          exec(compile(ast.Module(body=funcs,type_ignores=[]), 'radar_helpers', 'exec'), namespace)
+          unverified = namespace['_unverified_gem_reference']
+          provisional = namespace['_provisional_gem_id']
+          due = namespace['_gem_recheck_due']
+          read = namespace['load_gem_recheck_state']
+          write = namespace['_record_gem_attempt']
+
+          BASE_MD = {'internal_source':'gem', 'verification_status':'unverified_index',
+                     'official_source_verified':False, 'active_tender_verified':False,
+                     'provisional_tender':True}
+
+          def lead(tid='GEM/2026/B/8231919', url='https://thirdparty.test/tender/one', md=None, source='tenders'):
+              return SimpleNamespace(category='tender', source=source, tender_id=tid, url=url,
+                                     raw_text='relevant bid page', metadata=dict(BASE_MD if md is None else md), id='id')
+
+          l=lead()
+          check(unverified(l), 'unverified GeM detected')
+          check(provisional(l) == l.tender_id, 'canonical GeM reference extracted')
+          check(not namespace['_can_cache_tender_id'](l), 'unverified GeM never enters permanent tender-ID cache')
+          check(provisional(lead(tid='GEM/2026/B/X')) == '', 'malformed GeM ID cannot bypass URL gate')
+          check(provisional(lead(md={'internal_source':'cppp'})) == '', 'other adapter cannot bypass URL gate')
+          check(provisional(lead(md={'internal_source':'gem','verification_status':'official_listing_link','official_source_verified':True,'active_tender_verified':True,'provisional_tender':False})) == '', 'active officially verified GeM does not use provisional recheck')
+          check(due(l.tender_id, {}, 7, date(2026,11,10)) == (True,'legacy-first-recheck'), 'legacy processed bid eligible for first bounded recheck')
+          check(not due(l.tender_id, {l.tender_id:{'last_ai_attempt':'2026-11-08'}}, 7, date(2026,11,10))[0], 'two-day-old bid is in cooldown')
+          check(due(l.tender_id, {l.tender_id:{'last_ai_attempt':'2026-11-03'}}, 7, date(2026,11,10))[0], 'seven-day-old bid eligible')
+          check(not due(l.tender_id, None, 7, date(2026,11,10))[0], 'corrupt state prevents URL bypass')
+          check(not due(l.tender_id, {l.tender_id:{'last_ai_attempt':'garbled'}}, 7, date(2026,11,10))[0], 'invalid stored date fails closed')
+
+          # Extract the real main() cache gate block: we do not hand-code a stand-in.
+          start=SOURCE.index('        c = clean_url(lead.url)\n', SOURCE.index('def main():'))
+          stop=SOURCE.index('    log.info(f"After gates:', start)
+          fragment=SOURCE[start:stop]
+          assert fragment.count('filtered.append(lead)') == 1
+          snippet='''def apply_actual_gate(leads, seen, fps, gem_rechecks, gem_recheck_cap=2, gem_recheck_days=7):
+              filtered=[]
+              gem_selected_bids=set()
+              stats={'gate_url_seen':0, 'gate_fp_dupe':0, 'gate_gem_run_dupe':0, 'gate_gem_cooldown':0,
+                     'gate_gem_recheck_limit':0, 'gem_rechecks_selected':0}
+              for lead in leads:
+          '''+fragment+'''    return filtered,stats
+          '''
+          namespace.update({'clean_url': lambda x:x, '_fingerprint':lambda x: hashlib.sha1(x.encode()).hexdigest()[:16] if x else '', 'log':log})
+          exec(compile(snippet,'radar_actual_gate_fragment','exec'),namespace)
+          gate=namespace['apply_actual_gate']
+
+          items,stat=gate([l],{l.url},set(),{})
+          check(len(items)==1 and stat['gem_rechecks_selected']==1,'legacy seen URL gets one controlled recheck')
+          recent={l.tender_id:{'last_ai_attempt':date.today().isoformat()}}
+          items,stat=gate([l],{l.url},set(),recent)
+          check(len(items)==0 and stat['gate_gem_cooldown']==1,'seen URL in cooldown is excluded')
+          new_url=lead(url='https://anotherhost.test/bid/two')
+          items,stat=gate([new_url],set(),set(),recent)
+          check(len(items)==0 and stat['gate_gem_cooldown']==1,'alternate source URL cannot evade canonical ID cooldown')
+          items,stat=gate([new_url],set(),set(),{})
+          check(len(items)==1 and stat['gem_rechecks_selected']==0,'brand-new GeM bid stays eligible without spending recheck quota')
+          old={l.tender_id:{'last_ai_attempt':(date.today()-timedelta(days=8)).isoformat()}}
+          items,stat=gate([l],{l.url}, {hashlib.sha1(l.raw_text.encode()).hexdigest()[:16]},old)
+          check(len(items)==1 and stat['gem_rechecks_selected']==1,'due recheck may bypass both old URL and old fingerprint')
+          items,stat=gate([l,new_url],{l.url},set(),{})
+          check(len(items)==1 and stat['gate_gem_run_dupe']==1,'same canonical bid selected at most once per run')
+          three=[lead(tid=f'GEM/2026/B/{i}',url=f'https://host.test/{i}') for i in (12345,23456,34567)]
+          items,stat=gate(three,{x.url for x in three},set(),{},2)
+          check(len(items)==2 and stat['gate_gem_recheck_limit']==1,'maximum two repeat evaluations per run')
+          items,stat=gate([l],{l.url},set(),{},0)
+          check(len(items)==0 and stat['gate_gem_recheck_limit']==1,'rechecks can be explicitly disabled')
+          non_gem=lead(md={'internal_source':'cppp'})
+          items,stat=gate([non_gem],{non_gem.url},set(),{})
+          check(len(items)==0 and stat['gate_url_seen']==1,'existing non-GeM URL seen behavior unchanged')
+
+          with tempfile.TemporaryDirectory() as td:
+              path=Path(td)/'recheck.json'
+              namespace['GEM_RECHECK_FILE']=str(path)
+              namespace['DRY_RUN']=True
+              check(not write({},l,'REVIEW') and not path.exists(), 'dry-run never persists GeM recheck state')
+              namespace['DRY_RUN']=False
+              state={}
+              check(write(state,l,'REVIEW') and path.exists(),'live successful handling records a recheck state')
+              check(read()==state,'new persistent state round-trips accurately')
+              payload=json.loads(path.read_text())
+              check(payload['version']==1 and payload['bids'][l.tender_id]['outcome']=='REVIEW', 'persistence schema includes canonical bid and outcome')
+              path.write_text('{bad json',encoding='utf-8')
+              check(read() is None,'malformed persisted state fails closed')
+
+          check('"tender_id", "filing_id"' in SOURCE,'AI verdict cannot overwrite source tender identity')
+          check('[GEM-REVIEW-GUARD]' in SOURCE,'Step 30 Review-only guard retained')
+          check('if _can_cache_tender_id(lead)' in SOURCE, 'Step 40A completed-tender cache guard retained')
+          check('_record_gem_attempt(gem_rechecks, lead, outcome)' in SOURCE, 'successful CRM/manual outcomes persist attempts')
+          check('if DRY_RUN:' in SOURCE, 'harvest dry-run branch retained')
+          print(f'ALL {checks} TESTS PASSED')
+          PY
