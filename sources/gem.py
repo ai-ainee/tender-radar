@@ -1,21 +1,19 @@
 """sources/gem.py — Public GeM bid collector with search-index fallback.
 
-Step 27A: GeM rejects connections from some hosted CI runners even if the site
+Step 27C: GeM rejects connections from some hosted CI runners even if the site
 opens in a user's browser. Try GeM's public HTML pages first. When unavailable,
-use configured SERPER_API_KEYS to discover *individually indexed* GeM bid
+use the shared SearchEngine (Serper, Brave, DDGS) to discover indexed GeM bid
 references on public web pages. Fallback records are provisional, NOT verified
 GeM bid status. No guessed GeM document URLs, logins, CAPTCHAs or proxy bypass.
 
 Contract: fetch_gem(keywords, max_results=80) -> [{url,title,snippet}, ...].
 """
 
-import os
 import re
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 
-import requests
-from common import log
+from common import log, SearchEngine
 
 GEM_URLS = (
     "https://bidplus.gem.gov.in/all-bids",
@@ -159,40 +157,35 @@ def _candidate_url(url):
 
 
 def _indexed_fallback(keywords, max_results):
-    """Discover public individual tender pages; all results require verification."""
-    raw_keys = os.getenv("SERPER_API_KEYS", "")
-    keys = [k for k in re.split(r"[,;\s]+", raw_keys.strip()) if k]
-    if not keys:
-        log.warning("[gem-index] SERPER_API_KEYS missing — indexed fallback unavailable")
-        return []
+    """Discover individually indexed bid notices via the shared search engine.
 
+    SearchEngine uses configured Serper keys, tries other configured providers,
+    and falls back to DuckDuckGo if paid API requests fail. All matches remain
+    unverified until the official GeM source confirms them.
+    """
     terms = [str(t).strip() for t in keywords if str(t).strip()]
     terms = list(dict.fromkeys(t for t in terms if 1 < len(t) <= 100))[:6]
     if not terms:
         return []
+
     out, seen_bids = [], set()
-    key_index = 0
     current_year = datetime.now().year
+    searcher = SearchEngine()
     for term in terms:
-        # Search for a current-year bid identifier; no product is hardcoded.
         clean_term = term.replace('"', '').strip()
-        query = f'"GEM/{current_year}/B" "{clean_term}" tender'
+        # Avoid an overly restrictive month filter: the reference may be
+        # indexed after the date it appeared on GeM. Never imply it is active.
+        query = f'GEM/{current_year}/B {clean_term} tender'
+        log.info("[gem-index] finding individually indexed bid references for %r", term[:40])
         try:
-            resp = requests.post(
-                "https://google.serper.dev/search",
-                headers={"X-API-KEY": keys[key_index % len(keys)], "Content-Type": "application/json"},
-                json={"q": query, "gl": "in", "num": 10, "tbs": "qdr:m"},
-                timeout=(5, 18),
-            )
-            key_index += 1
-            if resp.status_code != 200:
-                log.warning("[gem-index] Serper search HTTP %s for target %r", resp.status_code, term[:40])
-                continue
-            organic = resp.json().get("organic") or []
-        except (requests.RequestException, ValueError) as exc:
-            log.warning("[gem-index] Serper failed for target %r: %s", term[:40], str(exc)[:100])
+            organic = searcher.search(query, country="india", pages=1, recent=False)
+        except Exception as exc:
+            log.warning("[gem-index] public-search failure for %r: %s", term[:40], str(exc)[:120])
             continue
-        for item in organic:
+        log.info("[gem-index] %d search result(s) returned for %r", len(organic or []), term[:40])
+        for item in organic or []:
+            if not isinstance(item, dict):
+                continue
             url = str(item.get("link") or "").strip()
             title = str(item.get("title") or "").strip()
             snippet = str(item.get("snippet") or "").strip()
@@ -207,13 +200,13 @@ def _indexed_fallback(keywords, max_results):
                 continue
             seen_bids.add(bid_id)
             out.append({
-                "url": url,  # Actual indexed page, not fabricated GeM URL
+                "url": url,  # Real indexed page, never a fabricated GeM URL.
                 "title": f"{bid_id} — {title}"[:300],
                 "snippet": (
                     "UNVERIFIED SEARCH-INDEX DISCOVERY. Third-party/secondary source; "
                     "GeM bid status, deadline, buyer and tender details MUST be "
-                    "verified on the official GeM portal before calling this an active "
-                    f"confirmed purchase. Reference: {bid_id}. {snippet}"
+                    "verified on the official GeM portal before calling this an "
+                    f"active confirmed purchase. Reference: {bid_id}. {snippet}"
                 )[:1000],
             })
             if len(out) >= max_results:
