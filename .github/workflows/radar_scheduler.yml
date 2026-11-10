@@ -142,7 +142,7 @@ jobs:
         run: |
           git config user.name "Radar Scout Bot"
           git config user.email "bot@radarscout.local"
-          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt seen_companies.txt enrich_attempts.json ai_drop_attempts.json radar_rejected_audit.jsonl; do
+          for f in seen_links.txt seen_fingerprints.txt seen_tenders.txt seen_event_fps.txt seen_companies.txt enrich_attempts.json ai_drop_attempts.json radar_rejected_audit.jsonl gem_recheck_state.json ; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
           if git diff --cached --quiet; then
