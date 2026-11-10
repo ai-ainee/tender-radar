@@ -38,7 +38,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # A GeM bid reference found by web search is NOT evidence that the actual
 # government bid is active, that its buyer is confirmed, or that its deadline
 # is accurate. Preserve this distinction after source-to-StandardLead mapping.
-_GEM_REF = re.compile(r"\bGEM\s*/\s*20\d{2}\s*/\s*B\s*/\s*\d{5,9}\b", re.I)
+_GEM_REF = re.compile(r"\bGEM\s*/\s*(20\d{2})\s*/\s*B\s*/\s*(\d{5,9})\b", re.I)
 _GEM_DIRECT_PATH = re.compile(
     r"^/(?:showbidDocument/\d+|bidding/bid/[^?#]+)", re.I
 )
@@ -70,6 +70,43 @@ def _gem_source_status(r):
     return "official_listing_link" if is_direct_geM_link and not marked_unverified else "unverified_index"
 
 
+def _gem_bid_refs(value):
+    """Extract distinct, canonical GeM bid numbers (never guess IDs from URLs)."""
+    return {
+        f"GEM/{m.group(1)}/B/{m.group(2)}"
+        for m in _GEM_REF.finditer(str(value or ""))
+    }
+
+
+def _safe_gem_tender_id(metadata, title, snippet):
+    """Map a bid reference only if all available evidence agrees.
+
+    Source-index metadata identifies the selected bid; title/snippet confirm
+    it where present. A conflict or ambiguity leaves tender_id unset so the
+    normal URL fallback applies, rather than attaching a WRONG canonical ID.
+    """
+    source_ref = str(metadata.get("indexed_bid_reference") or "").strip()
+    source_refs = _gem_bid_refs(source_ref)
+    # Metadata should contain only a bid number, not a free-text statement.
+    if source_ref:
+        match = re.fullmatch(
+            r"GEM\s*/\s*(20\d{2})\s*/\s*B\s*/\s*(\d{5,9})",
+            source_ref, re.I,
+        )
+        if not match:
+            return "", "invalid-indexed-reference"
+        source_refs = {f"GEM/{match.group(1)}/B/{match.group(2)}"}
+
+    title_refs = _gem_bid_refs(title)
+    snippet_refs = _gem_bid_refs(snippet)
+    all_refs = source_refs | title_refs | snippet_refs
+    if len(all_refs) > 1:
+        return "", "conflicting-bid-references"
+    if not all_refs:
+        return "", "no-bid-number"
+    return next(iter(all_refs)), "canonical"
+
+
 def _dict_to_lead(source_name, r):
     source_metadata = r.get("metadata") if isinstance(r.get("metadata"), dict) else {}
     metadata = dict(source_metadata)
@@ -78,6 +115,7 @@ def _dict_to_lead(source_name, r):
     title = str(r.get("title") or "")
     url = str(r.get("url") or "")
 
+    tender_id = ""
     if source_name == "gem":
         status = _gem_source_status(r)
         # The result includes only an excerpt from a listing or search index.
@@ -91,9 +129,20 @@ def _dict_to_lead(source_name, r):
                              else "search_index"),
             "provisional_tender": status == "unverified_index",
         })
-        ref = _GEM_REF.search(f"{title} {raw_snippet}")
-        if ref:
-            metadata["indexed_bid_reference"] = re.sub(r"\s+", "", ref.group(0)).upper()
+        tender_id, mapping_reason = _safe_gem_tender_id(metadata, title, raw_snippet)
+        if tender_id:
+            metadata["indexed_bid_reference"] = tender_id
+            metadata["tender_id_mapping"] = "canonical_from_index_or_listing"
+        else:
+            # Record the raw source claim for diagnostics but do not expose an
+            # ambiguous/invalid claim as a canonical indexed_bid_reference.
+            source_claim = metadata.pop("indexed_bid_reference", None)
+            if source_claim:
+                metadata["unconfirmed_indexed_bid_reference"] = str(source_claim)
+            metadata["tender_id_mapping"] = mapping_reason
+            if mapping_reason != "no-bid-number":
+                log.warning("[tenders] GeM ID mapping skipped (%s): %s",
+                            mapping_reason, url[:150])
         if status == "unverified_index":
             # Keep a warning in the content seen by the AI, even if the source
             # metadata is not included in the model prompt.
@@ -107,6 +156,7 @@ def _dict_to_lead(source_name, r):
         source="tenders",
         category="tender",
         url=url,
+        tender_id=tender_id,  # Set BEFORE StandardLead computes its stable id.
         title=title[:300],
         snippet=raw_snippet[:1000],
         raw_text=raw_snippet[:3000],
