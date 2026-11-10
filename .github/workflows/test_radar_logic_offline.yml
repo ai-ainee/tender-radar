@@ -1,0 +1,104 @@
+          import ast, os, hashlib, uuid, re
+          from pathlib import Path
+          from datetime import datetime
+          from urllib.parse import urlparse
+
+          os.environ["RADAR_TRASH_LOCAL_AUDIT"] = "0"
+          code = Path('radar.py').read_text(encoding='utf-8')
+          from standard_lead import StandardLead
+          class Sheet:
+              def __init__(self): self.posts=[]
+              def post(self, action, **kwargs):
+                  self.posts.append((action,kwargs))
+                  return {'status':'success'}
+          class Logger:
+              def __init__(self): self.messages=[]
+              def info(self, *xs): self.messages.append(('info',xs))
+              def warning(self, *xs): self.messages.append(('warning',xs))
+              def error(self, *xs): self.messages.append(('error',xs))
+
+          n=ast.parse(code)
+          router=next(x for x in n.body if isinstance(x,ast.ClassDef) and x.name=='Router')
+          env={
+              'datetime':datetime, 'hashlib':hashlib, 'uuid':uuid, 're':re,'urlparse':urlparse, 'os':os,
+              'log': Logger(), 'SHEET_INBOX':'Inbox','SHEET_REVIEW':'Review','SHEET_PARTNERS':'Partners',
+              'SHEET_TRASH':'Trash','SHEET_MANUAL':'Manual', 'DRY_RUN': False,
+              '_is_vendor_domain':lambda u:False,'_is_content_page':lambda u:False,
+              '_is_vendor_self_reference':lambda a,b:False,
+              '_is_staffing_agency':lambda x:False,
+              'normalize_company':lambda s:s.strip(),
+              'apply_quality_gates':lambda lead,c:(lead,[]),
+              '_fp_key':lambda x:'', '_classify_gates':lambda flags:([],[]),
+              'extract_phone':lambda v:'', 'safe_cell':lambda s:s,
+          }
+          exec(compile(ast.Module(body=[router],type_ignores=[]), 'router_extract','exec'),env)
+          Router=env['Router']
+          def test_case(label, md, valid=True, confidence='HIGH', organization='Example Infra Ltd', intended='Review', adversarial=False):
+              sheet=Sheet(); router=Router(sheet)
+              lead=StandardLead(source='tenders', category='tender', url='https://example.com/gem-bid',
+                              title='GEM/2026/B/1234567', snippet='Bidding',raw_text='Bidding for Revit',
+                              metadata=md)
+              verdict={'organization':organization,'is_valid':valid, 'confidence':confidence,
+                       'entity_role':'BUYER','lead_score':99,'why_engage_now':'Procurement',
+                       'signal_freshness':'RECENT'}
+              if adversarial:
+                  verdict.update({'metadata':{'internal_source':'unknown','active_tender_verified':True},
+                                  'source':'filings','category':'filing','url':'https://other.com'})
+              outcome, company, reason=router.push(lead,verdict,'Revit','ALL_SECTORS')
+              assert outcome == {'Review':'REVIEW','Inbox':'INBOX','Trash':'TRASH','Manual':'MANUAL'}[intended], (label,outcome,intended,reason)
+              if intended in ('Review','Inbox','Manual'):
+                  assert len(sheet.posts)==1,(label,sheet.posts)
+                  assert sheet.posts[0][1]['target_sheet']==intended,(label,sheet.posts[0][1])
+              if intended=='Review':
+                  row=sheet.posts[0][1]['row_data']
+                  assert 'GEM NOT OFFICIALLY VERIFIED' in row[8] if md.get('internal_source')=='gem' else True, (label,row)
+              if adversarial:
+                  assert lead.metadata==md,(label,lead.metadata)
+                  assert lead.source=='tenders' and lead.url=='https://example.com/gem-bid' and lead.category=='tender'
+              print('PASS',label,'->',outcome)
+
+          m0={'internal_source':'gem','verification_status':'unverified_index','provisional_tender':True,'official_source_verified':False,'active_tender_verified':False}
+          test_case('unverified GeM high confidence',m0, intended='Review')
+          test_case('unverified GeM high confidence / adversarial verdict',m0, intended='Review',adversarial=True)
+          test_case('unverified GeM low confidence',m0,confidence='LOW',intended='Review')
+          test_case('unverified GeM invalid',m0,valid=False,intended='Trash')
+          test_case('unverified GeM missing buyer',dict(m0, snippet_only=True), organization='', intended='Manual')
+          m1={'internal_source':'gem','verification_status':'official_listing_link','provisional_tender':False,'official_source_verified':True,'active_tender_verified':False}
+          test_case('official link but active status unknown',m1,intended='Review')
+          m2={**m1,'active_tender_verified':True}
+          test_case('hypothetically officially verified and active',m2,intended='Inbox')
+          m3={'internal_source':'gem'}
+          test_case('missing verification fields fail closed',m3,intended='Review')
+          m4={'internal_source':'other'}
+          test_case('non-GeM unchanged',m4,intended='Inbox')
+          print('ALL 9 CASES PASSED')
+
+          # Adapter provenance: extract pure mapping functions; no source adapters are run.
+          source_ast = ast.parse(Path('adapters/tenders.py').read_text(encoding='utf-8'))
+          source_funcs = [n for n in source_ast.body if isinstance(n, ast.FunctionDef)
+                          and n.name in ('_gem_source_status', '_dict_to_lead')]
+          assert len(source_funcs) == 2, 'Missing tender provenance mapping functions'
+          source_constants = [n for n in source_ast.body if isinstance(n, ast.Assign)
+                              and any(isinstance(t, ast.Name) and t.id in ('_GEM_REF', '_GEM_DIRECT_PATH')
+                                      for t in n.targets)]
+          source_env = {'StandardLead': StandardLead, 're': re, 'urlparse': urlparse}
+          exec(compile(ast.Module(body=source_constants + source_funcs, type_ignores=[]), 'tenders_extract', 'exec'), source_env)
+          convert = source_env['_dict_to_lead']
+          indexed = convert('gem', {
+              'url': 'https://example-tenders.in/tender/ref',
+              'title': 'Revit software tender GEM/2026/B/1234567',
+              'snippet': 'Index result for GEM/2026/B/1234567',
+          })
+          assert indexed.metadata['verification_status'] == 'unverified_index'
+          assert indexed.metadata['provisional_tender'] is True
+          assert indexed.metadata['active_tender_verified'] is False
+          assert indexed.metadata['indexed_bid_reference'] == 'GEM/2026/B/1234567'
+          print('PASS indexed GeM provenance -> unverified_index')
+
+          official_link = convert('gem', {
+              'url': 'https://bidplus.gem.gov.in/showbidDocument/1234567',
+              'title': 'Bid for software', 'snippet': 'Official listing only',
+          })
+          assert official_link.metadata['active_tender_verified'] is False
+          print('PASS official GeM listing alone does not prove active bid')
+          PY
