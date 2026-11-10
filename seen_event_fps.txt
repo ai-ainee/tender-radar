@@ -1864,3 +1864,11 @@ hiring|autodesk|multipleopenings||2026-11|
 hiring|larsen&toubro|0-1|years_experience|2026-11|india
 hiring|autodeskindia|4jobopenings||2026-11|
 hiring|talentoindia|0-1|years_experience|2026-11|ahmedabad
+tender|engineersindialimited|AutoDesk Software Subscription|subscription|2026-08|southdelhi,delhi
+tender|publicworksdepartment,governmentofmadhyapradesh|2|licenses|2026-07|bhopal,madhyapradesh
+hiring|tvsnext|CAD Drafter|position|2026-10|chennai
+hiring|oceaneering|Junior CAD Engineer|position|2026-10|india
+hiring|valeo|Junior Engineer / Engineer - CAD|position|2026-08|chennai
+hiring|nvidia|Senior CAD Engineer|position|2026-08|bengaluru
+partnership|pinnacleinfotech|digitaltransformationforarchitectureengineeringconstruction||2026-04|
+partnership|l&ttechnologyservices|aileddigitaltransformationinprocessandmanufacturing||2025-11|
