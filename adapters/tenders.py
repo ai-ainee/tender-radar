@@ -16,6 +16,7 @@ silently, so the log only shows lines for modules that actually ran.
 import os
 import re
 import urllib.request
+from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
 from adapters import SourceAdapter, register
@@ -34,16 +35,84 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
 
+# A GeM bid reference found by web search is NOT evidence that the actual
+# government bid is active, that its buyer is confirmed, or that its deadline
+# is accurate. Preserve this distinction after source-to-StandardLead mapping.
+_GEM_REF = re.compile(r"\bGEM\s*/\s*20\d{2}\s*/\s*B\s*/\s*\d{5,9}\b", re.I)
+_GEM_DIRECT_PATH = re.compile(
+    r"^/(?:showbidDocument/\d+|bidding/bid/[^?#]+)", re.I
+)
+
+
+def _gem_source_status(r):
+    """Fail closed: only direct GeM links without fallback markers are official links.
+
+    'official_listing_link' means the link was taken from GeM's listing,
+    not that the tender is active. Everything else remains unverified.
+    """
+    url = str(r.get("url") or "").strip()
+    snippet = str(r.get("snippet") or "")
+    title = str(r.get("title") or "")
+    embedded = r.get("metadata") if isinstance(r.get("metadata"), dict) else {}
+    marked_unverified = (
+        "UNVERIFIED SEARCH-INDEX DISCOVERY" in snippet.upper()
+        or "UNVERIFIED SEARCH-INDEX DISCOVERY" in title.upper()
+        or embedded.get("provisional") is True
+        or str(embedded.get("verification_status", "")).lower() in
+           ("unverified_index", "provisional", "unverified")
+    )
+    parsed = urlparse(url)
+    is_direct_geM_link = (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() == "bidplus.gem.gov.in"
+        and bool(_GEM_DIRECT_PATH.match(parsed.path))
+    )
+    return "official_listing_link" if is_direct_geM_link and not marked_unverified else "unverified_index"
+
+
 def _dict_to_lead(source_name, r):
+    source_metadata = r.get("metadata") if isinstance(r.get("metadata"), dict) else {}
+    metadata = dict(source_metadata)
+    metadata["internal_source"] = source_name
+    raw_snippet = str(r.get("snippet") or "")
+    title = str(r.get("title") or "")
+    url = str(r.get("url") or "")
+
+    if source_name == "gem":
+        status = _gem_source_status(r)
+        # The result includes only an excerpt from a listing or search index.
+        # Neither form proves active status, deadline or purchasing buyer.
+        metadata.update({
+            "verification_status": status,
+            "official_source_verified": status == "official_listing_link",
+            "active_tender_verified": False,
+            "snippet_only": True,
+            "fetch_method": ("official_listing" if status == "official_listing_link"
+                             else "search_index"),
+            "provisional_tender": status == "unverified_index",
+        })
+        ref = _GEM_REF.search(f"{title} {raw_snippet}")
+        if ref:
+            metadata["indexed_bid_reference"] = re.sub(r"\s+", "", ref.group(0)).upper()
+        if status == "unverified_index":
+            # Keep a warning in the content seen by the AI, even if the source
+            # metadata is not included in the model prompt.
+            if "UNVERIFIED SEARCH-INDEX DISCOVERY" not in raw_snippet.upper():
+                raw_snippet = (
+                    "UNVERIFIED SEARCH-INDEX DISCOVERY: official GeM tender, "
+                    "buyer, item, deadline and active status NOT verified. " + raw_snippet
+                )
+
     return StandardLead(
         source="tenders",
         category="tender",
-        url=r.get("url", ""),
-        title=str(r.get("title", ""))[:300],
-        raw_text=str(r.get("snippet", ""))[:3000],
-        raw_published_at=str(r.get("date", "")),
+        url=url,
+        title=title[:300],
+        snippet=raw_snippet[:1000],
+        raw_text=raw_snippet[:3000],
+        raw_published_at=str(r.get("date") or ""),
         country="India",
-        metadata={"internal_source": source_name},
+        metadata=metadata,
     )
 
 
@@ -89,10 +158,27 @@ class TendersAdapter(SourceAdapter):
             return 0  # module not deployed yet — silent skip
         try:
             results = fetch_gem(targets, max_results=80)
+            appended = 0
+            provisional = 0
             for r in results or []:
                 if isinstance(r, dict) and r.get("url"):
-                    leads.append(_dict_to_lead("gem", r))
-            return len(results or [])
+                    lead = _dict_to_lead("gem", r)
+                    leads.append(lead)
+                    appended += 1
+                    md = lead.metadata
+                    if md.get("provisional_tender"):
+                        provisional += 1
+                        log.info(
+                            "[GEM-PROVISIONAL] ref=%s url=%s (NOT VERIFIED)",
+                            md.get("indexed_bid_reference", "UNKNOWN"),
+                            lead.url[:250],
+                        )
+            log.info(
+                "[tenders] gem provenance: %d indexed-unverified, "
+                "%d official-listing links (active status not verified)",
+                provisional, appended - provisional,
+            )
+            return appended
         except Exception as e:
             log.warning(f"[tenders] gem: ERROR {str(e)[:120]}")
             return 0
