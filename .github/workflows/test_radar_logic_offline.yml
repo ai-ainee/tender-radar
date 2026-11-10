@@ -134,3 +134,101 @@ jobs:
           assert official_link.metadata['active_tender_verified'] is False
           print('PASS official GeM listing alone does not prove active bid')
           PY
+
+      - name: Test Step36 indexed GeM bid extraction and ambiguity (offline)
+        run: |
+          python - <<'PY'
+          """Step 37C: offline checks of the repository's current sources/gem.py. Network-free."""
+          import ast
+          import re
+          from datetime import datetime
+          from pathlib import Path
+          from urllib.parse import urljoin, urlparse
+
+          code = Path('sources/gem.py').read_text(encoding='utf-8')
+          tree = ast.parse(code)
+          needed_constants = {'GEM_HOST', 'BID_LINK', 'BID_NUMBER', 'LANDING_SEGMENTS'}
+          needed_functions = {'_normalise_bid_link', '_candidate_url', '_indexed_fallback', '_extract_items'}
+          selected = [node for node in tree.body if
+              (isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in needed_constants for t in node.targets))
+              or (isinstance(node, ast.FunctionDef) and node.name in needed_functions)]
+          assert {n.name for n in selected if isinstance(n, ast.FunctionDef)} == needed_functions, 'Step36 functions missing'
+
+          class FakeSearch:
+              results = []
+              def search(self, query, **kwargs):
+                  return list(self.results)
+
+          class Logger:
+              def __init__(self): self.messages = []
+              def info(self, msg, *args): self.messages.append(('INFO', msg % args if args else msg))
+              def warning(self, msg, *args): self.messages.append(('WARN', msg % args if args else msg))
+
+          logger = Logger()
+          env = {'re': re, 'datetime': datetime, 'urljoin': urljoin, 'urlparse': urlparse,
+                 'SearchEngine': FakeSearch, 'log': logger}
+          exec(compile(ast.Module(body=selected, type_ignores=[]), 'gem_step36_extract', 'exec'), env)
+          collect = env['_indexed_fallback']
+          check_url = env['_candidate_url']
+          extract_official = env['_extract_items']
+          Y = datetime.now().year
+          bid1 = f'GEM/{Y}/B/8231919'
+          bid2 = f'GEM/{Y}/B/7345678'
+          bid3 = f'GEM/{Y}/B/9654321'
+          url1 = 'https://example-tenders.in/tender/suite-renewal-123456'
+          base = {'link': url1, 'title': f'{bid1} SampleCAD subscription renewal',
+                  'snippet': 'SampleCAD renewal, two seats'}
+          passed = 0
+          def check(label, ok):
+              global passed
+              assert ok, label
+              passed += 1
+              print('PASS Step36:',label)
+
+          FakeSearch.results = [base]
+          out = collect(['SampleCAD'],80)
+          check('find one indexed bid', len(out) == 1)
+          md = out[0]['metadata'] if out else {}
+          check('exact bid number and source domain preserved',
+                md.get('indexed_bid_reference') == bid1 and md.get('source_index_domain') == 'example-tenders.in')
+          check('unverified and corrigendum check required',
+                md.get('verification_status') == 'unverified_index' and
+                md.get('provisional') is True and md.get('requires_corrigendum_check') is True)
+          check('buyer, deadline, specification and active status not invented',
+                all(md.get(k) is False for k in
+                    ('buyer_verified','current_deadline_verified','specification_verified','active_tender_verified')))
+          check('AI-facing text warns dates can change',
+                'corrigenda' in out[0]['snippet'].lower() and 'NOT verified' in out[0]['snippet'])
+
+          FakeSearch.results = [base, dict(base, link='https://example-tenders.in/tender/suite-renewal-other')]
+          out = collect(['SampleCAD','OtherCAD'],80)
+          check('same bid on multiple pages deduplicated', len(out) == 1)
+
+          FakeSearch.results = [dict(base, title=f'{bid1} {bid2} SampleCAD tender')]
+          check('two bid IDs in title rejected', not collect(['SampleCAD'],80))
+          FakeSearch.results = [dict(base, title='SampleCAD tender listing',
+                                     snippet=f'{bid1} and {bid2} SampleCAD')]
+          check('two bid IDs in snippet rejected', not collect(['SampleCAD'],80))
+          FakeSearch.results = [dict(base, snippet=f'{bid2} another unrelated project SampleCAD')]
+          out = collect(['SampleCAD'],80)
+          check('one title ID preferred to unrelated snippet ID',
+                len(out) == 1 and out[0]['metadata']['indexed_bid_reference'] == bid1)
+          FakeSearch.results = [dict(base, title=f'{bid3} SampleCAD', snippet='SampleCAD')]
+          check('dynamic keyword matching without hardcoded product names',
+                collect(['SampleCAD'],80)[0]['metadata']['matched_target']=='SampleCAD')
+          check('reject generic tender category landing pages',
+                not check_url('https://www.tendersontime.com/indiaproducts/indian-autodesk-tenders-16120/'))
+          check('accept only GeM bid-specific URLs',
+                check_url('https://bidplus.gem.gov.in/showbidDocument/10117601') and
+                not check_url('https://bidplus.gem.gov.in/all-bids'))
+
+          class Page:
+              def evaluate(self, *args):
+                  return [{'href': 'https://bidplus.gem.gov.in/showbidDocument/10117601',
+                           'text': 'SampleCAD software two seats'}]
+          official = extract_official(Page(), ['SampleCAD'],80)
+          check('official HTML listing is not active-bid confirmation',
+                len(official) == 1 and official[0]['metadata']['verification_status'] == 'official_listing_link' and
+                official[0]['metadata']['active_tender_verified'] is False)
+          print(f'ALL {passed} STEP36 CHECKS PASSED')
+          PY
