@@ -1076,7 +1076,10 @@ class Router:
     def push(self, lead, ai_verdict, default_target, default_industry):
         _field_map = {"organization": "buyer_org"}
         for k, v in ai_verdict.items():
-            if k in ("item_index", "event_fingerprint"):
+            # AI verdicts may update qualification fields, never source identity
+            # or the provenance flags attached by the source adapter.
+            if k in ("item_index", "event_fingerprint", "metadata",
+                     "source", "category", "url", "id"):
                 continue
             if v in (None, ""):
                 continue
@@ -1264,6 +1267,36 @@ class Router:
                    lead.state or "N/A", lead.city or "N/A",
                    lead.buyer_org, solution, why, lead.url,
                    lead.product_usage or "Unknown", "", lead_id]
+
+        # Step 30: final write-time cap for GeM references. A search-index
+        # result (or even an official listing link) cannot establish that the
+        # bid is currently open or that its buyer and deadline are confirmed.
+        # Keep valid unverified GeM signals in Review, never in purchase Inbox.
+        # Irrelevant/invalid signals still follow the normal Trash route;
+        # records without identifiable buyers may go to Manual Extraction.
+        provenance = lead.metadata if isinstance(lead.metadata, dict) else {}
+        if (lead.category == "tender" and
+                str(provenance.get("internal_source", "")).strip().lower() == "gem"):
+            verification = str(provenance.get("verification_status") or "").strip().lower()
+            gem_verified = (
+                provenance.get("official_source_verified") is True
+                and provenance.get("active_tender_verified") is True
+                and provenance.get("provisional_tender") is not True
+                and verification not in ("unverified_index", "provisional", "unverified")
+            )
+            if not gem_verified and outcome in ("INBOX", "REVIEW"):
+                why = ("[GEM NOT OFFICIALLY VERIFIED — check buyer, bid status and "
+                       "closing date before treating as a confirmed purchase] " + why)
+                # The reason/why field is column 9 (zero-based index 8) in
+                # the shared Inbox/Review row format defined above.
+                row[8] = why
+                if outcome == "INBOX":
+                    sheet_name, outcome, reason = (
+                        SHEET_REVIEW, "REVIEW", "gem_unverified")
+                    log.warning("[GEM-REVIEW-GUARD] downgraded Inbox -> Review: %s",
+                                lead.url[:200])
+                else:
+                    log.info("[GEM-REVIEW-GUARD] remains Review: %s", lead.url[:200])
 
         comp_winner = str(lead.competitor_winner or "").strip()
         if comp_winner and comp_winner.lower() not in ("none", "", "null", "n/a", "unknown"):
