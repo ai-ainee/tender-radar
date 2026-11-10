@@ -200,6 +200,31 @@ def _low_value_browse_result(lead):
     return ""
 
 
+def _unverified_gem_reference(lead):
+    """True if a GeM lead lacks verified *active* tender evidence.
+
+    Search-index references and official listing links with no verified active
+    status must stay eligible for subsequent official verification. Never
+    persist their provisional GeM ID in the completed-tender cache.
+    """
+    meta = lead.metadata if isinstance(lead.metadata, dict) else {}
+    if (lead.category != "tender" or
+            str(meta.get("internal_source") or "").strip().lower() != "gem"):
+        return False
+    status = str(meta.get("verification_status") or "").strip().lower()
+    return not (
+        meta.get("official_source_verified") is True
+        and meta.get("active_tender_verified") is True
+        and meta.get("provisional_tender") is not True
+        and status not in ("unverified_index", "unverified", "provisional")
+    )
+
+
+def _can_cache_tender_id(lead):
+    """Preserve legacy behavior for other sources; fail closed for GeM."""
+    return bool(lead.tender_id) and not _unverified_gem_reference(lead)
+
+
 def _candidate_priority(lead):
     """Evidence-only pre-AI priority; never label an item a buyer here.
 
@@ -213,7 +238,9 @@ def _candidate_priority(lead):
     if company and company.lower() not in ("unknown", "n/a"):
         score += 35
     if lead.tender_id:
-        score += 40
+        # GeM bid-number recognition confirms identity, not active purchase.
+        # A provisional reference earns a smaller queue boost until checked.
+        score += 15 if _unverified_gem_reference(lead) else 40
     if lead.buyer_dept:
         score += 10
     if lead.deadline and (lead.tender_id or company):
@@ -1518,7 +1545,7 @@ def main():
                 stats["gate_banned_kw"] += 1
                 log.info(f"[BANNED-KW] {lead.url[:80]} — matches '{_hit}'")
                 continue
-        if lead.tender_id and lead.tender_id.upper() in tender_ids:
+        if _can_cache_tender_id(lead) and lead.tender_id.upper() in tender_ids:
             stats["gate_tender_dupe"] += 1
             continue
         c = clean_url(lead.url)
@@ -1595,7 +1622,7 @@ def main():
                     stats["manual"] += 1
                     mark_seen(seen, lead.url)
                     mark_fp(fps, _fingerprint(lead.raw_text))
-                    if lead.tender_id:
+                    if _can_cache_tender_id(lead):
                         mark_tender_seen(tender_ids, lead.tender_id)
                 else:
                     stats["manual_failed"] += 1
@@ -1638,7 +1665,7 @@ def main():
                     stats["manual"] += 1
                     mark_seen(seen, lead.url)
                     mark_fp(fps, _fingerprint(lead.raw_text))
-                    if lead.tender_id:
+                    if _can_cache_tender_id(lead):
                         mark_tender_seen(tender_ids, lead.tender_id)
                 else:
                     stats["manual_failed"] += 1
@@ -1655,7 +1682,7 @@ def main():
             if outcome not in ("FAILED", "MANUAL_FAILED"):
                 mark_seen(seen, lead.url)
                 mark_fp(fps, _fingerprint(lead.raw_text))
-                if lead.tender_id:
+                if _can_cache_tender_id(lead):
                     mark_tender_seen(tender_ids, lead.tender_id)
             else:
                 log.warning(f"[retry-next-run] {lead.buyer_org} ({outcome}) — URL NOT marked seen; will retry on next run")
