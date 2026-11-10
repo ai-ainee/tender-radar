@@ -1,0 +1,17 @@
+{
+  "bids": {
+    "GEM/2026/B/7387533": {
+      "last_ai_attempt": "2026-11-10",
+      "outcome": "CRM_UPDATED"
+    },
+    "GEM/2026/B/7831437": {
+      "last_ai_attempt": "2026-11-10",
+      "outcome": "REVIEW"
+    },
+    "GEM/2026/B/8231919": {
+      "last_ai_attempt": "2026-11-10",
+      "outcome": "CRM_UPDATED"
+    }
+  },
+  "version": 1
+}
