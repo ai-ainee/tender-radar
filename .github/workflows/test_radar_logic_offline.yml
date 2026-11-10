@@ -444,3 +444,139 @@ jobs:
           check('if DRY_RUN:' in SOURCE, 'harvest dry-run branch retained')
           print(f'ALL {checks} TESTS PASSED')
           PY
+      - name: Test Step47D GeM buyer attribution and unverified deadline safety (offline)
+        env:
+          RADAR_TRASH_LOCAL_AUDIT: '0'
+        run: |
+          python - <<'PY'
+          #!/usr/bin/env python3
+          """Step 47D offline tests. Run from repository root: python test_step47d_buyer_deadline.py
+          No browser, external service, webhook, AI, or network required.
+          """
+          import ast
+          import hashlib
+          import json
+          import os
+          import re
+          import uuid
+          from datetime import datetime
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          from standard_lead import StandardLead
+
+          # Test only the actual repo functions without importing adapters or initiating APIs.
+          source = Path('radar.py').read_text(encoding='utf-8')
+          tree = ast.parse(source)
+          router = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Router')
+          formatter = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_format_lead')
+
+          class Sheet:
+              def __init__(self): self.posts=[]
+              def post(self, action, **kw):
+                  self.posts.append((action, kw))
+                  return {'status':'success'}
+
+          class Logger:
+              def info(self, *a): pass
+              def warning(self, *a): pass
+              def error(self, *a): pass
+
+          ctx={
+              'datetime':datetime,'hashlib':hashlib,'json':json,'os':os,'re':re,'uuid':uuid,'urlparse':urlparse,
+              'log':Logger(), 'SHEET_INBOX':'Inbox','SHEET_REVIEW':'Review','SHEET_PARTNERS':'Partners',
+              'SHEET_TRASH':'Trash','SHEET_MANUAL':'Manual','DRY_RUN':False,
+              '_is_vendor_domain':lambda u:False, '_is_content_page':lambda u:False,
+              '_is_vendor_self_reference':lambda a,b:False, '_is_staffing_agency':lambda x:False,
+              'normalize_company':lambda s:s.strip(), 'apply_quality_gates':lambda l,c:(l,[]),
+              '_fp_key':lambda fp:'', '_classify_gates':lambda flags:([],[]),
+              'extract_phone':lambda v:'', 'safe_cell':lambda s:s,
+          }
+          exec(compile(ast.Module(body=[formatter,router],type_ignores=[]),'step47c_extract','exec'),ctx)
+          Router=ctx['Router']
+          format_lead=ctx['_format_lead']
+          checks=0
+
+          def check(label, cond):
+              global checks
+              assert cond, label
+              checks += 1
+              print('PASS Step47D:',label)
+
+          md={'internal_source':'gem','verification_status':'unverified_index',
+              'provisional_tender':True,'official_source_verified':False,
+              'active_tender_verified':False,'buyer_verified':False,'current_deadline_verified':False,
+              'snippet_only':True,'indexed_bid_reference':'GEM/2026/B/7654321'}
+
+          def lead_with(metadata, bid='GEM/2026/B/7654321'):
+              return StandardLead(source='tenders',category='tender',tender_id=bid,
+                  url='https://example-tender-board.in/tender/reference-123456789',
+                  title=f'Example product renewal {bid}',
+                  snippet='Third-party result: Example Parent Ministry, 13 Nov deadline.',
+                  raw_text='Third-party result: Example Parent Ministry, 13 Nov deadline.',
+                  metadata=dict(metadata))
+
+          lead=lead_with(md)
+          formatted=format_lead(lead,0)
+          check('AI prompt labels GeM reference unverified', 'SOURCE_VERIFICATION: UNVERIFIED_GEM_REFERENCE' in formatted)
+          check('AI prompt flags buyer and deadline unverified', 'BUYER_VERIFIED: NO' in formatted and 'CURRENT_DEADLINE_VERIFIED: NO' in formatted)
+          check('AI prompt warns against artificial urgency', 'Never treat an indexed deadline as current' in formatted)
+          check('AI prompt preserves canonical tender ID', f'TENDER_ID: {lead.tender_id}' in formatted)
+
+          s=Sheet()
+          r=Router(s)
+          result=r.push(lead,{
+              'organization':'Example Parent Ministry', 'is_valid':True,
+              'confidence':'HIGH','entity_role':'BUYER', 'lead_score':87,
+              'why_engage_now':'Urgent: tender closing soon on 13 Nov 2026; submit immediately!',
+              'upcoming_events':'Submit bid before 13 Nov 2026',
+              'signal_freshness':'RECENT',
+          },'Example technology','ALL_SECTORS')
+          check('unverified index stays Review even when AI says HIGH',result[0]=='REVIEW')
+          assert len(s.posts)==1
+          row=s.posts[0][1]['row_data']
+          check('CRM upcoming event no longer claims unverified deadline', '13 Nov' not in row[1] and 'verification' in row[1].lower())
+          check('CRM signal removes AI closing-soon claim', 'closing soon' not in row[8].lower() and 'submit immediately' not in row[8].lower())
+          check('CRM signal preserves explicit unverified notice', 'GEM NOT OFFICIALLY VERIFIED' in row[8])
+          check('CRM discloses unverified actual buyer', 'actual procuring unit NOT VERIFIED' in row[8] and 'Example Parent Ministry' in row[8])
+          check('CRM preserves bid identity', 'GEM/2026/B/7654321' in row[8])
+          check('AI score is explicitly not purchase proof', 'not confirmation of demand' in row[8])
+          check('submitted signal and row match',s.posts[0][1]['signal_brief']==row[8])
+          check('routing does not overwrite tender identity',lead.tender_id=='GEM/2026/B/7654321')
+          check('metadata provenance remains untouched',lead.metadata==md)
+
+          other=lead_with({'internal_source':'other'},bid='OTHER/2026/12345')
+          s2=Sheet()
+          r2=Router(s2)
+          out2=r2.push(other,{'organization':'Example Buyer Ltd','is_valid':True,
+              'confidence':'HIGH','entity_role':'BUYER','lead_score':88,
+              'upcoming_events':'Submission closes 13 Nov',
+              'why_engage_now':'Closing soon: 13 Nov 2026','signal_freshness':'RECENT'},
+              'Example service','ALL_SECTORS')
+          check('non-GeM routing remains Inbox',out2[0]=='INBOX')
+          check('non-GeM event text untouched',s2.posts[0][1]['row_data'][1]=='Submission closes 13 Nov')
+
+          verified={'internal_source':'gem','verification_status':'official_listing_link',
+              'official_source_verified':True,'active_tender_verified':True,
+              'provisional_tender':False,'buyer_verified':True,
+              'current_deadline_verified':True}
+          good=lead_with(verified)
+          s3=Sheet()
+          res3=Router(s3).push(good,{'organization':'Example Buying Unit','is_valid':True,
+              'confidence':'HIGH','entity_role':'BUYER','lead_score':86,
+              'upcoming_events':'Confirmed event', 'why_engage_now':'Confirmed requirement',
+              'signal_freshness':'RECENT'},'Example service','ALL_SECTORS')
+          check('verified active GeM route preserved',res3[0]=='INBOX')
+          check('verified active GeM summary not scrubbed',s3.posts[0][1]['row_data'][1]=='Confirmed event')
+          check('verified active GeM formatter does not claim unverified',
+              'SOURCE_VERIFICATION: UNVERIFIED_GEM_REFERENCE' not in format_lead(good,0))
+
+          invalid=lead_with(md)
+          s4=Sheet()
+          res4=Router(s4).push(invalid,{'organization':'Example Parent Ministry','is_valid':False,
+              'confidence':'HIGH','entity_role':'BUYER','lead_score':0,
+              'why_engage_now':'Irrelevant','signal_freshness':'RECENT'},'Example service','ALL_SECTORS')
+          check('unverified but AI-invalid lead remains Trash',res4[0]=='TRASH')
+
+          print(f'ALL {checks} STEP47D CHECKS PASSED')
+          PY
