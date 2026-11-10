@@ -55,6 +55,7 @@ def fingerprint_key_cached(fp):
 CACHE_FILE = "seen_links.txt"
 FINGERPRINT_FILE = "seen_fingerprints.txt"
 TENDER_CACHE_FILE = "seen_tenders.txt"
+GEM_RECHECK_FILE = "gem_recheck_state.json"  # Separate from completed tender-ID cache
 EVENT_FP_FILE = "seen_event_fps.txt"
 MAX_FINGERPRINTS = 30000
 
@@ -223,6 +224,88 @@ def _unverified_gem_reference(lead):
 def _can_cache_tender_id(lead):
     """Preserve legacy behavior for other sources; fail closed for GeM."""
     return bool(lead.tender_id) and not _unverified_gem_reference(lead)
+
+
+def _provisional_gem_id(lead):
+    """Only canonical, *unverified* GeM IDs qualify for bounded rechecks.
+
+    Never infer identity from arbitrary third-party URLs or guessed titles.
+    """
+    if not _unverified_gem_reference(lead):
+        return ""
+    tid = str(getattr(lead, "tender_id", "") or "").strip().upper()
+    return tid if re.fullmatch(r"GEM/20\d{2}/B/\d{5,9}", tid) else ""
+
+
+def load_gem_recheck_state():
+    """Load the separate history of *AI attempts*, NOT official bid verification.
+
+    Return None on a malformed/unreadable existing file: previously-seen GeM
+    URLs will then stay excluded rather than be repeatedly re-evaluated.
+    """
+    if not os.path.exists(GEM_RECHECK_FILE):
+        return {}
+    try:
+        with open(GEM_RECHECK_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or data.get("version") != 1 or not isinstance(data.get("bids"), dict):
+            raise ValueError("invalid GeM recheck state format")
+        return data["bids"]
+    except (OSError, ValueError, TypeError) as exc:
+        log.error("[GEM-RECHECK] state unavailable; rechecks disabled: %s", str(exc)[:150])
+        return None
+
+
+def _gem_recheck_due(tid, state, days=7, today=None):
+    """Return (eligible, reason); first legacy URL is allowed ONCE, with a cap.
+
+    Once evaluated, each bid is reconsidered no more frequently than the
+    configured interval. This does not prove a change or active bid status.
+    """
+    if state is None:
+        return False, "state-unavailable"
+    entry = state.get(tid)
+    if entry is None:
+        return True, "legacy-first-recheck"
+    if not isinstance(entry, dict):
+        return False, "invalid-entry"
+    try:
+        last = datetime.strptime(entry["last_ai_attempt"], "%Y-%m-%d").date()
+    except (KeyError, TypeError, ValueError):
+        return False, "invalid-attempt-date"
+    today = today or datetime.now().date()
+    elapsed = (today - last).days
+    if elapsed < max(1, int(days)):
+        return False, f"cooldown-{max(0, elapsed)}d"
+    return True, f"due-{elapsed}d"
+
+
+def _record_gem_attempt(state, lead, outcome):
+    """Persist only successfully handled provisional leads; never in dry-run.
+
+    Called after a successful manual/CRM/audit outcome. FAILED outcomes must
+    remain eligible for retry; no other source or cache format is modified.
+    """
+    tid = _provisional_gem_id(lead)
+    if DRY_RUN or not tid or state is None:
+        return False
+    new_state = dict(state)
+    new_state[tid] = {
+        "last_ai_attempt": datetime.now().strftime("%Y-%m-%d"),
+        "outcome": str(outcome),
+    }
+    temp_path = GEM_RECHECK_FILE + ".tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "bids": new_state}, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(temp_path, GEM_RECHECK_FILE)
+    except OSError as exc:
+        log.error("[GEM-RECHECK] unable to persist %s: %s", tid, str(exc)[:150])
+        return False
+    state[tid] = new_state[tid]
+    log.info("[GEM-RECHECK] recorded AI attempt for %s outcome=%s", tid, outcome)
+    return True
 
 
 def _candidate_priority(lead):
@@ -1106,7 +1189,7 @@ class Router:
             # AI verdicts may update qualification fields, never source identity
             # or the provenance flags attached by the source adapter.
             if k in ("item_index", "event_fingerprint", "metadata",
-                     "source", "category", "url", "id"):
+                     "source", "category", "url", "id", "tender_id", "filing_id"):
                 continue
             if v in (None, ""):
                 continue
@@ -1442,6 +1525,7 @@ def main():
     seen = load_cache(sheet)
     fps = load_fingerprints()
     tender_ids = load_tender_cache()
+    gem_rechecks = load_gem_recheck_state()
     event_fps = _load_fp_cache(EVENT_FP_FILE)
 
     company_dedup = CompanyDedup(sheet=sheet)
@@ -1478,12 +1562,17 @@ def main():
     all_leads = prioritize_candidates(all_leads)
 
     max_links = env_int("MAX_LINKS_PER_RUN", 150)
+    gem_recheck_days = max(1, env_int("GEM_RECHECK_DAYS", 7))
+    gem_recheck_cap = max(0, env_int("GEM_RECHECK_MAX_PER_RUN", 2))
+    gem_selected_bids = set()  # De-dupe canonical GeM IDs *within* this run.
     filtered = []
     stats = {
         "adapter_total": len(all_leads),
         "gate_tender_dupe": 0,
         "gate_url_seen": 0,
         "gate_fp_dupe": 0,
+        "gate_gem_run_dupe": 0, "gate_gem_cooldown": 0,
+        "gate_gem_recheck_limit": 0, "gem_rechecks_selected": 0,
         "gate_job_portal": 0,
         "gate_job_low_value": 0,
         "gate_tender_landing": 0,
@@ -1562,20 +1651,48 @@ def main():
             stats["gate_tender_dupe"] += 1
             continue
         c = clean_url(lead.url)
-        if c in seen:
+        gem_bid = _provisional_gem_id(lead)
+        gem_recheck = False
+        if gem_bid:
+            if gem_bid in gem_selected_bids:
+                stats["gate_gem_run_dupe"] += 1
+                log.info("[GEM-RECHECK] %s skipped (same bid already selected this run)", gem_bid)
+                continue
+            # A bid can have several public URLs; recheck timing is by canonical
+            # bid ID, NOT website URL. New, never-attempted URLs pass normally.
+            if c in seen or (gem_rechecks is not None and gem_bid in gem_rechecks):
+                due, why_due = _gem_recheck_due(gem_bid, gem_rechecks, gem_recheck_days)
+                if not due:
+                    stats["gate_gem_cooldown"] += 1
+                    log.info("[GEM-RECHECK] %s skipped (%s)", gem_bid, why_due)
+                    continue
+                if stats["gem_rechecks_selected"] >= gem_recheck_cap:
+                    stats["gate_gem_recheck_limit"] += 1
+                    log.info("[GEM-RECHECK] %s skipped (per-run recheck cap %d)",
+                             gem_bid, gem_recheck_cap)
+                    continue
+                gem_recheck = True
+                log.info("[GEM-RECHECK] %s eligible (%s; %d-day interval)",
+                         gem_bid, why_due, gem_recheck_days)
+        if c in seen and not gem_recheck:
             stats["gate_url_seen"] += 1
             continue
         fp = _fingerprint(lead.raw_text)
-        if fp and fp in fps:
+        if fp and fp in fps and not gem_recheck:
             stats["gate_fp_dupe"] += 1
             continue
         filtered.append(lead)
+        if gem_bid:
+            gem_selected_bids.add(gem_bid)
+            if gem_recheck:
+                stats["gem_rechecks_selected"] += 1
         if _unverified_gem_reference(lead):
             log.info(
-                "[GEM-GATE-SELECTED] ref=%s tender_id=%s lead_id=%s",
+                "[GEM-GATE-SELECTED] ref=%s tender_id=%s lead_id=%s recheck=%s",
                 lead.tender_id or "MISSING",
                 lead.tender_id or "MISSING",
                 lead.id,
+                gem_recheck,
             )
 
     log.info(f"After gates: {len(filtered)} leads survive (from {len(all_leads)})")
@@ -1586,7 +1703,11 @@ def main():
              f"job_low_value={stats['gate_job_low_value']} "
              f"tender_landing={stats['gate_tender_landing']} "
              f"browse_landing={stats['gate_browse_landing']} "
-             f"budget_exceeded={stats['gate_budget']}")
+             f"budget_exceeded={stats['gate_budget']} "
+             f"gem_run_dupe={stats['gate_gem_run_dupe']} "
+             f"gem_cooldown={stats['gate_gem_cooldown']} "
+             f"gem_recheck_limit={stats['gate_gem_recheck_limit']} "
+             f"gem_rechecks_selected={stats['gem_rechecks_selected']}")
 
     if DRY_RUN:
         log.info("[DRY RUN] Skipping AI evaluation. First 5 leads:")
@@ -1644,6 +1765,7 @@ def main():
                     mark_fp(fps, _fingerprint(lead.raw_text))
                     if _can_cache_tender_id(lead):
                         mark_tender_seen(tender_ids, lead.tender_id)
+                    _record_gem_attempt(gem_rechecks, lead, outcome)
                 else:
                     stats["manual_failed"] += 1
             if ai_failures >= 4:
@@ -1664,6 +1786,7 @@ def main():
                         stats["manual"] += 1
                         mark_seen(seen, pending.url)
                         mark_fp(fps, _fingerprint(pending.raw_text))
+                        _record_gem_attempt(gem_rechecks, pending, outcome)
                     else:
                         stats["manual_failed"] += 1
                 break
@@ -1687,6 +1810,7 @@ def main():
                     mark_fp(fps, _fingerprint(lead.raw_text))
                     if _can_cache_tender_id(lead):
                         mark_tender_seen(tender_ids, lead.tender_id)
+                    _record_gem_attempt(gem_rechecks, lead, outcome)
                 else:
                     stats["manual_failed"] += 1
                 continue
@@ -1704,6 +1828,7 @@ def main():
                 mark_fp(fps, _fingerprint(lead.raw_text))
                 if _can_cache_tender_id(lead):
                     mark_tender_seen(tender_ids, lead.tender_id)
+                _record_gem_attempt(gem_rechecks, lead, outcome)
             else:
                 log.warning(f"[retry-next-run] {lead.buyer_org} ({outcome}) — URL NOT marked seen; will retry on next run")
 
