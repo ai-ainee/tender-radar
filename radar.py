@@ -1498,7 +1498,20 @@ def main():
         "skipped": 0, "trash": 0,
     }
 
+    # Step 42: read-only diagnostic for indexed GeM references. This does not
+    # change sorting, filtering, seen caches, routing, AI calls or CRM writes.
     for lead in all_leads:
+        if _unverified_gem_reference(lead):
+            md = lead.metadata if isinstance(lead.metadata, dict) else {}
+            bid_ref = lead.tender_id or md.get("indexed_bid_reference") or "MISSING"
+            log.info(
+                "[GEM-GATE-INPUT] ref=%s tender_id=%s lead_id=%s url_seen=%s tender_cache_eligible=%s",
+                bid_ref,
+                lead.tender_id or "MISSING",
+                lead.id,
+                clean_url(lead.url) in seen,
+                _can_cache_tender_id(lead),
+            )
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
             continue
@@ -1557,6 +1570,13 @@ def main():
             stats["gate_fp_dupe"] += 1
             continue
         filtered.append(lead)
+        if _unverified_gem_reference(lead):
+            log.info(
+                "[GEM-GATE-SELECTED] ref=%s tender_id=%s lead_id=%s",
+                lead.tender_id or "MISSING",
+                lead.tender_id or "MISSING",
+                lead.id,
+            )
 
     log.info(f"After gates: {len(filtered)} leads survive (from {len(all_leads)})")
     log.info(f"  tender_dupe={stats['gate_tender_dupe']} "
