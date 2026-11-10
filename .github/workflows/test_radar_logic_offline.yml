@@ -1,3 +1,35 @@
+name: Test Radar Scout Logic (offline)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify required source files exist
+        run: |
+          test -f radar.py
+          test -f adapters/tenders.py
+          test -f sources/gem.py
+          test -f standard_lead.py
+      - name: Compile core Python files
+        run: python -m py_compile radar.py adapters/tenders.py sources/gem.py standard_lead.py
+      - name: Test GeM provenance and final CRM routing decisions (offline)
+        env:
+          RADAR_TRASH_LOCAL_AUDIT: '0'
+        run: |
+          python - <<'PY'
           import ast, os, hashlib, uuid, re
           from pathlib import Path
           from datetime import datetime
