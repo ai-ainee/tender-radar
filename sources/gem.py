@@ -1,44 +1,53 @@
-"""Public GeM BidPlus listing collector (Step 23 diagnostic/navigation fix).
+"""sources/gem.py — Public GeM bid collector with search-index fallback.
 
-Only reads publicly accessible bid listing pages. Does not bypass access
-controls, CAPTCHAs, or GeM login. Returns [] on unavailable sources.
+Step 25: GeM rejects connections from some hosted CI runners even if the site
+opens in a user's browser. Try GeM's public HTML pages first. When unavailable,
+use configured SERPER_API_KEYS to discover *individually indexed* GeM bid
+references on public web pages. Fallback records are provisional, NOT verified
+GeM bid status. No guessed GeM document URLs, logins, CAPTCHAs or proxy bypass.
 
-Contract: fetch_gem(keywords, max_results=80) -> [{url,title,snippet}, ...]
+Contract: fetch_gem(keywords, max_results=80) -> [{url,title,snippet}, ...].
 """
+
+import os
 import re
+from datetime import datetime
 from urllib.parse import urljoin, urlparse
 
+import requests
 from common import log
 
-# The -data endpoint is a search-data endpoint, not a standalone HTML page.
 GEM_URLS = (
     "https://bidplus.gem.gov.in/all-bids",
     "https://bidplus.gem.gov.in/bidlists",
 )
-
-BID_LINK = re.compile(r"/(?:showbidDocument/\d+|bidding/bid/[^?#]+)", re.I)
 GEM_HOST = "bidplus.gem.gov.in"
+BID_LINK = re.compile(r"/(?:showbidDocument/\d+|bidding/bid/[^?#]+)", re.I)
+BID_NUMBER = re.compile(r"\bGEM\s*/\s*(20\d{2})\s*/\s*B\s*/\s*(\d{5,9})\b", re.I)
 BLOCK_INDICATORS = (
     "access denied", "captcha", "verify you are human", "request blocked",
     "attention required", "unusual traffic",
 )
+LANDING_SEGMENTS = frozenset((
+    "search", "search-results", "category", "categories", "topic", "topics",
+    "latest-tenders", "all-tenders", "product", "products", "tag", "tags",
+    "jobs", "tenders", "tender", "home",
+))
 
 
 def _normalise_bid_link(href):
     if not href:
         return None
-    url = urljoin("https://bidplus.gem.gov.in/", href.strip())
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != GEM_HOST:
+    url = urljoin("https://bidplus.gem.gov.in/", str(href).strip())
+    parts = urlparse(url)
+    if parts.scheme != "https" or parts.hostname != GEM_HOST:
         return None
-    if not BID_LINK.search(parsed.path):
+    if not BID_LINK.search(parts.path):
         return None
     return url.split("#", 1)[0]
 
 
 def _extract_items(page, keywords, max_results):
-    # Text from the enclosing bid record is preferable to a button saying
-    # "View Document"; searching the button text alone yields false negatives.
     raw = page.evaluate("""() => Array.from(document.querySelectorAll('a[href]'))
         .filter(a => /showbidDocument\\/\\d+|\\/bidding\\/bid\\//i.test(a.href))
         .map(a => {
@@ -61,62 +70,27 @@ def _extract_items(page, keywords, max_results):
     return output
 
 
-def fetch_gem(keywords, max_results=80):
-    """Fetch public GeM bid listings without guessing bid IDs or fabricating leads."""
-    terms = [str(k).strip() for k in (keywords or []) if str(k).strip()]
-    if not terms or max_results <= 0:
-        return []
+def _official_listing(keywords, max_results):
+    """Return official HTML matches; failures are logged and never disguised."""
     try:
         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
     except ImportError:
-        log.warning("[gem] playwright missing; public listing not checked")
+        log.warning("[gem] playwright missing; cannot check official listing")
         return []
-
     try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=[
+                "--no-sandbox", "--disable-dev-shm-usage",
+            ])
             try:
-                context = browser.new_context(viewport={"width": 1365, "height": 900})
-                page = context.new_page()
+                page = browser.new_context(viewport={"width": 1365, "height": 900}).new_page()
+                output, seen = [], set()
                 for address in GEM_URLS:
                     response = None
                     try:
-                        # Avoid networkidle: the GeM page may continue polling.
                         response = page.goto(address, wait_until="domcontentloaded", timeout=25000)
                     except PWTimeout:
                         log.warning("[gem] navigation timed out: %s", address)
-                        # Playwright may have loaded usable DOM before timing out.
                     except Exception as exc:
                         log.warning("[gem] navigation failed %s: %s", address, str(exc)[:160])
                         continue
-
-                    status = response.status if response is not None else "unknown"
-                    log.info("[gem] page=%s status=%s final_url=%s", address, status, page.url)
-                    if isinstance(status, int) and status in (401, 403, 429, 503):
-                        log.warning("[gem] access restricted (HTTP %s); not bypassing", status)
-                        continue
-                    try:
-                        sample = page.locator("body").inner_text(timeout=5000)[:2000].casefold()
-                    except Exception:
-                        sample = ""
-                    if any(marker in sample for marker in BLOCK_INDICATORS):
-                        log.warning("[gem] access challenge detected on %s; skipping", address)
-                        continue
-                    try:
-                        page.locator("a[href*='showbidDocument'], a[href*='/bidding/bid/']").first.wait_for(timeout=8000)
-                    except PWTimeout:
-                        log.warning("[gem] no bid links in rendered DOM at %s (dynamic listing or changed markup)", address)
-                        continue
-                    items = _extract_items(page, terms, max_results)
-                    log.info("[gem] page yielded %d matching public bid(s)", len(items))
-                    if items:
-                        return items
-                log.warning("[gem] no matching bids from accessible public listings; see per-URL diagnostics")
-                return []
-            finally:
-                browser.close()
-    except Exception as exc:
-        log.warning("[gem] collection failed: %s", str(exc)[:200])
-        return []
