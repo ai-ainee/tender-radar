@@ -1309,7 +1309,16 @@ class Router:
 
         lead, gate_flags = apply_quality_gates(lead, self.allowed_countries)
 
-        fp_key = _fp_key(ai_verdict.get("event_fingerprint"))
+        # A source-grounded canonical tender ID is more specific than an
+        # AI-generated actor/value/month fingerprint. Distinct bids can
+        # share the latter, so it must not suppress an identified tender.
+        # Keep tender-ID, URL and GeM cooldown/recheck safeguards in charge.
+        # Do not store a broad event fingerprint that blocks future rechecks.
+        if lead.category == "tender" and str(lead.tender_id or "").strip():
+            fp_key = ""
+            log.info("[EVENT-FP-TENDER-BYPASS] canonical_id=%s", lead.tender_id)
+        else:
+            fp_key = _fp_key(ai_verdict.get("event_fingerprint"))
         if fp_key and fp_key in self.event_fps:
             log.info(f"[EVENT-DUPE] {fp_key}")
             return "DUPLICATE", lead.buyer_org, "event_fp"
