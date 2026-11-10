@@ -949,6 +949,23 @@ def _format_lead(lead, idx, max_chars=3000):
     if lead.raw_published_at:
         parts.append(f"PUBLISHED: {lead.raw_published_at}")
 
+    # Step 47C: make GeM source limitations explicit in the AI-facing item.
+    # Bid identity does not confirm purchasing office or current bid status.
+    meta = lead.metadata if isinstance(lead.metadata, dict) else {}
+    if (lead.category == "tender" and
+            str(meta.get("internal_source") or "").strip().lower() == "gem"):
+        if not (meta.get("official_source_verified") is True and
+                meta.get("active_tender_verified") is True and
+                meta.get("provisional_tender") is not True and
+                str(meta.get("verification_status") or "").strip().lower() not in
+                ("unverified_index", "provisional", "unverified")):
+            parts.append("SOURCE_VERIFICATION: UNVERIFIED_GEM_REFERENCE")
+            parts.append("BUYER_VERIFIED: NO")
+            parts.append("CURRENT_DEADLINE_VERIFIED: NO")
+            parts.append("ACTIVE_TENDER_VERIFIED: NO")
+            parts.append("BUYER_POLICY: Source-listed ministry may be a parent; do not invent the actual procuring office.")
+            parts.append("URGENCY_POLICY: Never treat an indexed deadline as current or call for immediate bidding.")
+
     text = (lead.raw_text or "").strip()
     if len(text) > max_chars:
         text = f"{text[:max_chars-800]}\n\n[...truncated...]\n\n{text[-800:]}"
@@ -981,10 +998,15 @@ TARGET INDUSTRIES: {industries_str or "All"}
 {geo_rule}
 {ban_rule}{special_block}
 
-═══ STRUCTURED DATA — TRUST THESE ═══
-When a lead has BUYER_ORG, TENDER_ID, VALUE_INR, DEADLINE populated,
-these are authoritative facts from the source. Do NOT re-derive them
-from <scraped_data>.
+═══ STRUCTURED DATA — PRESERVE PROVENANCE ═══
+Structured fields are source-reported facts or identifiers, NOT automatically
+verified facts. Preserve TENDER_ID for identity; it does not prove an active bid.
+Never upgrade buyer, deadline or status claims contrary to verification flags.
+A named ministry or parent organization must not be presented as the actual
+procuring unit unless the source evidence specifically supports that unit.
+For SOURCE_VERIFICATION: UNVERIFIED_GEM_REFERENCE, use LOW confidence and
+Review only; do not state that an indexed deadline is current, that bidding is
+urgent, or that a named buyer/unit is independently verified.
 
 ═══ UNIVERSAL B2B CLASSIFICATION ═══
 The target portfolio may include ANY product, service, equipment, technology
@@ -1395,11 +1417,37 @@ class Router:
                 and verification not in ("unverified_index", "provisional", "unverified")
             )
             if not gem_verified and outcome in ("INBOX", "REVIEW"):
-                why = ("[GEM NOT OFFICIALLY VERIFIED — check buyer, bid status and "
-                       "closing date before treating as a confirmed purchase] " + why)
-                # The reason/why field is column 9 (zero-based index 8) in
-                # the shared Inbox/Review row format defined above.
+                # AI text such as "bid closing soon" is NOT safe to persist here:
+                # search-index deadlines can be superseded by GeM corrigenda.
+                # Replace both the prominently displayed event and signal brief
+                # with evidence-bounded text. Keep the organization label for
+                # Review/CRM matching, but disclose that the procuring unit is
+                # not verified. Never invent a better buyer from the hierarchy.
+                bid_label = str(lead.tender_id or provenance.get("indexed_bid_reference") or "").strip()
+                if not re.fullmatch(r"GEM/20\d{2}/B/\d{5,9}", bid_label, re.I):
+                    bid_label = "unconfirmed GeM reference"
+                buyer_label = " ".join(str(lead.buyer_org or "Unknown").split())[:120]
+                score_label = f"{score_num}/100" if score_num else "not scored"
+                why = (
+                    "[GEM NOT OFFICIALLY VERIFIED — check buyer, bid status and "
+                    "closing date before treating as a confirmed purchase] "
+                    f"[BID: {bid_label}] "
+                    f"[SOURCE/AI ORGANIZATION LABEL: {buyer_label}; "
+                    "actual procuring unit NOT VERIFIED] "
+                    f"[AI RELEVANCE SCORE: {score_label}; not confirmation of demand] "
+                    "Potential tender reference only. Verify the actual buyer, "
+                    "purchased item, active status, latest deadline and all "
+                    "corrigenda on the official GeM portal before bidding or "
+                    "claiming urgency."
+                )
+                # Review/Inbox row layout: [capture, event, role, industry,
+                # state, city, company, solution, why, url, ...].
+                row[1] = f"GeM {bid_label}: current deadline and buyer require verification"
                 row[8] = why
+                confidence = "LOW"
+                lead.confidence = "LOW"
+                log.info("[GEM-ATTRIBUTION-CAUTION] bid=%s label=%s buyer_verified=no deadline_verified=no",
+                         bid_label, buyer_label)
                 if outcome == "INBOX":
                     sheet_name, outcome, reason = (
                         SHEET_REVIEW, "REVIEW", "gem_unverified")
