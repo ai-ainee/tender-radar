@@ -1,12 +1,16 @@
 """sources/gem.py — Public GeM bid collector with search-index fallback.
 
+Step 36: preserve explicit source/provenance markers and reject ambiguous bid IDs.
+Do not treat search excerpts, initial bid documents, or dates as proof of
+current bid status; amendments/extensions must be checked on GeM.
+
 Step 27C: GeM rejects connections from some hosted CI runners even if the site
 opens in a user's browser. Try GeM's public HTML pages first. When unavailable,
 use the shared SearchEngine (Serper, Brave, DDGS) to discover indexed GeM bid
 references on public web pages. Fallback records are provisional, NOT verified
 GeM bid status. No guessed GeM document URLs, logins, CAPTCHAs or proxy bypass.
 
-Contract: fetch_gem(keywords, max_results=80) -> [{url,title,snippet}, ...].
+Contract: fetch_gem(keywords, max_results=80) -> [{url,title,snippet,metadata}, ...].
 """
 
 import re
@@ -62,7 +66,23 @@ def _extract_items(page, keywords, max_results):
         seen.add(url)
         if terms and not any(term in title.casefold() for term in terms):
             continue
-        output.append({"url": url, "title": title[:300], "snippet": title[:500]})
+        output.append({
+            "url": url,
+            "title": title[:300],
+            "snippet": title[:500],
+            # This link was seen on an official listing, but no current
+            # deadline, corrigendum, purchasing buyer, or active status
+            # has been verified by this collector.
+            "metadata": {
+                "verification_status": "official_listing_link",
+                "fetch_method": "official_listing",
+                "active_tender_verified": False,
+                "current_deadline_verified": False,
+                "buyer_verified": False,
+                "specification_verified": False,
+                "requires_corrigendum_check": True,
+            },
+        })
         if len(output) >= max_results:
             break
     return output
@@ -169,6 +189,7 @@ def _indexed_fallback(keywords, max_results):
         return []
 
     out, seen_bids = [], set()
+    ambiguous_count = 0
     current_year = datetime.now().year
     searcher = SearchEngine()
     for term in terms:
@@ -190,12 +211,28 @@ def _indexed_fallback(keywords, max_results):
             title = str(item.get("title") or "").strip()
             snippet = str(item.get("snippet") or "").strip()
             hay = f"{title} {snippet}"
-            match = BID_NUMBER.search(hay)
-            if not match or not _candidate_url(url):
+            if not _candidate_url(url):
                 continue
             if not any(t.casefold() in hay.casefold() for t in terms):
                 continue
-            bid_id = f"GEM/{match.group(1)}/B/{match.group(2)}"
+
+            # A search snippet can mention several different bids. Prefer
+            # a single bid reference in the title; otherwise require exactly
+            # one reference in the snippet. Never assign a random bid ID.
+            title_refs = list(dict.fromkeys(
+                f"GEM/{m.group(1)}/B/{m.group(2)}"
+                for m in BID_NUMBER.finditer(title)
+            ))
+            snippet_refs = list(dict.fromkeys(
+                f"GEM/{m.group(1)}/B/{m.group(2)}"
+                for m in BID_NUMBER.finditer(snippet)
+            ))
+            candidate_refs = title_refs if title_refs else snippet_refs
+            if len(candidate_refs) != 1:
+                if len(candidate_refs) > 1:
+                    ambiguous_count += 1
+                continue
+            bid_id = candidate_refs[0]
             if bid_id in seen_bids:
                 continue
             seen_bids.add(bid_id)
@@ -203,16 +240,33 @@ def _indexed_fallback(keywords, max_results):
                 "url": url,  # Real indexed page, never a fabricated GeM URL.
                 "title": f"{bid_id} — {title}"[:300],
                 "snippet": (
-                    "UNVERIFIED SEARCH-INDEX DISCOVERY. Third-party/secondary source; "
-                    "GeM bid status, deadline, buyer and tender details MUST be "
-                    "verified on the official GeM portal before calling this an "
-                    f"active confirmed purchase. Reference: {bid_id}. {snippet}"
+                    "UNVERIFIED SEARCH-INDEX DISCOVERY. Search result only; "
+                    "buyer, product specification, current deadline and bid "
+                    "status are NOT verified. Original PDF dates can change "
+                    "through GeM extensions and corrigenda. Check the latest "
+                    "official GeM listing and all corrigenda before qualifying "
+                    f"this as an active purchase. Reference: {bid_id}. {snippet}"
                 )[:1000],
+                "metadata": {
+                    "verification_status": "unverified_index",
+                    "provisional": True,
+                    "fetch_method": "search_index",
+                    "indexed_bid_reference": bid_id,
+                    "source_index_domain": (urlparse(url).hostname or "").lower(),
+                    "matched_target": term,
+                    "active_tender_verified": False,
+                    "current_deadline_verified": False,
+                    "buyer_verified": False,
+                    "specification_verified": False,
+                    "requires_corrigendum_check": True,
+                },
             })
             if len(out) >= max_results:
                 break
         if len(out) >= max_results:
             break
+    if ambiguous_count:
+        log.info("[gem-index] %d ambiguous search result(s) skipped (multiple bid IDs)", ambiguous_count)
     log.info("[gem-index] %d provisional individual bid reference(s), NOT verified GeM tenders", len(out))
     return out
 
