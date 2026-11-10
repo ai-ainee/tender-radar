@@ -1852,3 +1852,15 @@ hiring|whirlpoolindia|Senior CAD Designer Drafting|position|2026-11|pune
 hiring|autodesk|20|positions|2026-11|india
 project_initiation|nationalstockexchangeofindia|new headquarters||2026-11|mumbai
 partnership|pinnacleinfotech|Autodesk partnership||2026-11|
+tender|ministryofpetroleumandnaturalgas|Autocad subscription renewal|subscription|2026-11|india
+hiring|greentekindialimited|Senior Auto cad Designer|position|2026-11|telangana,india
+tender|ministryofhousingandurbanaffairs|1.02|cr inr|2026-10|india
+tender|indianarmy|Autodesk Fusion 360||2026-09|solan
+hiring|mantras2successconsultants|0-1|years|2026-11|
+hiring|linestudio|0-1|years|2026-11|
+hiring|interazzo.com|2-4|years_experience|2026-11|bengaluru
+hiring|veeventures|6-8|years_experience|2026-11|mumbai
+hiring|autodesk|multipleopenings||2026-11|
+hiring|larsen&toubro|0-1|years_experience|2026-11|india
+hiring|autodeskindia|4jobopenings||2026-11|
+hiring|talentoindia|0-1|years_experience|2026-11|ahmedabad
