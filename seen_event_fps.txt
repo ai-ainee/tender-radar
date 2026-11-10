@@ -1882,3 +1882,4 @@ tender|engineersindialimited|AutoDesk Software subscription||2026-08|
 tender|publicworksdepartment,governmentofmadhyapradesh|Revit 2026 Autodesk annual subscription|qty:2|2026-06|bhopal,madhyapradesh
 hiring|wsp|Senior CAD Designer - Aviation||2026-11|
 capex|ministryofrailways|100 projects|projects|2026-04|india
+tender|indianrailways|AutoCAD 2027|users|2026-10|
