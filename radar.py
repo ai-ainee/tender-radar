@@ -113,14 +113,40 @@ def _is_job_portal_host(url):
 
 
 def _low_value_job_result(url):
-    """Reject generic search pages and personal profiles, not employer vacancies."""
-    parsed = urlparse(url or "")
-    path = parsed.path.lower().rstrip("/")
-    host = parsed.netloc.lower()
-    if host.startswith("www."):
-        host = host[4:]
-    # Search/category pages do not identify an individual employer.
-    if host.endswith("naukri.com") and re.search(r"-jobs$", path):
+    """Skip job-board searches but retain individual employer vacancies.
+
+    These are URL-shape checks, not product/industry filters. Company-specific
+    vacancy pages remain eligible for evidence-based AI evaluation.
+    """
+    p = urlparse(url or "")
+    host = p.netloc.lower().removeprefix("www.")
+    path = p.path.lower().rstrip("/")
+
+    # An individual employer vacancy is different from a search landing page.
+    if (host.endswith("naukri.com") and
+            (path.startswith("/job-listings-") or path.startswith("/job/"))):
+        return ""
+    if host.endswith("shine.com") and path.startswith("/jobs/") and path.count("/") >= 3:
+        return ""
+    if host.endswith("foundit.in") and path.startswith("/job/"):
+        return ""
+    if (host.endswith("linkedin.com") and
+            re.match(r"^/jobs/view/\d+", path)):
+        return ""
+    if host.endswith("indeed.com") and path in ("/viewjob", "/rc/clk"):
+        return ""
+
+    if host.endswith("naukri.com") and re.search(
+            r"-jobs(?:-in-[a-z0-9-]+)?(?:-\d+)?$", path):
+        return "generic-job-search"
+    if host.endswith("shine.com") and (path.startswith("/job-search") or path == "/jobs"):
+        return "generic-job-search"
+    if host.endswith("foundit.in") and path.startswith("/search"):
+        return "generic-job-search"
+    if host.endswith("linkedin.com") and (path == "/jobs" or path.startswith("/jobs/search") or
+                                               re.search(r"-jobs(?:-in-[a-z0-9-]+)?$", path)):
+        return "generic-job-search"
+    if host.endswith("indeed.com") and (not path or path in ("/jobs", "/jobs/search")):
         return "generic-job-search"
     if host.endswith("bayt.com") and re.search(r"/jobs/[^/]*jobs$", path):
         return "generic-job-search"
@@ -128,7 +154,96 @@ def _low_value_job_result(url):
         return "personal-profile"
     if host.endswith("jobtoday.com") and ("/trabajos-" in path or "/jobs-" in path):
         return "generic-job-search"
+    if ("jobboard" in path or "job-board" in path) and not re.search(r"/jobs?/(?:view|detail)/", path):
+        return "generic-job-board"
+    if any(host == h or host.endswith("." + h) for h in JOB_PORTAL_HOSTS):
+        if not path or path in ("/", "/jobs", "/search", "/job-search", "/search/jobs"):
+            return "generic-job-home"
     return ""
+
+
+def _low_value_tender_result(lead):
+    """Reject only identifiable tender-directory/landing pages, not notices.
+
+    A structured buyer/tender ID always protects the candidate from this
+    shortcut. A real tender-detail URL is retained even when scraping fails.
+    """
+    if lead.category != "tender" or lead.tender_id or lead.buyer_org:
+        return ""
+    p = urlparse(lead.url or "")
+    host = p.netloc.lower().removeprefix("www.")
+    path = p.path.lower().rstrip("/")
+    query = p.query.lower()
+    if host in ("eprocure.gov.in", "etenders.gov.in") and path == "/eprocure/app":
+        if not query or re.search(r"(?:^|&)page=frontend(?:&|$)", query):
+            return "government-tender-landing"
+    if host.endswith("tendersontime.com") and path.startswith("/indiaproducts/"):
+        return "tender-directory-category"
+    if (path in ("/tenders", "/tender-search", "/tenders/search", "/search") and
+            not query.startswith("tenderid=")):
+        return "tender-search-landing"
+    return ""
+
+
+def _low_value_browse_result(lead):
+    """Drop unambiguous publisher topic/listing pages with no named company.
+
+    This does not filter actual articles, including independent reporting of
+    named companies' investments, project wins and adoption signals.
+    """
+    if lead.buyer_org or lead.tender_id or lead.filing_id:
+        return ""
+    p = urlparse(lead.url or "")
+    path = p.path.lower().rstrip("/")
+    if path.startswith("/topic/") or path in ("/topics", "/news", "/latest-news"):
+        return "general-topic-landing"
+    return ""
+
+
+def _candidate_priority(lead):
+    """Evidence-only pre-AI priority; never label an item a buyer here.
+
+    The higher score is merely a queue position for the limited AI budget.
+    Actual buyer status/recency/portfolio match is always verified downstream.
+    """
+    title = str(lead.title or "")
+    text = str(lead.raw_text or "")
+    company = str(lead.buyer_org or "").strip()
+    score = 0
+    if company and company.lower() not in ("unknown", "n/a"):
+        score += 35
+    if lead.tender_id:
+        score += 40
+    if lead.buyer_dept:
+        score += 10
+    if lead.deadline and (lead.tender_id or company):
+        score += 10
+    if lead.filing_id and company:
+        score += 15
+    if len(text) >= 250:
+        score += 14
+    elif len(text) >= 100:
+        score += 5
+    if len(title) >= 25:
+        score += 5
+    if lead.category == "tender" and re.search(
+            r"\b(tender|rfq|rpf|request for (?:proposal|quotation)|"
+            r"invitation for bids?|procurement|bid notice|purchase order)\b", title, re.I):
+        score += 12
+    if lead.category in ("expansion", "filing", "news") and re.search(
+            r"\b(commissioned|inaugurat(?:e|ed|ion)|invest(?:s|ment|ing)?|"
+            r"expan(?:d|ds|sion)|new (?:factory|plant|facility|project)|"
+            r"order win|contract award|adopt(?:s|ion|ed)|partnership)\b", title, re.I):
+        score += 10
+    if lead.category == "hiring":
+        # Detail pages provide substantially better company attribution.
+        p = urlparse(lead.url or "")
+        if ("/job/" in p.path or "/job-listings-" in p.path or
+                "/jobs/view/" in p.path or "/jobs/" in p.path and p.path.count("/") >= 3):
+            score += 15
+    if (lead.metadata or {}).get("snippet_only"):
+        score -= 8
+    return score
 
 
 # ── Caches ────────────────────────────────────────────────────────────
@@ -579,19 +694,29 @@ def safe_cell(v):
 
 
 def prioritize_candidates(leads):
-    """Interleave buying-signal categories AND source adapters.
+    """Fair category/source rotation, best evidence FIRST within each queue.
 
-    The old append-order budget let broad aggregator tenders consume all
-    slots before hiring, expansion, news, or the new search vectors arrived.
-    This is a quota-neutral fair order; downstream quality gates still decide.
+    This preserves source diversity instead of letting tender aggregators take
+    every slot. It also improves quality inside each category/source. It does
+    not create or validate buyer claims and is independent of target products.
     """
     queues = defaultdict(deque)
-    sources = defaultdict(deque)
+    sources = defaultdict(list)
+    grouped = defaultdict(list)
     for lead in leads:
-        key = (lead.category, lead.source)
-        if not queues[key]:
-            sources[lead.category].append(key)
-        queues[key].append(lead)
+        grouped[(lead.category, lead.source)].append(lead)
+
+    for key, group in grouped.items():
+        # Python stable sorting preserves adapter order on equal quality.
+        group = sorted(group, key=_candidate_priority, reverse=True)
+        queues[key] = deque(group)
+        sources[key[0]].append(key)
+
+    for category, keys in sources.items():
+        # Put sources with an evidence-backed first candidate ahead, but
+        # still rotate sources after each pick to avoid starvation.
+        keys.sort(key=lambda k: _candidate_priority(queues[k][0]), reverse=True)
+        sources[category] = deque(keys)
 
     schedule = ("tender", "filing", "tender", "hiring", "expansion", "news",
                 "expansion", "hiring")
@@ -779,6 +904,14 @@ A source site or URL alone NEVER establishes that the buyer is a seller.
 If the source was NOT fully read, do not invent a verified purchase, budget,
 deadline, buyer, or decision maker. Confidence must be LOW; put credible
 unverified opportunities in Review.
+
+DATE EVIDENCE: Missing, ambiguous or undated publication is UNKNOWN, not STALE.
+Never infer a closing date from the current calendar or a source URL slug.
+Apply tender expiry ONLY when a tender's explicit submission deadline exists.
+For non-tender investments, factory commissioning, order wins and expansion,
+a past milestone is not by itself a reason to reject a relevant named buyer.
+Classify source-supported but indirect demand as REVIEW, not a confirmed bid.
+When dates are uncertain, explain the uncertainty and use LOW confidence.
 ═══ EVALUATION RULES ═══
 1. INBOX (is_valid=true, confidence="HIGH"):
    - Named buyer and credible explicit requirement for the configured target,
@@ -812,7 +945,8 @@ GATE 3 — Genuineness: GENUINE / JOB_PORTAL / HIRING_SIGNAL / STUDENT / BLOG / 
    Job portals and news aggregators CAN carry genuine employer/buyer signals.
 
 ═══ FRESHNESS BY TYPE ═══
-- TENDER: FRESH (future deadline), RECENT (<45d past), STALE (>45d)
+- TENDER: use explicit bid deadline; expired bids are CLOSED, not active
+- UNKNOWN DATE: use RECENT/AGING with LOW confidence, NEVER assume STALE
 - ORDER_WIN: FRESH (<30d), RECENT (<90d), STALE (>90d)
 - CAPEX: FRESH (<60d), RECENT (<12mo), STALE (>12mo)
 - PARTNERSHIP: FRESH (<60d), RECENT (<12mo), STALE (>12mo)
@@ -1292,6 +1426,8 @@ def main():
         "gate_fp_dupe": 0,
         "gate_job_portal": 0,
         "gate_job_low_value": 0,
+        "gate_tender_landing": 0,
+        "gate_browse_landing": 0,
         "crm_updates": 0,
         "gate_budget": 0, "gate_hallucination": 0,
         "gate_banned_kw": 0,
@@ -1315,18 +1451,26 @@ def main():
             stats["gate_job_low_value"] += 1
             log.info(f"[JOB-LOW-VALUE] {low_value_job}: {lead.url[:120]}")
             continue
+        tender_landing = _low_value_tender_result(lead)
+        if tender_landing:
+            stats["gate_tender_landing"] += 1
+            log.info(f"[TENDER-LANDING] {tender_landing}: {lead.url[:120]}")
+            continue
+        browse_landing = _low_value_browse_result(lead)
+        if browse_landing:
+            stats["gate_browse_landing"] += 1
+            log.info(f"[BROWSE-LANDING] {browse_landing}: {lead.url[:120]}")
+            continue
         if _is_job_portal_host(lead.url):
-            # A job listing can be evidence of an Autodesk buyer even when
-            # discovered by Serper/news rather than the dedicated hiring adapter.
+            # An employer-specific job listing can be evidence of a buyer for
+            # ANY configured portfolio, even outside the hiring adapter.
             # Keep it for AI verification; do not assume the job board is buyer.
             lead.metadata = lead.metadata or {}
             lead.metadata["is_job_url"] = True
             lead.metadata["hiring_signal_candidate"] = True
             log.info(f"[HIRING-CANDIDATE] source={lead.source} url={lead.url[:100]}")
-        # Job portals — filter everywhere EXCEPT the hiring adapter, which
-        # legitimately returns job-portal URLs (site:naukri.com queries) that
-        # carry the employer name in the SERP title. Those go to the AI,
-        # which extracts the real company and routes to Review/Inbox.
+        # Job portals: detailed postings stay eligible for the AI to
+        # identify their employer; generic search/category pages were cut.
         # FIX 5: hallucination filter narrowed to org/title only (not raw_text)
         if not lead.metadata.get("is_job_url"):
             _halluc_hay = (lead.buyer_org or "") + " | " + (lead.title or "")
@@ -1360,6 +1504,8 @@ def main():
              f"fp_dupe={stats['gate_fp_dupe']} "
              f"job_redirect={stats['gate_job_portal']} "
              f"job_low_value={stats['gate_job_low_value']} "
+             f"tender_landing={stats['gate_tender_landing']} "
+             f"browse_landing={stats['gate_browse_landing']} "
              f"budget_exceeded={stats['gate_budget']}")
 
     if DRY_RUN:
@@ -1383,7 +1529,7 @@ def main():
             log.warning(f"[ai-budget] Time budget of {max_runtime // 60}min reached — skipping remaining {remaining} lead(s); will be picked up next run")
             break
         batch = filtered[i:i+AI_BATCH]
-        all_targets = " OR ".join(cfg["targets"]) if cfg["targets"] else "Any Commercial Software"
+        all_targets = " OR ".join(cfg["targets"]) if cfg["targets"] else "Any configured B2B product, service or solution"
         all_directives = " OR ".join(cfg["directives"]) if cfg["directives"] else ""
         all_industries = " OR ".join(cfg["industries"]) if cfg["industries"] else ""
 
@@ -1511,7 +1657,7 @@ def main():
     log.info(f"[done] {stats} in {duration}")
 
     lines = [
-        "🏁 <b>Radar Scout V3 complete</b>",
+        "🏁 <b>Radar Scout V33 complete</b>",
         f"• Adapters produced: <code>{stats['adapter_total']}</code>",
         f"• After gates: <code>{len(filtered)}</code>",
         f"• Gate drops: tender-dupe={stats['gate_tender_dupe']} "
