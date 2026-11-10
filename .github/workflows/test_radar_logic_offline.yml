@@ -30,7 +30,7 @@ jobs:
           RADAR_TRASH_LOCAL_AUDIT: '0'
         run: |
           python - <<'PY'
-          import ast, os, hashlib, uuid, re
+          import ast, os, hashlib, uuid, re, logging
           from pathlib import Path
           from datetime import datetime
           from urllib.parse import urlparse
@@ -108,12 +108,12 @@ jobs:
           # Adapter provenance: extract pure mapping functions; no source adapters are run.
           source_ast = ast.parse(Path('adapters/tenders.py').read_text(encoding='utf-8'))
           source_funcs = [n for n in source_ast.body if isinstance(n, ast.FunctionDef)
-                          and n.name in ('_gem_source_status', '_dict_to_lead')]
-          assert len(source_funcs) == 2, 'Missing tender provenance mapping functions'
+                          and n.name in ('_gem_source_status', '_gem_bid_refs', '_safe_gem_tender_id', '_dict_to_lead')]
+          assert len(source_funcs) == 4, 'Missing tender provenance / ID mapping helper functions'
           source_constants = [n for n in source_ast.body if isinstance(n, ast.Assign)
                               and any(isinstance(t, ast.Name) and t.id in ('_GEM_REF', '_GEM_DIRECT_PATH')
                                       for t in n.targets)]
-          source_env = {'StandardLead': StandardLead, 're': re, 'urlparse': urlparse}
+          source_env = {'StandardLead': StandardLead, 're': re, 'urlparse': urlparse, 'log': logging.getLogger('offline-tender-mapping')}
           exec(compile(ast.Module(body=source_constants + source_funcs, type_ignores=[]), 'tenders_extract', 'exec'), source_env)
           convert = source_env['_dict_to_lead']
           indexed = convert('gem', {
@@ -133,6 +133,100 @@ jobs:
           })
           assert official_link.metadata['active_tender_verified'] is False
           print('PASS official GeM listing alone does not prove active bid')
+          PY
+
+      - name: Test Step40A/40B canonical IDs and provisional tender cache guard (offline)
+        run: |
+          python - <<'PY'
+          """Test current repo files without network, AI, webhook or imported adapters."""
+          import ast
+          import logging
+          import re
+          from pathlib import Path
+          from urllib.parse import urlparse
+          from standard_lead import StandardLead
+
+          def source_functions(path, names, variables=()):
+              tree = ast.parse(Path(path).read_text(encoding='utf-8'))
+              funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+              assert {n.name for n in funcs} == set(names), f'Missing required functions in {path}'
+              constants = [n for n in tree.body if isinstance(n, ast.Assign) and
+                  any(isinstance(t, ast.Name) and t.id in variables for t in n.targets)]
+              return tree, constants + funcs
+
+          _, tender_nodes = source_functions('adapters/tenders.py',
+              {'_gem_source_status','_gem_bid_refs','_safe_gem_tender_id','_dict_to_lead'},
+              {'_GEM_REF','_GEM_DIRECT_PATH'})
+          env = {'StandardLead': StandardLead, 're': re, 'urlparse': urlparse,
+                 'log': logging.getLogger('step40c')}
+          exec(compile(ast.Module(body=tender_nodes, type_ignores=[]), 'step40c_tenders', 'exec'), env)
+          convert = env['_dict_to_lead']
+
+          radar_tree, cache_nodes = source_functions('radar.py',
+              {'_unverified_gem_reference', '_can_cache_tender_id'})
+          cache = {}
+          exec(compile(ast.Module(body=cache_nodes, type_ignores=[]), 'step40c_cache', 'exec'), cache)
+          is_unverified = cache['_unverified_gem_reference']
+          can_cache = cache['_can_cache_tender_id']
+
+          # Check the guard is used at the actual dedup and cache-write call sites.
+          guard_calls = [n for n in ast.walk(radar_tree) if isinstance(n, ast.Call)
+                         and isinstance(n.func, ast.Name) and n.func.id == '_can_cache_tender_id']
+
+          bid = 'GEM/2026/B/8231919'
+          def sample(url, title='AutoCAD renewal GEM/2026/B/8231919',
+                     snippet='Bid GEM/2026/B/8231919', metadata=None):
+              return dict(url=url, title=title, snippet=snippet,
+                          metadata=metadata if metadata is not None else
+                          {'indexed_bid_reference':bid, 'provisional':True,
+                           'verification_status':'unverified_index'})
+
+          checked = 0
+          def check(name, condition):
+              global checked
+              assert condition, name
+              checked += 1
+              print('PASS Step40:', name)
+
+          a = convert('gem', sample('https://tenderimpulse.com/government-tenders/india/autocad-renewal'))
+          b = convert('gem', sample('https://tenderkart.in/tender/another-autocad-renewal'))
+          check('canonical tender_id from GeM index', a.tender_id == bid)
+          check('stable lead ID across distinct listing URLs', a.id == b.id and a.id == a.compute_id())
+          check('provisional source metadata preserved', a.metadata['provisional_tender'] is True and
+                a.metadata['verification_status']=='unverified_index' and
+                a.metadata['active_tender_verified'] is False)
+          check('provisional GeM tender not permanently cached', is_unverified(a) and not can_cache(a))
+          check('normalise spacing and case in bid IDs', convert('gem', sample(
+                'https://example.org/tender/one', title='gem / 2026 / b / 8231919 renewal',
+                metadata={'indexed_bid_reference':'gem / 2026 / b / 8231919','provisional':True})).tender_id == bid)
+          check('reject conflicting title and snippet IDs', not convert('gem', sample(
+                'https://example.org/tender/two',snippet='GEM/2026/B/8888888')).tender_id)
+          check('reject conflicting index metadata', not convert('gem', sample(
+                'https://example.org/tender/three',metadata={
+                'indexed_bid_reference':'GEM/2026/B/8888888','provisional':True})).tender_id)
+          check('reject malformed indexed metadata', not convert('gem', sample(
+                'https://example.org/tender/four',metadata={
+                'indexed_bid_reference':'not a valid reference','provisional':True})).tender_id)
+          check('no ID invented for unnamed bid', not convert('gem', sample(
+                'https://bidplus.gem.gov.in/showbidDocument/10117601',
+                title='AutoCAD software tender',snippet='bid listing',metadata={})).tender_id)
+          official = convert('gem', sample('https://bidplus.gem.gov.in/showbidDocument/10117601',
+                metadata={'verification_status':'official_listing_link'}))
+          check('official listing alone is not proof of active tender',
+                official.tender_id==bid and not can_cache(official))
+          verified = StandardLead(source='tenders',category='tender',url='https://example.org/verified',
+                tender_id=bid,metadata={'internal_source':'gem',
+                'verification_status':'official_listing_link',
+                'official_source_verified':True,'active_tender_verified':True,
+                'provisional_tender':False})
+          check('verified active GeM is eligible for tender cache',can_cache(verified))
+          other = StandardLead(source='tenders',category='tender',url='https://example.org/other',
+                tender_id='CPP/2026/123',metadata={'internal_source':'cppp'})
+          check('non-GeM tender cache remains unchanged',can_cache(other))
+          check('cache guard used at actual routing call sites',len(guard_calls)>=4)
+          cloned = StandardLead.from_dict(a.to_dict())
+          check('serialisation preserves canonical ID', cloned.tender_id == bid and cloned.id == a.id)
+          print(f'ALL {checked} STEP40 CHECKS PASSED')
           PY
 
       - name: Test Step36 indexed GeM bid extraction and ambiguity (offline)
