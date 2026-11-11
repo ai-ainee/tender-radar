@@ -14,6 +14,7 @@ Integration into adapters/tenders.py is intentionally a separate, tested step.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -213,69 +214,97 @@ def fetch_india_government_tenders(keywords, max_results=60, max_queries=12,
     selected = plan_portals(when=when, max_queries=max_queries)
     target_terms = [str(t).replace('\"', '').strip().casefold() for t in keywords if str(t).strip()]
     out, seen_exact_urls = [], set()
+    # Recovery is capped independently of the regular portal rotation. It is
+    # performed only for official NIC-style portals returning landing pages.
+    # Set RADAR_GOV_DETAIL_RETRIES=0 to disable without changing the scheduler.
+    try:
+        recovery_budget = max(0, min(3, int(os.getenv('RADAR_GOV_DETAIL_RETRIES', '3'))))
+    except ValueError:
+        recovery_budget = 3
+    recovery_used = 0
+    recovery_accepted = 0
     summary = {"raw": 0, "off_domain": 0, "not_detail": 0, "keyword_miss": 0, "duplicate_url": 0, "accepted": 0}
     for portal in selected:
         if len(out) >= max_results:
             break
         query = f'site:{portal.host} ({expr}) (tender OR RFQ OR RFP OR procurement)'
-        try:
-            organic = searcher.search(query, country='india', pages=1, recent=False,
-                                      preserve_operators=True)
-        except Exception as exc:
-            log.warning('[gov-index] %s search failed: %s', portal.code, str(exc)[:120])
-            continue
         accepted = 0
         reasons = {"raw": 0, "off_domain": 0, "not_detail": 0, "keyword_miss": 0, "duplicate_url": 0}
-        for item in organic or []:
-            if not isinstance(item, dict):
-                continue
-            url = str(item.get('link') or item.get('url') or '').strip()
-            title = str(item.get('title') or '').strip()
-            snippet = str(item.get('snippet') or '').strip()
-            reasons["raw"] += 1
-            if not _host_match(url, portal):
-                reasons["off_domain"] += 1
-                continue
-            if not _is_specific_tender(url, title, snippet):
-                reasons["not_detail"] += 1
-                continue
-            if not any(term in (title + ' ' + snippet).casefold() for term in target_terms):
-                reasons["keyword_miss"] += 1
-                continue
-            if url in seen_exact_urls:
-                reasons["duplicate_url"] += 1
-                continue  # identical URL only; uncertain cross-site dupes are retained.
-            # Retain the original search index and don't assert a live opportunity.
-            seen_exact_urls.add(url)
-            bid_refs = sorted(set(m.group().upper().replace(' ', '') for m in BID_ID_RE.finditer(title + ' ' + snippet)))
-            out.append({
-                'url': url,
-                'title': title[:300],
-                'snippet': ('UNVERIFIED GOVERNMENT PORTAL SEARCH RESULT. Buyer, current '
-                            'deadline, tender status and corrigenda NOT verified. '
-                            'Manual verification required. ' + snippet)[:1000],
-                'metadata': {
-                    'internal_source': 'government_portal_index',
-                    'government_portal': portal.code,
-                    'government_portal_name': portal.name,
-                    'government_portal_kind': portal.kind,
-                    'government_portal_url': portal.url,
-                    'source_index_domain': portal.host,
-                    'verification_status': 'unverified_official_domain_index',
-                    'source_fetched': False,
-                    'buyer_verified': False,
-                    'current_deadline_verified': False,
-                    'active_tender_verified': False,
-                    'official_source_verified': False,
-                    'provisional_tender': True,
-                    'review_required': True,
-                    'relevance_keyword_match': True,
-                    'snippet_only': True,
-                    'fetch_method': 'search_index',
-                    'possible_gem_bid_refs': bid_refs,  # not used as proof of same bid.
-                },
-            })
-            accepted += 1
+        # A failed initial search does not trigger recovery; only demonstrably
+        # irrelevant portal landing pages can trigger one bounded second query.
+        for attempt in range(2):
+            if attempt:
+                nic_style = '/nicgep/app' in portal.url or '/eprocure/app' in portal.url
+                if not (nic_style and recovery_used < recovery_budget and
+                        reasons['not_detail'] > 0 and accepted == 0 and
+                        reasons['raw'] == reasons['not_detail']):
+                    break
+                recovery_used += 1
+                query = f'site:{portal.host} inurl:FrontEndTenderDetails ({expr})'
+                log.info('[gov-index-recovery] %s trying specific tender-detail index query', portal.code)
+            try:
+                organic = searcher.search(query, country='india', pages=1, recent=False,
+                                          preserve_operators=True)
+            except Exception as exc:
+                # Never embed URLs or exception strings in logs: provider
+                # exceptions can contain credentials in query parameters.
+                log.warning('[gov-index] %s search failed: %s', portal.code, type(exc).__name__)
+                break
+            before = accepted
+            for item in organic or []:
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get('link') or item.get('url') or '').strip()
+                title = str(item.get('title') or '').strip()
+                snippet = str(item.get('snippet') or '').strip()
+                reasons["raw"] += 1
+                if not _host_match(url, portal):
+                    reasons["off_domain"] += 1
+                    continue
+                if not _is_specific_tender(url, title, snippet):
+                    reasons["not_detail"] += 1
+                    continue
+                if not any(term in (title + ' ' + snippet).casefold() for term in target_terms):
+                    reasons["keyword_miss"] += 1
+                    continue
+                if url in seen_exact_urls:
+                    reasons["duplicate_url"] += 1
+                    continue  # identical URL only; uncertain cross-site dupes are retained.
+                # Retain the original search index and don't assert a live opportunity.
+                seen_exact_urls.add(url)
+                bid_refs = sorted(set(m.group().upper().replace(' ', '') for m in BID_ID_RE.finditer(title + ' ' + snippet)))
+                out.append({
+                    'url': url,
+                    'title': title[:300],
+                    'snippet': ('UNVERIFIED GOVERNMENT PORTAL SEARCH RESULT. Buyer, current '
+                                'deadline, tender status and corrigenda NOT verified. '
+                                'Manual verification required. ' + snippet)[:1000],
+                    'metadata': {
+                        'internal_source': 'government_portal_index',
+                        'government_portal': portal.code,
+                        'government_portal_name': portal.name,
+                        'government_portal_kind': portal.kind,
+                        'government_portal_url': portal.url,
+                        'source_index_domain': portal.host,
+                        'verification_status': 'unverified_official_domain_index',
+                        'source_fetched': False,
+                        'buyer_verified': False,
+                        'current_deadline_verified': False,
+                        'active_tender_verified': False,
+                        'official_source_verified': False,
+                        'provisional_tender': True,
+                        'review_required': True,
+                        'relevance_keyword_match': True,
+                        'snippet_only': True,
+                        'fetch_method': 'search_index',
+                        'possible_gem_bid_refs': bid_refs,  # not used as proof of same bid.
+                    },
+                })
+                accepted += 1
+                if len(out) >= max_results:
+                    break
+            if attempt:
+                recovery_accepted += accepted - before
             if len(out) >= max_results:
                 break
         for key, value in reasons.items():
@@ -284,7 +313,8 @@ def fetch_india_government_tenders(keywords, max_results=60, max_queries=12,
         log.info('[gov-index] %s raw=%d off_domain=%d not_detail=%d keyword_miss=%d duplicate_url=%d provisional=%d',
                  portal.code, reasons["raw"], reasons["off_domain"], reasons["not_detail"],
                  reasons["keyword_miss"], reasons["duplicate_url"], accepted)
-    log.info('[gov-index-diagnostics] %s', summary)
+    log.info('[gov-index-diagnostics] %s recovery_queries=%d recovery_accepted=%d',
+             summary, recovery_used, recovery_accepted)
     log.info('[gov-index] %d provisional government tender references from %d portal searches; '
              'not verified active tenders', len(out), len(selected))
     return out
