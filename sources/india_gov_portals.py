@@ -213,6 +213,7 @@ def fetch_india_government_tenders(keywords, max_results=60, max_queries=12,
     selected = plan_portals(when=when, max_queries=max_queries)
     target_terms = [str(t).replace('\"', '').strip().casefold() for t in keywords if str(t).strip()]
     out, seen_exact_urls = [], set()
+    summary = {"raw": 0, "off_domain": 0, "not_detail": 0, "keyword_miss": 0, "duplicate_url": 0, "accepted": 0}
     for portal in selected:
         if len(out) >= max_results:
             break
@@ -224,17 +225,25 @@ def fetch_india_government_tenders(keywords, max_results=60, max_queries=12,
             log.warning('[gov-index] %s search failed: %s', portal.code, str(exc)[:120])
             continue
         accepted = 0
+        reasons = {"raw": 0, "off_domain": 0, "not_detail": 0, "keyword_miss": 0, "duplicate_url": 0}
         for item in organic or []:
             if not isinstance(item, dict):
                 continue
             url = str(item.get('link') or item.get('url') or '').strip()
             title = str(item.get('title') or '').strip()
             snippet = str(item.get('snippet') or '').strip()
-            if not _host_match(url, portal) or not _is_specific_tender(url, title, snippet):
+            reasons["raw"] += 1
+            if not _host_match(url, portal):
+                reasons["off_domain"] += 1
+                continue
+            if not _is_specific_tender(url, title, snippet):
+                reasons["not_detail"] += 1
                 continue
             if not any(term in (title + ' ' + snippet).casefold() for term in target_terms):
+                reasons["keyword_miss"] += 1
                 continue
             if url in seen_exact_urls:
+                reasons["duplicate_url"] += 1
                 continue  # identical URL only; uncertain cross-site dupes are retained.
             # Retain the original search index and don't assert a live opportunity.
             seen_exact_urls.add(url)
@@ -269,8 +278,13 @@ def fetch_india_government_tenders(keywords, max_results=60, max_queries=12,
             accepted += 1
             if len(out) >= max_results:
                 break
-        log.info('[gov-index] %s %d indexed item(s), %d provisional detail(s)',
-                 portal.code, len(organic or []), accepted)
+        for key, value in reasons.items():
+            summary[key] += value
+        summary["accepted"] += accepted
+        log.info('[gov-index] %s raw=%d off_domain=%d not_detail=%d keyword_miss=%d duplicate_url=%d provisional=%d',
+                 portal.code, reasons["raw"], reasons["off_domain"], reasons["not_detail"],
+                 reasons["keyword_miss"], reasons["duplicate_url"], accepted)
+    log.info('[gov-index-diagnostics] %s', summary)
     log.info('[gov-index] %d provisional government tender references from %d portal searches; '
              'not verified active tenders', len(out), len(selected))
     return out

@@ -8,7 +8,7 @@ import os
 import re
 import urllib.request
 import xml.etree.ElementTree as ET
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urljoin, urlparse, parse_qs, urlsplit, urlunsplit
 from bs4 import BeautifulSoup
 from common import SearchEngine, log
 
@@ -33,7 +33,11 @@ def _http(url, timeout=14, headers=None):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read(1_500_000).decode("utf-8", errors="replace")
     except Exception as exc:
-        log.info("[cppp] public endpoint unavailable %s: %s", url[:95], str(exc)[:110])
+        # Never print API key query arguments in a CI log; exception text can also
+        # contain the full requested URL. Log the error class, not its message.
+        parsed = urlsplit(url)
+        safe_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, '', ''))
+        log.info("[cppp] public endpoint unavailable %s: %s", safe_url[:95], type(exc).__name__)
         return ""
 
 
