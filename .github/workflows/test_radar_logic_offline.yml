@@ -610,3 +610,5 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_step65_diagnostics.py' -v
       - name: Step 52 source coverage reporter (offline)
         run: python -m unittest discover -s tests -p 'test_step52_coverage_report.py' -v
+      - name: Step 71 government tender detail recovery (offline)
+        run: python -m unittest discover -s tests -p 'test_step71_detail_recovery.py' -v
