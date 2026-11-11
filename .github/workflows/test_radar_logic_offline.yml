@@ -606,5 +606,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_step51_integrated.py' -v
       - name: Step 52 corporate direct purchases and indirect signals (offline)
         run: python -m unittest discover -s tests -p 'test_step52_corporate.py' -v
+      - name: Step 65 government diagnostics and security (offline)
+        run: python -m unittest discover -s tests -p 'test_step65_diagnostics.py' -v
       - name: Step 52 source coverage reporter (offline)
         run: python -m unittest discover -s tests -p 'test_step52_coverage_report.py' -v
