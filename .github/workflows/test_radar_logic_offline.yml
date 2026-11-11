@@ -23,8 +23,16 @@ jobs:
           test -f adapters/tenders.py
           test -f sources/gem.py
           test -f standard_lead.py
+          test -f common.py
+          test -f sources/cppp.py
+          test -f sources/india_gov_portals.py
+          test -f pending_candidates.py
+          test -f sources/corporate_intelligence.py
+          test -f adapters/corporate_intelligence.py
+          test -f tests/test_step52_corporate.py
+          test -f tools/source_coverage_report.py
       - name: Compile core Python files
-        run: python -m py_compile radar.py adapters/tenders.py sources/gem.py standard_lead.py
+        run: python -m py_compile radar.py adapters/tenders.py sources/gem.py standard_lead.py common.py sources/cppp.py sources/india_gov_portals.py adapters/aggregator_tenders.py pending_candidates.py adapters/corporate_intelligence.py sources/corporate_intelligence.py adapters/__init__.py
       - name: Test GeM provenance and final CRM routing decisions (offline)
         env:
           RADAR_TRASH_LOCAL_AUDIT: '0'
@@ -61,6 +69,8 @@ jobs:
               'normalize_company':lambda s:s.strip(),
               'apply_quality_gates':lambda lead,c:(lead,[]),
               '_fp_key':lambda x:'', '_classify_gates':lambda flags:([],[]),
+              '_other_unverified_government_tender':lambda lead:False,
+              '_unverified_corporate_public':lambda lead:False,
               'extract_phone':lambda v:'', 'safe_cell':lambda s:s,
           }
           exec(compile(ast.Module(body=[router],type_ignores=[]), 'router_extract','exec'),env)
@@ -163,8 +173,8 @@ jobs:
           convert = env['_dict_to_lead']
 
           radar_tree, cache_nodes = source_functions('radar.py',
-              {'_unverified_gem_reference', '_can_cache_tender_id'})
-          cache = {}
+              {'_unverified_gem_reference', '_other_unverified_government_tender', '_can_cache_tender_id'})
+          cache = {'_unverified_corporate_public':lambda lead:False}
           exec(compile(ast.Module(body=cache_nodes, type_ignores=[]), 'step40c_cache', 'exec'), cache)
           is_unverified = cache['_unverified_gem_reference']
           can_cache = cache['_can_cache_tender_id']
@@ -348,11 +358,12 @@ jobs:
               print('PASS:', description)
 
           # Compile the exact helpers from the replacement, without running imports or main().
-          helper_names = {'_unverified_gem_reference', '_can_cache_tender_id', '_provisional_gem_id',
+          helper_names = {'_unverified_gem_reference', '_other_unverified_government_tender', '_can_cache_tender_id', '_provisional_gem_id',
                           'load_gem_recheck_state', '_gem_recheck_due', '_record_gem_attempt'}
           funcs = [x for x in TREE.body if isinstance(x, ast.FunctionDef) and x.name in helper_names]
-          check(len(funcs) == 6, 'all six GeM cache/provenance helpers are present')
+          check(len(funcs) == 7, 'all seven provenance/cache helpers are present')
           namespace = {'re':re, 'json':json, 'os':os, 'datetime':datetime, 'log':log,
+                       '_unverified_corporate_public':lambda lead:False,
                        'GEM_RECHECK_FILE':str(ROOT/'test_gem_recheck_state.json'), 'DRY_RUN':True}
           exec(compile(ast.Module(body=funcs,type_ignores=[]), 'radar_helpers', 'exec'), namespace)
           unverified = namespace['_unverified_gem_reference']
@@ -389,9 +400,13 @@ jobs:
           assert fragment.count('filtered.append(lead)') == 1
           snippet='''def apply_actual_gate(leads, seen, fps, gem_rechecks, gem_recheck_cap=2, gem_recheck_days=7):
               filtered=[]
+              pending_next=[]
+              run_exact_urls=set()
+              max_links=30
               gem_selected_bids=set()
               stats={'gate_url_seen':0, 'gate_fp_dupe':0, 'gate_gem_run_dupe':0, 'gate_gem_cooldown':0,
-                     'gate_gem_recheck_limit':0, 'gem_rechecks_selected':0}
+                     'gate_gem_recheck_limit':0, 'gem_rechecks_selected':0,
+                     'gate_budget':0, 'gate_run_url_exact':0}
               for lead in leads:
           '''+fragment+'''    return filtered,stats
           '''
@@ -490,6 +505,8 @@ jobs:
               '_is_vendor_self_reference':lambda a,b:False, '_is_staffing_agency':lambda x:False,
               'normalize_company':lambda s:s.strip(), 'apply_quality_gates':lambda l,c:(l,[]),
               '_fp_key':lambda fp:'', '_classify_gates':lambda flags:([],[]),
+              '_other_unverified_government_tender':lambda lead:False,
+              '_unverified_corporate_public':lambda lead:False,
               'extract_phone':lambda v:'', 'safe_cell':lambda s:s,
           }
           exec(compile(ast.Module(body=[formatter,router],type_ignores=[]),'step47c_extract','exec'),ctx)
@@ -580,3 +597,12 @@ jobs:
 
           print(f'ALL {checks} STEP47D CHECKS PASSED')
           PY
+
+      - name: Step 51A portal inventory and rotation (offline)
+        run: python tests/test_india_gov_portals.py
+      - name: Step 51 integrated CPPP government routing search and backlog (offline)
+        run: python -m unittest discover -s tests -p 'test_step51_integrated.py' -v
+      - name: Step 52 corporate direct purchases and indirect signals (offline)
+        run: python -m unittest discover -s tests -p 'test_step52_corporate.py' -v
+      - name: Step 52 source coverage reporter (offline)
+        run: python -m unittest discover -s tests -p 'test_step52_coverage_report.py' -v

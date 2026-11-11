@@ -45,7 +45,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # surface CAD outsourcing shops (Cad Crowd, Alpha Cad, etc.) instead of buyers.
 # Append negatives to steer Google toward supply/procurement pages.
 # These survive SearchEngine.clean_query() after the fix in common.py.
-_NEG_TENDER = " -services -outsourcing -training -course -indiamart -tradeindia -naukri -justdial -freelance -provider"
+_NEG_TENDER = " -indiamart -tradeindia -naukri -justdial -freelance"
 _NEG_HIRING = " -indiamart -tradeindia -naukri -justdial -freelance"
 
 
@@ -575,10 +575,8 @@ class DiscoveryAdapter(SourceAdapter):
         use_ai_queries = os.getenv("AI_QUERIES", "1").strip() != "0"
 
         campaigns = []
-        if special and not targets:
-            # A special instruction is not necessarily a product phrase.
-            # Use it as a last-resort search seed only when there are no
-            # configured product/solution targets at all.
+        if special:
+            # Explicit campaign instructions take priority over default targets.
             seed = " ".join(special.split())[:95]
             gen = QueryGenerator(seed, "Special Campaign", country, states,
                                  self._llm, use_ai_queries, combo_offset=0)
@@ -801,13 +799,15 @@ class DiscoveryAdapter(SourceAdapter):
                        f"?q={q}&hl=en-IN&gl=IN&ceid=IN:en")
                 body = _http_get(url, timeout=15)
                 for r in _parse_rss_items(body, [], "google_news")[:15]:
-                    # Skip vendor announcements detected via title
-                    if _looks_like_vendor_announcement(r.get("title", ""), targets):
+                    title = str(r.get("title", "")).lower()
+                    # Retain buyer case studies and partnership announcements for
+                    # downstream verification; discard clear how-to/release content.
+                    if any(term in title for term in (
+                            "release notes", "getting started with", "how to use",
+                            "tutorial for", "webinar:", "what's new in")):
                         continue
-                    # Skip articles published by the vendor itself
-                    if _is_vendor_source_url(r.get("source_url", ""),
-                                              r.get("source_text", ""), targets):
-                        continue
+                    r["vendor_publisher"] = _is_vendor_source_url(
+                        r.get("source_url", ""), r.get("source_text", ""), targets)
                     leads.append(_dict_to_lead("google_news", r))
 
         log.info(f"[discovery:google_news] {len(leads)} lead(s) collected")
@@ -836,6 +836,10 @@ def _dict_to_lead(source_name, r):
         metadata={
             "fetch_method": "rss",
             "internal_source": source_name,
+            "snippet_only": True,
+            "google_news_rss": source_name == "google_news",
+            "source_publisher_url": str(r.get("source_url") or "")[:200],
+            "vendor_publisher": bool(r.get("vendor_publisher")),
         },
     )
 

@@ -350,6 +350,7 @@ def _auto_register():
     adapter_modules = [
         ("aggregator_tenders", "adapters.aggregator_tenders", "PipeworxAdapter"),
         ("discovery", "adapters.discovery", "DiscoveryAdapter"),
+        ("corporate_intelligence", "adapters.corporate_intelligence", "CorporateIntelligenceAdapter"),
         ("filings",   "adapters.filings",   "FilingsAdapter"),
         ("tenders",   "adapters.tenders",   "TendersAdapter"),  
         ("hiring",    "adapters.hiring",    "HiringAdapter"),

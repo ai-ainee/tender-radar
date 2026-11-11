@@ -28,6 +28,7 @@ from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram,
                     normalize_company, tg_escape)
 
 from standard_lead import StandardLead
+from pending_candidates import load_pending, save_pending, DEFAULT_PATH as PENDING_FILE
 from adapters import (get_enabled, get_all, CompanyDedup,
                       _is_vendor_domain, _is_content_page,
                       sync_vendor_domains_from_crm)
@@ -221,9 +222,47 @@ def _unverified_gem_reference(lead):
     )
 
 
+def _other_unverified_government_tender(lead):
+    """CPPP, state/UT/PSU index or third-party tender lacking verification.
+
+    Do not infer a confirmed purchasing unit/active bid merely from domain
+    or from an AI confidence score. GeM keeps its established distinct guard.
+    """
+    md = lead.metadata if isinstance(lead.metadata, dict) else {}
+    return bool(
+        lead.category == "tender"
+        and str(md.get("internal_source") or "").lower() not in (
+            "gem", "corporate_public_index")
+        and md.get("review_required") is True
+        and not (md.get("official_source_verified") is True
+                 and md.get("active_tender_verified") is True
+                 and md.get("buyer_verified") is True
+                 and md.get("current_deadline_verified") is True)
+    )
+
+
+def _unverified_corporate_public(lead):
+    """Search-index corporate buying signals are prospective, not confirmed.
+
+    An official company DOMAIN appearing in a search result does not verify
+    that its indexed snippet represents an active procurement requirement.
+    """
+    md = lead.metadata if isinstance(lead.metadata, dict) else {}
+    return bool(
+        str(md.get("internal_source") or "").strip().lower() == "corporate_public_index"
+        and md.get("review_required") is True
+        and not (md.get("official_source_verified") is True
+                 and md.get("buyer_verified") is True
+                 and md.get("active_tender_verified") is True
+                 and md.get("current_deadline_verified") is True)
+    )
+
+
 def _can_cache_tender_id(lead):
-    """Preserve legacy behavior for other sources; fail closed for GeM."""
-    return bool(lead.tender_id) and not _unverified_gem_reference(lead)
+    """Canonical tender cache only after source has adequate verification."""
+    return (bool(lead.tender_id) and not _unverified_gem_reference(lead)
+            and not _other_unverified_government_tender(lead)
+            and not _unverified_corporate_public(lead))
 
 
 def _provisional_gem_id(lead):
@@ -323,7 +362,7 @@ def _candidate_priority(lead):
     if lead.tender_id:
         # GeM bid-number recognition confirms identity, not active purchase.
         # A provisional reference earns a smaller queue boost until checked.
-        score += 15 if _unverified_gem_reference(lead) else 40
+        score += 15 if (_unverified_gem_reference(lead) or _other_unverified_government_tender(lead)) else 40
     if lead.buyer_dept:
         score += 10
     if lead.deadline and (lead.tender_id or company):
@@ -966,6 +1005,16 @@ def _format_lead(lead, idx, max_chars=3000):
             parts.append("BUYER_POLICY: Source-listed ministry may be a parent; do not invent the actual procuring office.")
             parts.append("URGENCY_POLICY: Never treat an indexed deadline as current or call for immediate bidding.")
 
+    # Step 52: Public corporate search/news/filing indexes are not verified
+    # buyer, spending intent, deadline or proof of a purchase.
+    if _unverified_corporate_public(lead):
+        parts.append("SOURCE_VERIFICATION: UNVERIFIED_CORPORATE_PUBLIC_INDEX")
+        parts.append("BUYER_VERIFIED: NO")
+        parts.append("PURCHASE_INTENT_VERIFIED: NO")
+        parts.append("CURRENT_DEADLINE_VERIFIED: NO")
+        parts.append("SIGNAL_POLICY: A project/hiring/capex signal is a potential buyer, not a confirmed procurement.")
+        parts.append("URGENCY_POLICY: Do not invent a verified closing date, purchase order, or urgency.")
+
     text = (lead.raw_text or "").strip()
     if len(text) > max_chars:
         text = f"{text[:max_chars-800]}\n\n[...truncated...]\n\n{text[-800:]}"
@@ -1253,6 +1302,39 @@ class Router:
             lead.why_engage_now = "[AGGREGATE/REPORT] " + str(lead.why_engage_now or "")
             is_valid = False
 
+        # A public/government indexed notice with an explicit Settings keyword
+        # match may still be a useful lead even when a snippet-only AI verdict
+        # rejects it. Preserve for HUMAN triage, never call it verified.
+        if (_other_unverified_government_tender(lead) and not is_valid
+                and (lead.metadata or {}).get("relevance_keyword_match") is True
+                and os.getenv("GOV_REJECT_TO_MANUAL", "1") == "1"):
+            return self.push_manual(
+                lead,
+                "government-index-candidate",
+                "Keyword-matched official/third-party public tender index. "
+                "AI rejected or could not confirm buyer/requirement. "
+                "Review manually; bid and deadline are NOT verified.",
+            )
+
+        # Step 52: Retain target-matched public corporate references when AI
+        # dismisses a thin snippet. A specific product match plus a procurement
+        # or named signal anchor is required at the collector; industry-only
+        # headlines are NOT auto-routed to Manual to limit low-value noise.
+        if (_unverified_corporate_public(lead) and not is_valid
+                and (lead.metadata or {}).get("relevance_keyword_match") is True):
+            md = lead.metadata or {}
+            is_direct = lead.category == "tender"
+            is_target_signal = bool(md.get("matched_target")) and lead.category in (
+                "filing", "expansion", "hiring", "news")
+            if ((is_direct and os.getenv("CORP_DIRECT_REJECT_TO_MANUAL", "1") == "1")
+                    or (is_target_signal and os.getenv("CORP_SIGNAL_REJECT_TO_MANUAL", "1") == "1")):
+                return self.push_manual(
+                    lead, "corporate-index-candidate" if is_direct else "corporate-signal-candidate",
+                    "Target-matched public corporate index candidate rejected by AI. "
+                    "Actual buyer, buying intent, date and requirement are NOT verified. "
+                    "Confirm the original source manually; do not infer urgency.",
+                )
+
         vendor_hit = _is_vendor_domain(lead.url)
         if vendor_hit:
             if _is_vendor_self_reference(lead.buyer_org, lead.url):
@@ -1314,9 +1396,10 @@ class Router:
         # share the latter, so it must not suppress an identified tender.
         # Keep tender-ID, URL and GeM cooldown/recheck safeguards in charge.
         # Do not store a broad event fingerprint that blocks future rechecks.
-        if lead.category == "tender" and str(lead.tender_id or "").strip():
+        if lead.category == "tender":
             fp_key = ""
-            log.info("[EVENT-FP-TENDER-BYPASS] canonical_id=%s", lead.tender_id)
+            log.info("[EVENT-FP-TENDER-BYPASS] tender=%s (identity not inferred from AI fingerprint)",
+                     lead.tender_id or lead.url[:90])
         else:
             fp_key = _fp_key(ai_verdict.get("event_fingerprint"))
         if fp_key and fp_key in self.event_fps:
@@ -1464,6 +1547,66 @@ class Router:
                                 lead.url[:200])
                 else:
                     log.info("[GEM-REVIEW-GUARD] remains Review: %s", lead.url[:200])
+
+        # National/state/UT/PSU/aggregator tender candidates have not been
+        # verified directly. Preserve them for Review, but do not invent a
+        # current deadline or an actual procuring unit. No product hardcoding.
+        if _other_unverified_government_tender(lead) and outcome in ("INBOX", "REVIEW"):
+            md = lead.metadata if isinstance(lead.metadata, dict) else {}
+            portal = str(md.get("government_portal_name") or md.get("portal") or
+                         md.get("internal_source") or "government source")[:100]
+            label = str(lead.buyer_org or md.get("source_listed_buyer") or "Unknown")[:150]
+            ref = str(lead.tender_id or md.get("source_reported_tender_id") or "")[:100]
+            reason_label = f" reference {ref}" if ref else ""
+            why = (
+                f"[UNVERIFIED GOVERNMENT TENDER{reason_label}] "
+                f"[SOURCE: {portal}] "
+                f"[SOURCE/AI ORGANIZATION: {label}; procuring unit NOT VERIFIED] "
+                f"[AI RELEVANCE SCORE: {score_num}/100; NOT a verified purchase] "
+                "Public tender reference only; confirm the buyer, requirement, "
+                "latest deadline, active status and corrigenda on the official "
+                "portal before contacting or bidding."
+            )
+            row[1] = "Public procurement reference: current buyer and deadline unverified"
+            row[8] = why
+            confidence = "LOW"
+            lead.confidence = "LOW"
+            if outcome == "INBOX":
+                sheet_name, outcome, reason = (SHEET_REVIEW, "REVIEW", "government_unverified")
+                log.warning("[GOV-REVIEW-GUARD] Inbox -> Review: %s", lead.url[:160])
+            else:
+                log.info("[GOV-REVIEW-GUARD] remains Review: %s", lead.url[:160])
+
+        # Step 52: Apply the same last-mile certainty cap to public corporate
+        # sources, including first-party domains seen only through a search
+        # index. Preserve title as evidence but replace AI certainty/urgency.
+        if _unverified_corporate_public(lead) and outcome in ("INBOX", "REVIEW"):
+            md = lead.metadata if isinstance(lead.metadata, dict) else {}
+            track = str(md.get("corporate_signal_track") or "public_corporate_signal")[:70]
+            label = str(lead.buyer_org or "Unknown").strip()[:120]
+            candidate = " ".join(str(lead.title or "").split())[:160]
+            label_kind = "POSSIBLE DIRECT PROCUREMENT" if lead.category == "tender" else "POTENTIAL BUYING SIGNAL"
+            why = (
+                f"[UNVERIFIED CORPORATE {label_kind}] "
+                f"[SIGNAL TYPE: {track}] "
+                f"[SOURCE/AI ORGANIZATION: {label}; actual buying entity NOT VERIFIED] "
+                f"[PUBLIC INDEX HEADLINE: {candidate}] "
+                f"[AI RELEVANCE SCORE: {score_num}/100; NOT confirmation of purchase] "
+                "Verify the company, requirement, evidence, publication date and "
+                "any tender deadline directly with the original source. "
+                "Expansion, hiring or technology signals indicate prospects only."
+            )
+            row[1] = ("Corporate purchasing reference — details unverified"
+                      if lead.category == "tender" else
+                      "Corporate buying signal — demand unverified")
+            row[8] = why
+            confidence = "LOW"
+            lead.confidence = "LOW"
+            if outcome == "INBOX":
+                sheet_name, outcome, reason = SHEET_REVIEW, "REVIEW", "corporate_unverified"
+                log.warning("[CORP-REVIEW-GUARD] Inbox -> Review: %s", lead.url[:160])
+            else:
+                log.info("[CORP-REVIEW-GUARD] remains Review: %s", lead.url[:160])
 
         comp_winner = str(lead.competitor_winner or "").strip()
         if comp_winner and comp_winner.lower() not in ("none", "", "null", "n/a", "unknown"):
@@ -1616,15 +1759,25 @@ def main():
         log.info(f"[adapter] {adapter.name}: {len(adapter_leads)} lead(s)")
 
     log.info(f"Total leads from all adapters: {len(all_leads)}")
-    all_leads = prioritize_candidates(all_leads)
+    # Reintroduce candidates that survived filtering but exceeded a previous
+    # run's AI budget. Bounded and stored without contact/secret fields.
+    pending_prior = load_pending(PENDING_FILE)
+    if pending_prior:
+        log.info("[PENDING] reloaded %d deferred candidate(s) for fresh gates",len(pending_prior))
+    all_leads = prioritize_candidates(pending_prior + all_leads)
 
     max_links = env_int("MAX_LINKS_PER_RUN", 150)
     gem_recheck_days = max(1, env_int("GEM_RECHECK_DAYS", 7))
     gem_recheck_cap = max(0, env_int("GEM_RECHECK_MAX_PER_RUN", 2))
     gem_selected_bids = set()  # De-dupe canonical GeM IDs *within* this run.
     filtered = []
+    pending_next = []
+    run_exact_urls = set()
     stats = {
-        "adapter_total": len(all_leads),
+        "adapter_total": len(all_leads) - len(pending_prior),
+        "pending_loaded": len(pending_prior),
+        "pending_deferred": 0,
+        "gate_run_url_exact": 0,
         "gate_tender_dupe": 0,
         "gate_url_seen": 0,
         "gate_fp_dupe": 0,
@@ -1658,13 +1811,19 @@ def main():
                 clean_url(lead.url) in seen,
                 _can_cache_tender_id(lead),
             )
-        if len(filtered) >= max_links:
-            stats["gate_budget"] += 1
-            continue
+        # Do not apply the AI budget before quality/seen checks: otherwise
+        # hundreds of unrelated results are counted as 'lost' leads.
         # Google obfuscation redirects — dead links in the CRM, filter everywhere
-        if _is_google_redirect(lead.url):
+        if _is_google_redirect(lead.url) and not (
+                lead.category == "news" and
+                (lead.metadata or {}).get("google_news_rss") is True):
             stats["gate_job_portal"] = stats.get("gate_job_portal", 0) + 1
             continue
+        if (lead.metadata or {}).get("google_news_rss") is True:
+            # A Google News RSS link is a publisher aggregator; it is not
+            # proof of a purchase or an original article. AI/CRM retain the
+            # source link and downgrade confidence until manually confirmed.
+            lead.metadata["snippet_only"] = True
         low_value_job = _low_value_job_result(lead.url)
         if low_value_job:
             stats["gate_job_low_value"] += 1
@@ -1735,8 +1894,16 @@ def main():
             stats["gate_url_seen"] += 1
             continue
         fp = _fingerprint(lead.raw_text)
-        if fp and fp in fps and not gem_recheck:
+        if lead.category != "tender" and fp and fp in fps and not gem_recheck:
             stats["gate_fp_dupe"] += 1
+            continue
+        if c in run_exact_urls:
+            stats["gate_run_url_exact"] += 1
+            continue
+        run_exact_urls.add(c)
+        if len(filtered) >= max_links:
+            stats["gate_budget"] += 1
+            pending_next.append(lead)
             continue
         filtered.append(lead)
         if gem_bid:
@@ -1773,6 +1940,13 @@ def main():
         log.info(f"[DRY RUN] Would evaluate {len(filtered)} leads via AI")
         return 0
 
+    queued_count = save_pending(pending_next, PENDING_FILE)
+    stats["pending_deferred"] = max(0, queued_count)
+    if queued_count < 0:
+        log.warning("[PENDING] could not persist deferred-candidate queue")
+    else:
+        log.info("[PENDING] saved %d budget-excluded candidates (not marked seen)",queued_count)
+    failed_for_pending = []
     evaluator = Evaluator(llm)
     router = Router(sheet, allowed_countries=country_list,
                     event_fps=event_fps, company_dedup=company_dedup)
@@ -1784,6 +1958,7 @@ def main():
         if time.time() - started > max_runtime:
             remaining = len(filtered) - i
             stats["ai_skipped"] = remaining
+            failed_for_pending.extend(filtered[i:])
             log.warning(f"[ai-budget] Time budget of {max_runtime // 60}min reached — skipping remaining {remaining} lead(s); will be picked up next run")
             break
         batch = filtered[i:i+AI_BATCH]
@@ -1825,6 +2000,7 @@ def main():
                     _record_gem_attempt(gem_rechecks, lead, outcome)
                 else:
                     stats["manual_failed"] += 1
+                    failed_for_pending.append(lead)
             if ai_failures >= 4:
                 log.error(
                     "[ai] providers exhausted after 4 fallback batches — "
@@ -1846,6 +2022,7 @@ def main():
                         _record_gem_attempt(gem_rechecks, pending, outcome)
                     else:
                         stats["manual_failed"] += 1
+                        failed_for_pending.append(pending)
                 break
             continue
 
@@ -1870,6 +2047,7 @@ def main():
                     _record_gem_attempt(gem_rechecks, lead, outcome)
                 else:
                     stats["manual_failed"] += 1
+                    failed_for_pending.append(lead)
                 continue
 
             outcome, company, reason = router.push(
@@ -1887,6 +2065,7 @@ def main():
                     mark_tender_seen(tender_ids, lead.tender_id)
                 _record_gem_attempt(gem_rechecks, lead, outcome)
             else:
+                failed_for_pending.append(lead)
                 log.warning(f"[retry-next-run] {lead.buyer_org} ({outcome}) — URL NOT marked seen; will retry on next run")
 
             if outcome == "FAILED":
@@ -1915,6 +2094,14 @@ def main():
             elif outcome == "DUPLICATE":
                 stats["dupes"] += 1
 
+    if failed_for_pending:
+        updated = save_pending(pending_next + failed_for_pending, PENDING_FILE)
+        if updated >= 0:
+            stats["pending_deferred"] = updated
+            log.info("[PENDING] saved %d including failed or time-limited candidates",updated)
+        else:
+            log.warning("[PENDING] could not save final retry queue")
+
     duration = str(datetime.now() - t0).split(".")[0]
     log.info(f"[done] {stats} in {duration}")
 
@@ -1927,6 +2114,7 @@ def main():
         f"banned-kw={stats['gate_banned_kw']}",
         f"• CompanyDedup known: <code>{len(company_dedup)}</code>",
         f"• AI evaluated: <code>{stats['evaluated']}</code>",
+        f"• Deferred for next run: <code>{stats['pending_deferred']}</code>",
         f"• New leads → Inbox {stats['inbox']}, Review {stats['review']}, "
         f"Partners {stats['partners']}",
         f"• Existing-company signals updated: {stats['crm_updates']}",
