@@ -1884,3 +1884,4 @@ hiring|wsp|Senior CAD Designer - Aviation||2026-11|
 capex|ministryofrailways|100 projects|projects|2026-04|india
 tender|indianrailways|AutoCAD 2027|users|2026-10|
 expansion|marutisuzukiindialimited|2.65|million units|2026-07|kharkhoda,haryana
+hiring|inteltechnologyindiapvtltd|Senior CAD Engineer|position|2026-11|bengaluru,karnataka
