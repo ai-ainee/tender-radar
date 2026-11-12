@@ -115,9 +115,24 @@ jobs:
           AI_BATCH_SIZE: '6'          # fewer batches total
           LLM_MIN_INTERVAL: '10'      # 15s between calls, not 5
           MAX_LINKS_PER_RUN: '30'
+        
         run: python radar.py
 
+      - name: Upload dry-run lead quality audit
+        if: >-
+          always() &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.dry_run == true &&
+          (inputs.job == 'both' || inputs.job == 'harvest')
+        uses: actions/upload-artifact@v4
+        with:
+          name: step79-lead-quality-audit
+          path: step79_lead_quality_audit.csv
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Run enrichment worker
+
         if: >-
           (github.event_name == 'schedule' && github.event.schedule == '30 3,7,11,15 * * *') ||
           (github.event_name == 'workflow_dispatch' && (inputs.job == 'both' || inputs.job == 'enrich'))
