@@ -181,6 +181,20 @@ def _low_value_tender_result(lead):
             return "government-tender-landing"
     if host.endswith("tendersontime.com") and path.startswith("/indiaproducts/"):
         return "tender-directory-category"
+    # V3.1: confirmed national/category search indexes from the 30-lead audit.
+    # Structured tender IDs and identified buyers were protected above.
+    if host.endswith("tendersontime.com") and path.startswith("/india-tenders/"):
+        return "tender-directory-category"
+    if host.endswith("globaltenders.com") and path in ("/india-tenders", "/tenders/india"):
+        return "tender-country-index"
+    if host.endswith("freetender.net") and path in ("/tenders/india", "/india-tenders"):
+        return "tender-country-index"
+    if host.endswith("tender84.com") and path in ("/etenders", "/tenders"):
+        return "tender-search-landing"
+    if host in ("eprocure.gov.in", "etenders.gov.in") and path == "/eprocure/app":
+        if re.search(r"(?:^|&)page=frontendtendersbylocation(?:&|$)", query):
+            return "government-tender-search"
+
 
     # Reject generic tender directories, but preserve tender-detail URLs.
     if host == "firsttender.com" or host.endswith(".firsttender.com"):
@@ -237,6 +251,138 @@ def _low_value_browse_result(lead):
     if lead.category == "tender" and not path and not p.query:
         return "unattributed-tender-homepage"
     return ""
+
+
+def _low_value_signal_result(lead):
+    """Conservative pre-AI signal checks; do not infer buyers or verification.
+
+    Reject only unmistakably unrelated content. Ambiguous company/project
+    announcements remain eligible for downstream evidence-based evaluation.
+    """
+    if lead.tender_id or lead.filing_id:
+        return ""
+    p = urlparse(lead.url or "")
+    host = p.netloc.lower().removeprefix("www.")
+    path = p.path.lower().rstrip("/")
+    title = (lead.title or "").lower()
+    snippet = (lead.snippet or "").lower()
+    body = title + " " + snippet
+    # Encyclopaedia pages and product documentation are not buying events.
+    if host.endswith("britannica.com") and (path == "/place/india" or path.startswith("/topic/")):
+        return "encyclopedia-reference"
+    if host in ("help.autodesk.com", "learn.microsoft.com", "developer.mozilla.org"):
+        return "technical-documentation"
+    if host.endswith("autodesk.com") and any(
+            path.startswith(prefix) for prefix in ("/products/", "/learn/", "/support/", "/blog/")):
+        if not lead.buyer_org:
+            return "vendor-product-content"
+    # V3.1: generic educational/product pages and market-wide reports are
+    # not evidence of an individual buyer's procurement or expansion.
+    # Retain explicitly identified buyers for downstream review.
+    if not lead.buyer_org:
+        if host.endswith("kaarwan.com") and path.startswith("/blog/") and re.search(
+                r"\b(?:learning|salary|course|tutorial|career guide)\b", body):
+            return "educational-career-content"
+        if lead.category in ("expansion", "news") and re.search(
+                r"\b(?:report|survey|study)\b", body) and re.search(
+                r"\b(?:india leads|indian businesses|globally|planned ai investment)\b", body):
+            if not re.search(r"\b(?:opens? (?:a |its )?(?:factory|plant|facility)|"
+                             r"commissioned|wins? (?:a |the )?contract|"
+                             r"awarded (?:a |the )?contract)\b", body):
+                return "market-report-not-company-event"
+        if lead.category in ("news", "expansion") and re.search(
+                r"\b(?:buy in india|buy now|purchase online|shop now)\b", body):
+            if "/products/" in path or "/product/" in path:
+                return "retail-product-page"
+    # IPL franchise/team stories are sports, not recruitment or expansion.
+    if lead.category in ("hiring", "expansion", "news") and re.search(
+            r"\b(?:ipl|indian premier league)\b", body):
+        if re.search(r"\b(?:franchise|cricket|team|auction|player|season)\b", body) and not re.search(
+                r"\b(?:job opening|vacancy|recruiting|hiring staff|factory|plant|contract awarded)\b", body):
+            return "sports-not-business-signal"
+    # Hiring category must carry some evidence of recruitment, unless a
+    # structured employer/individual vacancy URL already supplies that context.
+    if (lead.category == "hiring" and not lead.buyer_org and
+            not _is_job_portal_host(lead.url) and
+            not (host.endswith("linkedin.com") and re.match(r"^/jobs/view/\d+", path))):
+        if not re.search(r"\b(?:hir(?:e|es|ed|ing)|recruit(?:s|ment|ing|ed)?|vacanc(?:y|ies)|"
+                         r"job opening|job posting|career opportunity|walk.in interview|"
+                         r"positions? available|seeking applicants)\b", body):
+            return "hiring-without-recruitment-evidence"
+    return ""
+
+
+def _qualification_gate_v4(lead):
+    """Conservative pre-AI qualification, never a source verification claim.
+
+    Returns (status, reason, priority): REJECTED or PROVISIONAL. Verified
+    status is deliberately reserved for official evidence checks downstream.
+    Unknown-but-plausible signals remain provisional for human/AI review.
+    """
+    md = lead.metadata if isinstance(lead.metadata, dict) else {}
+    category = str(lead.category or "").lower()
+    title = str(lead.title or "")
+    snippet = str(lead.snippet or "")
+    body = (title + " " + snippet).lower()
+    host = urlparse(lead.url or "").netloc.lower().removeprefix("www.")
+    org = str(lead.buyer_org or "").strip()
+    tender_id = str(lead.tender_id or "").strip()
+    filing_id = str(lead.filing_id or "").strip()
+
+    # Explicit procurement IDs and official filings are evidence of a
+    # specific *record*, NOT proof that a bid is open or a buyer qualified.
+    if tender_id:
+        return "PROVISIONAL", "specific-tender-reference-unverified", 90
+    if filing_id:
+        return "PROVISIONAL", "structured-filing-unverified", 85
+
+    # These checks are intentionally category-independent: the search source
+    # sometimes labels encyclopaedia or tutorial pages as procurement.
+    if host.endswith("britannica.com") and not org:
+        return "REJECTED", "encyclopedia-not-buying-event", 0
+    if host in ("help.autodesk.com", "learn.microsoft.com", "developer.mozilla.org") and not org:
+        return "REJECTED", "documentation-not-buying-event", 0
+    if re.search(r"\b(?:ipl|indian premier league)\b", body) and re.search(
+            r"\b(?:cricket|franchise|auction|players?|season)\b", body):
+        if not re.search(r"\b(?:construction contract|plant investment|job vacancy)\b", body):
+            return "REJECTED", "sports-not-commercial-event", 0
+
+    if category == "tender":
+        # An individual tender detail can be provisional even without an ID;
+        # generic search/category listings are handled by earlier URL gates.
+        path = urlparse(lead.url or "").path.lower()
+        detail = bool(re.search(r"/(?:tender|bid|notice|procurement)/(?:details?/)?[a-z0-9_-]*\d+", path))
+        query = urlparse(lead.url or "").query.lower()
+        if re.search(r"(?:^|&)page=frontendtenderdetails(?:external)?(?:&|$)", query) or re.search(
+                r"(?:^|&)(?:tnid|tenderid|bidid)=[a-z0-9_-]+(?:&|$)", query):
+            detail = True
+        procurement = bool(re.search(
+            r"\b(?:tender notice|invitation to bid|request for proposal|\brfp\b|"
+            r"procurement of|supply of|bid submission|tender id|bid number)\b", body))
+        if not org and not detail and not procurement:
+            return "REJECTED", "tender-without-specific-procurement-evidence", 0
+        return "PROVISIONAL", "tender-needs-official-verification", 70 if org or detail else 45
+
+    if category == "hiring":
+        hiring = bool(re.search(
+            r"\b(?:hiring|recruiting|recruitment|vacanc(?:y|ies)|job opening|"
+            r"job posting|seeking applicants|positions? available|walk.in interview)\b", body))
+        if not hiring and not (_is_job_portal_host(lead.url) and
+                              not _low_value_job_result(lead.url)):
+            return "REJECTED", "hiring-without-vacancy-evidence", 0
+        return "PROVISIONAL", "employer-or-vacancy-needs-review", 70 if org else 35
+
+    if category in ("expansion", "news", "filing"):
+        event = bool(re.search(
+            r"\b(?:expand(?:s|ed|ing)?|expansion|commission(?:s|ed|ing)?|"
+            r"opens?|inaugurat(?:es|ed|ion)|new (?:factory|plant|facility|project)|"
+            r"contract (?:award|win)|wins? (?:a |the )?(?:contract|order)|"
+            r"investment|invests?|acquires?|partnership|adopts?|deploys?)\b", body))
+        if category == "expansion" and not event and not org:
+            return "REJECTED", "expansion-without-company-event", 0
+        return "PROVISIONAL", "corporate-event-needs-review", 75 if org and event else 35
+
+    return "PROVISIONAL", "requires-source-review", 25
 
 
 def _unverified_gem_reference(lead):
@@ -1824,6 +1970,8 @@ def main():
         "gate_job_low_value": 0,
         "gate_tender_landing": 0,
         "gate_browse_landing": 0,
+        "gate_signal_low_value": 0,
+        "gate_qualification_v4": 0,
         "crm_updates": 0,
         "gate_budget": 0, "gate_hallucination": 0,
         "gate_banned_kw": 0,
@@ -1876,6 +2024,20 @@ def main():
             stats["gate_browse_landing"] += 1
             log.info(f"[BROWSE-LANDING] {browse_landing}: {lead.url[:120]}")
             continue
+        low_value_signal = _low_value_signal_result(lead)
+        if low_value_signal:
+            stats["gate_signal_low_value"] += 1
+            log.info(f"[SIGNAL-LOW-VALUE] {low_value_signal}: {lead.url[:120]}")
+            continue
+        qualification, qualification_reason, qualification_priority = _qualification_gate_v4(lead)
+        if qualification == "REJECTED":
+            stats["gate_qualification_v4"] += 1
+            log.info("[QUALIFICATION-V4] %s: %s", qualification_reason, (lead.url or "")[:120])
+            continue
+        lead.metadata = lead.metadata if isinstance(lead.metadata, dict) else {}
+        lead.metadata["qualification_v4"] = qualification
+        lead.metadata["qualification_reason_v4"] = qualification_reason
+        lead.metadata["qualification_priority_v4"] = qualification_priority
         if _is_job_portal_host(lead.url):
             # An employer-specific job listing can be evidence of a buyer for
             # ANY configured portfolio, even outside the hiring adapter.
@@ -1980,7 +2142,8 @@ def main():
         fields = [
             "source", "category", "organization",
             "title", "url", "snippet",
-            "verification_status", "active_tender_verified"
+            "verification_status", "active_tender_verified",
+            "qualification_v4", "qualification_reason_v4", "qualification_priority_v4"
         ]
 
         with export_file.open("w", newline="", encoding="utf-8-sig") as f:
@@ -1992,6 +2155,9 @@ def main():
                 md = md if isinstance(md, dict) else {}
 
                 writer.writerow({
+                    "qualification_v4": md.get("qualification_v4", "PROVISIONAL"),
+                    "qualification_reason_v4": md.get("qualification_reason_v4", ""),
+                    "qualification_priority_v4": md.get("qualification_priority_v4", 0),
                     "source": str(getattr(lead, "source", "") or "")[:100],
                     "category": str(getattr(lead, "category", "") or "")[:100],
                     "organization": str(
