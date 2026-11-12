@@ -28,6 +28,7 @@ from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram,
                     normalize_company, tg_escape)
 
 from standard_lead import StandardLead
+from qualification_v5 import qualify as _qualification_gate_v5
 from pending_candidates import load_pending, save_pending, DEFAULT_PATH as PENDING_FILE
 from adapters import (get_enabled, get_all, CompanyDedup,
                       _is_vendor_domain, _is_content_page,
@@ -1971,7 +1972,7 @@ def main():
         "gate_tender_landing": 0,
         "gate_browse_landing": 0,
         "gate_signal_low_value": 0,
-        "gate_qualification_v4": 0,
+        "gate_qualification_v4": 0, "gate_qualification_v5": 0,
         "crm_updates": 0,
         "gate_budget": 0, "gate_hallucination": 0,
         "gate_banned_kw": 0,
@@ -1981,6 +1982,10 @@ def main():
         "manual": 0, "manual_failed": 0,
         "skipped": 0, "trash": 0,
     }
+
+    # V5: prioritize stronger evidence before the per-run budget is applied.
+    # Preserve pending candidates, and retain original ordering for equal scores.
+    all_leads = sorted(all_leads, key=lambda item: _qualification_gate_v5(item)[2], reverse=True)
 
     # Step 42: read-only diagnostic for indexed GeM references. This does not
     # change sorting, filtering, seen caches, routing, AI calls or CRM writes.
@@ -2029,12 +2034,19 @@ def main():
             stats["gate_signal_low_value"] += 1
             log.info(f"[SIGNAL-LOW-VALUE] {low_value_signal}: {lead.url[:120]}")
             continue
-        qualification, qualification_reason, qualification_priority = _qualification_gate_v4(lead)
+        qualification, qualification_reason, qualification_priority, inferred_org = _qualification_gate_v5(lead)
         if qualification == "REJECTED":
-            stats["gate_qualification_v4"] += 1
-            log.info("[QUALIFICATION-V4] %s: %s", qualification_reason, (lead.url or "")[:120])
+            stats["gate_qualification_v5"] += 1
+            log.info("[QUALIFICATION-V5] %s: %s", qualification_reason, (lead.url or "")[:120])
             continue
         lead.metadata = lead.metadata if isinstance(lead.metadata, dict) else {}
+        if inferred_org and not lead.buyer_org:
+            lead.buyer_org = inferred_org
+            lead.metadata["organization_inferred_v5"] = True
+        lead.metadata["qualification_v5"] = qualification
+        lead.metadata["qualification_reason_v5"] = qualification_reason
+        lead.metadata["qualification_priority_v5"] = qualification_priority
+        # Keep V4 columns for existing audit consumers, with V5 verdicts.
         lead.metadata["qualification_v4"] = qualification
         lead.metadata["qualification_reason_v4"] = qualification_reason
         lead.metadata["qualification_priority_v4"] = qualification_priority
@@ -2143,7 +2155,8 @@ def main():
             "source", "category", "organization",
             "title", "url", "snippet",
             "verification_status", "active_tender_verified",
-            "qualification_v4", "qualification_reason_v4", "qualification_priority_v4"
+            "qualification_v4", "qualification_reason_v4", "qualification_priority_v4",
+            "qualification_v5", "qualification_reason_v5", "qualification_priority_v5"
         ]
 
         with export_file.open("w", newline="", encoding="utf-8-sig") as f:
@@ -2155,6 +2168,9 @@ def main():
                 md = md if isinstance(md, dict) else {}
 
                 writer.writerow({
+                    "qualification_v5": md.get("qualification_v5", "PROVISIONAL"),
+                    "qualification_reason_v5": md.get("qualification_reason_v5", ""),
+                    "qualification_priority_v5": md.get("qualification_priority_v5", 0),
                     "qualification_v4": md.get("qualification_v4", "PROVISIONAL"),
                     "qualification_reason_v4": md.get("qualification_reason_v4", ""),
                     "qualification_priority_v4": md.get("qualification_priority_v4", 0),
