@@ -10,14 +10,20 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 logger = types.SimpleNamespace(info=lambda *args: None, warning=lambda *args: None)
+
 common = types.ModuleType('common')
 common.log = logger
 common.SearchEngine = lambda: None
-sys.modules.setdefault('common', common)
-spec = importlib.util.spec_from_file_location('step71_gov', ROOT / 'sources' / 'india_gov_portals.py')
+
+spec = importlib.util.spec_from_file_location(
+    'step71_gov',
+    ROOT / 'sources' / 'india_gov_portals.py'
+)
 gov = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = gov
-spec.loader.exec_module(gov)
+
+with patch.dict(sys.modules, {'common': common}):
+    spec.loader.exec_module(gov)
 
 class Search:
     def __init__(self, recovery_items=None):

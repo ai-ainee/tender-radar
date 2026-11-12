@@ -181,6 +181,16 @@ def _low_value_tender_result(lead):
             return "government-tender-landing"
     if host.endswith("tendersontime.com") and path.startswith("/indiaproducts/"):
         return "tender-directory-category"
+
+    # Reject generic tender directories, but preserve tender-detail URLs.
+    if host == "firsttender.com" or host.endswith(".firsttender.com"):
+        if path.startswith("/tenders/"):
+            return "firsttender-category-listing"
+
+    if host == "tenderdetail.com" or host.endswith(".tenderdetail.com"):
+        if path.startswith("/tenders/"):
+            return "tenderdetail-category-listing"
+
     if (path in ("/tenders", "/tender-search", "/tenders/search", "/search") and
             not query.startswith("tenderid=")):
         return "tender-search-landing"
@@ -1951,19 +1961,23 @@ def main():
             writer.writeheader()
 
             for lead in filtered:
-                md = lead.metadata if isinstance(lead.metadata, dict) else {}
+                md = getattr(lead, "metadata", None)
+                md = md if isinstance(md, dict) else {}
 
                 writer.writerow({
-                    "source": str(lead.source or "")[:100],
-                    "category": str(lead.category or "")[:100],
+                    "source": str(getattr(lead, "source", "") or "")[:100],
+                    "category": str(getattr(lead, "category", "") or "")[:100],
                     "organization": str(
+                        getattr(lead, "buyer_org", "") or
                         md.get("organization") or md.get("buyer") or ""
                     )[:200],
-                    "title": str(lead.title or "")[:300],
-                    "url": str(lead.url or "")[:1000],
-                    "snippet": str(lead.snippet or "")[:500],
+                    "title": str(getattr(lead, "title", "") or "")[:300],
+                    "url": str(getattr(lead, "url", "") or "")[:1000],
+                    "snippet": str(
+                        getattr(lead, "raw_text", "") or ""
+                    )[:500],
                     "verification_status": str(
-                        md.get("verification_status", "")
+                        md.get("verification_status", "UNVERIFIED")
                     )[:100],
                     "active_tender_verified": str(
                         md.get("active_tender_verified", False)

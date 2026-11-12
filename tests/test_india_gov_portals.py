@@ -5,18 +5,19 @@ from pathlib import Path
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 # No network access, no repository secrets, no production writes.
 common = types.ModuleType('common')
 common.log = types.SimpleNamespace(info=lambda *a, **kw: None,
                                    warning=lambda *a, **kw: None)
 common.SearchEngine = lambda: None
-sys.modules.setdefault('common', common)
 p = Path(__file__).resolve().parents[1] / 'sources' / 'india_gov_portals.py'
 spec = importlib.util.spec_from_file_location('india_gov_portals', p)
 mod = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = mod
-spec.loader.exec_module(mod)
+with patch.dict(sys.modules, {'common': common}):
+    spec.loader.exec_module(mod)
 
 
 class FakeSearch:

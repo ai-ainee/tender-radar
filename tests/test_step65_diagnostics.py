@@ -20,13 +20,14 @@ log = CaptureLog()
 common = types.ModuleType('common')
 common.log = log
 common.SearchEngine = lambda: None
-sys.modules['common'] = common
 
 def load(name, filename):
     spec = importlib.util.spec_from_file_location(name, ROOT/'sources'/filename)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
-    spec.loader.exec_module(mod)
+
+    with patch.dict(sys.modules, {'common': common}):
+        spec.loader.exec_module(mod)
     return mod
 
 gov = load('step65_gov', 'india_gov_portals.py')
