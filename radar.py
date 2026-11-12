@@ -1934,10 +1934,47 @@ def main():
              f"gem_rechecks_selected={stats['gem_rechecks_selected']}")
 
     if DRY_RUN:
-        log.info("[DRY RUN] Skipping AI evaluation. First 5 leads:")
-        for lead in filtered[:5]:
-            log.info(f"  {lead}")
-        log.info(f"[DRY RUN] Would evaluate {len(filtered)} leads via AI")
+        log.info("[DRY RUN] Preparing filtered lead-quality export")
+        import csv
+        from pathlib import Path
+
+        export_file = Path("step79_lead_quality_audit.csv")
+
+        fields = [
+            "source", "category", "organization",
+            "title", "url", "snippet",
+            "verification_status", "active_tender_verified"
+        ]
+
+        with export_file.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+
+            for lead in filtered:
+                md = lead.metadata if isinstance(lead.metadata, dict) else {}
+
+                writer.writerow({
+                    "source": str(lead.source or "")[:100],
+                    "category": str(lead.category or "")[:100],
+                    "organization": str(
+                        md.get("organization") or md.get("buyer") or ""
+                    )[:200],
+                    "title": str(lead.title or "")[:300],
+                    "url": str(lead.url or "")[:1000],
+                    "snippet": str(lead.snippet or "")[:500],
+                    "verification_status": str(
+                        md.get("verification_status", "")
+                    )[:100],
+                    "active_tender_verified": str(
+                        md.get("active_tender_verified", False)
+                    ),
+                })
+
+        log.info(
+            "[DRY RUN] Exported %d candidate records to %s",
+            len(filtered), export_file
+        )
+        log.info("[DRY RUN] Skipping AI evaluation.")
         return 0
 
     queued_count = save_pending(pending_next, PENDING_FILE)
