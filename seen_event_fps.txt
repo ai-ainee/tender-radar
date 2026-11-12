@@ -1885,3 +1885,7 @@ capex|ministryofrailways|100 projects|projects|2026-04|india
 tender|indianrailways|AutoCAD 2027|users|2026-10|
 expansion|marutisuzukiindialimited|2.65|million units|2026-07|kharkhoda,haryana
 hiring|inteltechnologyindiapvtltd|Senior CAD Engineer|position|2026-11|bengaluru,karnataka
+hiring|hnbengineerspvtltd|CAD Operator / Draftsman - Civil|position|2026-11|allindia
+hiring|geoconceptindiaprivatelimited|AutoCAD Draftsman|position|2026-11|chennai
+hiring|geoconceptindiaprivatelimited|AutoCAD Draftsman||2026-11|chennai
+hiring|geodesigns&researchpvt.ltd.|BIM – MEP Engineer|position|2026-10|vadodara
