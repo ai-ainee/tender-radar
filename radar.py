@@ -188,8 +188,18 @@ def _low_value_tender_result(lead):
             return "firsttender-category-listing"
 
     if host == "tenderdetail.com" or host.endswith(".tenderdetail.com"):
-        if path.startswith("/tenders/"):
+        if path.startswith("/tenders/") or re.fullmatch(
+                r"/indian-tender/[a-z0-9-]*tenders?", path):
             return "tenderdetail-category-listing"
+
+    # FirstTender /bids/<subject>-tenders.html is a category index, not
+    # a specific bid. Do not discard structured IDs or identified buyers.
+    if host == "firsttender.com" or host.endswith(".firsttender.com"):
+        if re.fullmatch(r"/bids/[a-z0-9-]+-tenders\.html", path):
+            return "firsttender-category-listing"
+    if host == "tendernews.com" or host.endswith(".tendernews.com"):
+        if path.startswith("/tenders/latest-tender/"):
+            return "tendernews-category-listing"
 
     if (path in ("/tenders", "/tender-search", "/tenders/search", "/search") and
             not query.startswith("tenderid=")):
@@ -207,8 +217,25 @@ def _low_value_browse_result(lead):
         return ""
     p = urlparse(lead.url or "")
     path = p.path.lower().rstrip("/")
+    host = p.netloc.lower().removeprefix("www.")
     if path.startswith("/topic/") or path in ("/topics", "/news", "/latest-news"):
         return "general-topic-landing"
+    # Only known, unambiguous navigation/resource pages. Do not reject
+    # individual articles or named-company procurement and project signals.
+    if (host == "india.gov.in" and path.startswith("/explore-india/facts-of-india/")):
+        return "government-general-information"
+    if host == "ndtv.com" and path == "/india":
+        return "publisher-section-landing"
+    if host == "suppliers.autodesk.com" and path == "/submit":
+        return "supplier-registration-page"
+    if host == "intellizence.com" and path == "/insights/business-expansion/major-business-expansions":
+        return "generic-expansion-index"
+    # Misclassified tender-directory pages can arrive as news/expansion.
+    if (host == "tenderdetail.com" or host.endswith(".tenderdetail.com")) and re.fullmatch(
+            r"/indian-tender/[a-z0-9-]*tenders?", path):
+        return "misclassified-tender-directory"
+    if lead.category == "tender" and not path and not p.query:
+        return "unattributed-tender-homepage"
     return ""
 
 
