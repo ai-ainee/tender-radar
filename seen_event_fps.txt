@@ -1889,3 +1889,4 @@ hiring|hnbengineerspvtltd|CAD Operator / Draftsman - Civil|position|2026-11|alli
 hiring|geoconceptindiaprivatelimited|AutoCAD Draftsman|position|2026-11|chennai
 hiring|geoconceptindiaprivatelimited|AutoCAD Draftsman||2026-11|chennai
 hiring|geodesigns&researchpvt.ltd.|BIM – MEP Engineer|position|2026-10|vadodara
+tender|paschimgujaratvijcompanylimited|Annual Rate Contract||2026-11|rajkot
