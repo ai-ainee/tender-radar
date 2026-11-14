@@ -1891,3 +1891,5 @@ hiring|geoconceptindiaprivatelimited|AutoCAD Draftsman||2026-11|chennai
 hiring|geodesigns&researchpvt.ltd.|BIM – MEP Engineer|position|2026-10|vadodara
 tender|paschimgujaratvijcompanylimited|Annual Rate Contract||2026-11|rajkot
 hiring|intel|CAD Technician||2026-11|bengaluru,karnataka
+tech_adoption|officebanao|AutoCAD||2023-04|gurugram
+tender|indianoilcorporationlimited|Autocad subscription renewal|subscription|2026-11|chirang,assam
