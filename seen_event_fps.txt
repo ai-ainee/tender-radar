@@ -1893,3 +1893,11 @@ tender|paschimgujaratvijcompanylimited|Annual Rate Contract||2026-11|rajkot
 hiring|intel|CAD Technician||2026-11|bengaluru,karnataka
 tech_adoption|officebanao|AutoCAD||2023-04|gurugram
 tender|indianoilcorporationlimited|Autocad subscription renewal|subscription|2026-11|chirang,assam
+procurement_tender|ntpclimited|Autodesk Enterprise Edition Autocad Including Specialized Toolsets Single User Subscription|3 years|2026-04|simhadri,andhrapradesh
+tender|nationalsciencecentre,delhi|Autodesk AutoCAD & AutoCAD LT software|licenses|2026-11|delhi
+hiring|autodeskindia|22|open roles|2026-11|bengaluru,pune
+hiring|autodesk|26|positions|2026-10|india
+hiring|autodesk|33|positions|2026-10|india
+hiring|iharness(aptiv)|2D CAD Engineer|position|2026-11|pune
+expansion|raymond|capacity expansion||2026-11|andhrapradesh
+project|governmentoftelangana|Tummidihetti irrigation project|project|2026-11|pranhitariver,telangana
