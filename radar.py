@@ -28,7 +28,7 @@ from common import (LLMRouter, SearchEngine, SheetAPI, SheetError, Telegram,
                     normalize_company, tg_escape)
 
 from standard_lead import StandardLead
-from qualification_v5 import qualify as _qualification_gate_v5
+from qualification_v51 import qualify as _qualification_gate_v5, event_key as _v51_event_key
 from pending_candidates import load_pending, save_pending, DEFAULT_PATH as PENDING_FILE
 from adapters import (get_enabled, get_all, CompanyDedup,
                       _is_vendor_domain, _is_content_page,
@@ -1957,6 +1957,7 @@ def main():
     filtered = []
     pending_next = []
     run_exact_urls = set()
+    run_project_events = set()
     stats = {
         "adapter_total": len(all_leads) - len(pending_prior),
         "pending_loaded": len(pending_prior),
@@ -1973,6 +1974,7 @@ def main():
         "gate_browse_landing": 0,
         "gate_signal_low_value": 0,
         "gate_qualification_v4": 0, "gate_qualification_v5": 0,
+        "gate_event_duplicate_v51": 0,
         "crm_updates": 0,
         "gate_budget": 0, "gate_hallucination": 0,
         "gate_banned_kw": 0,
@@ -2112,11 +2114,19 @@ def main():
             stats["gate_run_url_exact"] += 1
             continue
         run_exact_urls.add(c)
+        # V5.1: deduplicate only strong, quantified, same-project news signals.
+        project_key = _v51_event_key(lead, lead.buyer_org)
+        if project_key and project_key in run_project_events:
+            stats["gate_event_duplicate_v51"] += 1
+            log.info("[V51-EVENT-DUPE] %s", (lead.url or "")[:120])
+            continue
         if len(filtered) >= max_links:
             stats["gate_budget"] += 1
             pending_next.append(lead)
             continue
         filtered.append(lead)
+        if project_key:
+            run_project_events.add(project_key)
         if gem_bid:
             gem_selected_bids.add(gem_bid)
             if gem_recheck:
