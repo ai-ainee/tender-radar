@@ -1901,3 +1901,5 @@ hiring|autodesk|33|positions|2026-10|india
 hiring|iharness(aptiv)|2D CAD Engineer|position|2026-11|pune
 expansion|raymond|capacity expansion||2026-11|andhrapradesh
 project|governmentoftelangana|Tummidihetti irrigation project|project|2026-11|pranhitariver,telangana
+tender|centralpublicworksdepartment|4|licenses|2026-06|india
+hiring|cadbricksprivatelimited|CAD Draftsman|positions|2026-11|
