@@ -335,8 +335,11 @@ class SearchEngine:
                 return [{"link": i.get("href") or i.get("url") or "", "title": i.get("title", ""), "snippet": i.get("body", "")} for i in results if (i.get("href") or i.get("url"))]
             except Exception: time.sleep(3 + attempt * 3)
         return []
-    def search(self, query, country="", pages=1, recent=False):
+    def search(self, query, country="", pages=1, recent=False, preserve_operators=False):
         q = self.clean_query(query)
+        if not preserve_operators:
+            q = re.sub(r"(?i)(?<!\S)site:[^\s]+", " ", q)
+            q = " ".join(q.split())[:300]
         if not q: return []
         gl = self.gl_code(country)
         results, seen = [], set()

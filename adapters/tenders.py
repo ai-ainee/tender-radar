@@ -193,7 +193,11 @@ class TendersAdapter(SourceAdapter):
         cppp_count = self._try_cppp(targets, leads)
         log.info(f"[tenders] cppp: {cppp_count} lead(s)")
 
-        # ── State portals (optional; only logs if module present) ──
+        # ── All-state / UT / PSU official-domain indexed discovery ───
+        government_count = self._try_government_portals(targets, leads)
+        log.info(f"[tenders] government_portal_index: {government_count} lead(s)")
+
+        # ── Legacy state scraper (optional; keep as fallback) ────────
         state_count = self._try_state(targets, leads)
         if state_count >= 0:
             log.info(f"[tenders] state: {state_count} lead(s)")
@@ -258,6 +262,42 @@ class TendersAdapter(SourceAdapter):
             return len(results or [])
         except Exception as e:
             log.warning(f"[tenders] cppp inline: ERROR {str(e)[:120]}")
+            return 0
+
+    def _try_government_portals(self, targets, leads):
+        """Bounded, safe discovery across central, state, UT and PSU sites.
+
+        These are search-index candidates, not active bids. Never assert a
+        verified buyer or deadline. Run at most GOV_PORTAL_MAX_QUERIES searches.
+        """
+        try:
+            from sources.india_gov_portals import fetch_india_government_tenders
+            max_queries = max(0, min(30, int(os.getenv("GOV_PORTAL_MAX_QUERIES", "12"))))
+            max_results = max(0, min(120, int(os.getenv("GOV_PORTAL_MAX_RESULTS", "60"))))
+            rows = fetch_india_government_tenders(
+                targets, max_results=max_results, max_queries=max_queries)
+            count = 0
+            for row in rows or []:
+                if not isinstance(row, dict) or not row.get("url"):
+                    continue
+                lead = _dict_to_lead("government_portal_index", row)
+                lead.metadata.update({
+                    "review_required": True,
+                    "active_tender_verified": False,
+                    "buyer_verified": False,
+                    "current_deadline_verified": False,
+                    "official_source_verified": False,
+                    "provisional_tender": True,
+                    "snippet_only": True,
+                })
+                leads.append(lead)
+                count += 1
+            return count
+        except ImportError:
+            log.warning("[gov-index] collector not installed, skipping")
+            return 0
+        except Exception as exc:
+            log.warning("[gov-index] collector failed: %s", str(exc)[:160])
             return 0
 
     def _try_state(self, targets, leads):
