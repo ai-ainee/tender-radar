@@ -8,6 +8,10 @@
       "last_ai_attempt": "2026-11-19",
       "outcome": "TRASH"
     },
+    "GEM/2026/B/7438157": {
+      "last_ai_attempt": "2026-11-20",
+      "outcome": "CRM_UPDATED"
+    },
     "GEM/2026/B/7442828": {
       "last_ai_attempt": "2026-11-19",
       "outcome": "TRASH"
@@ -17,8 +21,8 @@
       "outcome": "CRM_UPDATED"
     },
     "GEM/2026/B/7583903": {
-      "last_ai_attempt": "2026-11-13",
-      "outcome": "REVIEW"
+      "last_ai_attempt": "2026-11-20",
+      "outcome": "CRM_UPDATED"
     },
     "GEM/2026/B/7611156": {
       "last_ai_attempt": "2026-11-19",
@@ -51,6 +55,10 @@
     "GEM/2026/B/8231919": {
       "last_ai_attempt": "2026-11-17",
       "outcome": "DUPLICATE"
+    },
+    "GEM/2026/B/8259023": {
+      "last_ai_attempt": "2026-11-20",
+      "outcome": "TRASH"
     }
   },
   "version": 1
