@@ -1904,3 +1904,4 @@ project|governmentoftelangana|Tummidihetti irrigation project|project|2026-11|pr
 tender|centralpublicworksdepartment|4|licenses|2026-06|india
 hiring|cadbricksprivatelimited|CAD Draftsman|positions|2026-11|
 hiring|diversified|CAD Drafter|position|2026-11|bengaluru
+capex|featherlite|300|crore inr|2027-12|bengaluru
