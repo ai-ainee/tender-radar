@@ -28,6 +28,10 @@
       "last_ai_attempt": "2026-11-19",
       "outcome": "TRASH"
     },
+    "GEM/2026/B/7751864": {
+      "last_ai_attempt": "2026-11-21",
+      "outcome": "TRASH"
+    },
     "GEM/2026/B/7831437": {
       "last_ai_attempt": "2026-11-18",
       "outcome": "CRM_UPDATED"
@@ -35,6 +39,10 @@
     "GEM/2026/B/7842239": {
       "last_ai_attempt": "2026-11-19",
       "outcome": "DUPLICATE"
+    },
+    "GEM/2026/B/7845360": {
+      "last_ai_attempt": "2026-11-21",
+      "outcome": "CRM_UPDATED"
     },
     "GEM/2026/B/7912327": {
       "last_ai_attempt": "2026-11-18",
@@ -48,13 +56,29 @@
       "last_ai_attempt": "2026-11-12",
       "outcome": "CRM_UPDATED"
     },
+    "GEM/2026/B/8147926": {
+      "last_ai_attempt": "2026-11-21",
+      "outcome": "TRASH"
+    },
+    "GEM/2026/B/8158378": {
+      "last_ai_attempt": "2026-11-21",
+      "outcome": "REVIEW"
+    },
     "GEM/2026/B/8175444": {
       "last_ai_attempt": "2026-11-21",
       "outcome": "TRASH"
     },
+    "GEM/2026/B/8221932": {
+      "last_ai_attempt": "2026-11-21",
+      "outcome": "CRM_UPDATED"
+    },
     "GEM/2026/B/8231919": {
       "last_ai_attempt": "2026-11-17",
       "outcome": "DUPLICATE"
+    },
+    "GEM/2026/B/8234463": {
+      "last_ai_attempt": "2026-11-21",
+      "outcome": "CRM_UPDATED"
     },
     "GEM/2026/B/8259023": {
       "last_ai_attempt": "2026-11-20",
