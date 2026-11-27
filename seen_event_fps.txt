@@ -1909,3 +1909,4 @@ capex|chalethotels|3500|cr|2026-11|delhi
 partnership|neilsoft|BIM and Digital Twin Centre of Excellence||2026-11|pune
 contract|tataprojects|1600 MW|mw|2026-11|centralindia
 capex|gail|5|mw|2026-11|faridabad,haryana
+partnership|neilsoftlimited|Autodesk technologies (Revit Forma Tandem APS)||2026-11|india

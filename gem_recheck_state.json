@@ -9,8 +9,8 @@
       "outcome": "TRASH"
     },
     "GEM/2026/B/7438157": {
-      "last_ai_attempt": "2026-11-20",
-      "outcome": "CRM_UPDATED"
+      "last_ai_attempt": "2026-11-27",
+      "outcome": "DUPLICATE"
     },
     "GEM/2026/B/7442828": {
       "last_ai_attempt": "2026-11-19",
@@ -66,6 +66,10 @@
     },
     "GEM/2026/B/8068366": {
       "last_ai_attempt": "2026-11-22",
+      "outcome": "CRM_UPDATED"
+    },
+    "GEM/2026/B/8135487": {
+      "last_ai_attempt": "2026-11-27",
       "outcome": "CRM_UPDATED"
     },
     "GEM/2026/B/8147926": {
